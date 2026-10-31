@@ -32,10 +32,10 @@ Dev/
   prismatic/
 ```
 
-Prismatic uses the local Iris library directly, including the fork's
-`workstation::set_exit_on_guest_poweroff` embedding API. Use Iris branch
-`xiri/netbsd-newport` at commit `53c9fb2` or newer and update both checkouts. Its root Cargo manifest also
-preserves the fork's patched winit and block dependencies. Install Rust through
+Prismatic uses the local Iris library directly, including the fork's power-off
+and diagnostic-routing embedding APIs. Use Iris branch `xiri/netbsd-newport`
+at commit `76b2227` or newer and update both checkouts. Its root Cargo manifest
+also preserves the fork's patched winit and block dependencies. Install Rust through
 rustup; `rust-toolchain.toml` selects nightly, matching Iris's requirement.
 On a Fedora development system, install the native build dependencies:
 
@@ -97,8 +97,8 @@ input are not implemented. Left, middle and right mouse buttons are forwarded;
 wheel and extra buttons work when the guest enables the corresponding PS/2
 mouse protocol.
 
-Enable **General > Tinker** to expose Advanced, including Iris core options
-and bilinear filtering. Hiding Advanced retains its saved settings. Options
+Enable **General > Tinker** to expose Advanced, including Iris core options,
+bilinear filtering and debug output. Hiding Advanced retains its saved settings. Options
 are edited in a private draft and applied only after a successful save. Cancelling or discarding leaves the live display
 unchanged. Confirmation dialogs initially select Cancel.
 
@@ -147,6 +147,16 @@ Turning Tinker off hides the controls without resetting their values.
 | SCSI interrupt timing | Deferred, Immediate | Deferred |
 | Serial console log | Off, Raw, Timestamped (UTC) | Off |
 | Bilinear filtering | Off, On; applies without restarting | Off |
+| Debug output | Off, Screen, Console; applies without restarting | Off |
+
+Debug output routes Iris's routine startup, bus-probe, Newport register/display
+and draw-cache diagnostics. **Screen** shows the latest 12 wrapped lines above
+the bottom strips; **Console** writes to the launching terminal. Changes apply
+on Save, without restarting; Discard preserves the active destination. Screen
+starts with new messages when enabled, and Off clears the screen log. To capture
+startup diagnostics, save Screen or Console before the next launch.
+Startup/storage failures still reach the terminal with debug output Off.
+This setting is separate from guest serial logging and Iris monitor tracing.
 
 Resolution selects the **initial Newport video mode**; the PROM or guest may
 program another mode later. Cache Auto selects Iris's implementation for the
@@ -241,6 +251,7 @@ scanlines = false
 show_status = true
 smoothing = false
 tinker = false
+debug_output = "off"
 
 [machine]
 profile = "indy_ip24"

@@ -28,6 +28,7 @@ including when the hints are hidden.
 | `src/smoke.rs` | Scripted SDL input and General/Media/Advanced menu and restart smoke tests |
 | `src/overlay.rs` | Draft settings, navigation, modal choices and effects |
 | `src/settings.rs` | Desktop/hardware/media/Advanced settings, compatibility, RAM banks, state paths and atomic persistence |
+| `src/diagnostics.rs` | Live Off/Screen/Console routing of Iris diagnostics, bounded screen text and redraw updates |
 | `src/display.rs` | Packed RGBA frame type, startup/UI-preview pixels and aspect-preserving placement |
 | `src/view.rs` | SDL drawing, status strip, LEDs, options, confirmations and notifications |
 | `src/media.rs` | Native file chooser, asynchronous read-only probes, media settings and Iris block-node adapters |
@@ -205,8 +206,8 @@ reported with the saved configuration retained for correction in F9.
 Advanced stores Newport resolution, CPU cache model, RTC year offset, SCSI
 interrupt timing and serial logging independently of the Tinker visibility
 flag. Default values match Iris. All five participate in machine restart
-detection; hiding Tinker or changing filtering alone does not restart. The
-frontend maps these values into `MachineConfig` before construction. Newport
+detection; hiding Tinker or changing filtering/debug output alone does not restart.
+The frontend maps these values into `MachineConfig` before construction. Newport
 resolution is an initial mode, not an override of later guest programming.
 Clock offsets seed the RTC from host time on construction/NVRAM load.
 
@@ -216,6 +217,18 @@ worker checks that this is an appendable regular file before construction,
 because Iris's constructor otherwise logs an open failure only to stderr.
 No log is opened during draft editing, validation or Discard. The log follows
 Iris's existing write/flush behavior and never truncates an existing transcript.
+
+Debug output is a frontend preference exposed in Advanced, stored as top-level
+`debug_output = "off" | "screen" | "console"`. A process-wide Iris diagnostic
+sink is installed before machine construction. Device threads emit routine
+startup, bus-exception, Newport and draw-cache messages to it; host failures
+remain on stderr, and serial/monitor/file tracing keep their own destinations.
+Screen mode bounds formatting to 1024 ASCII characters per message, wraps at
+110 columns and keeps only 12 lines. The SDL loop takes changed snapshots even
+without a new guest frame. It draws the log above notifications and bottom bars,
+before menu shading; clicking the log cannot capture guest input. Console
+preserves the original text and stream, and Off skips formatting. Successful
+Save changes the destination live; changing modes clears screen history.
 
 The UI smoke test never starts a machine. The PROM display smoke test creates
 fresh temporary NVRAM, waits for a nonuniform guest image, captures the SDL

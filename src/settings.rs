@@ -161,6 +161,29 @@ impl SerialLogging {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DebugOutput {
+    #[default]
+    Off,
+    Screen,
+    Console,
+}
+
+impl DebugOutput {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Screen => "Screen",
+            Self::Console => "Console",
+        }
+    }
+
+    pub fn cycle(&mut self) {
+        *self = next(*self, &[Self::Off, Self::Screen, Self::Console]);
+    }
+}
+
 /// Core settings stay active even when Tinker hides their controls.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
@@ -245,6 +268,7 @@ pub struct Settings {
     pub show_status: bool,
     pub smoothing: bool,
     pub tinker: bool,
+    pub debug_output: DebugOutput,
     pub machine: MachineSettings,
     pub media: MediaSettings,
     pub advanced: AdvancedSettings,
@@ -257,6 +281,7 @@ impl Default for Settings {
             show_status: true,
             smoothing: false,
             tinker: false,
+            debug_output: DebugOutput::Off,
             machine: MachineSettings::default(),
             media: MediaSettings::default(),
             advanced: AdvancedSettings::default(),
@@ -371,6 +396,7 @@ mod tests {
         draft.smoothing = true;
         draft.scanlines = true;
         draft.show_status = false;
+        draft.debug_output = DebugOutput::Screen;
         assert!(!draft.machine_differs_from(&active));
         for change in [
             AdvancedSettings::cycle_resolution,
@@ -384,6 +410,24 @@ mod tests {
             draft.tinker = false;
             assert!(draft.machine_differs_from(&active));
         }
+    }
+
+    #[test]
+    fn debug_output_defaults_to_off_persists_with_tinker_hidden_and_validates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prismatic.cfg");
+        fs::write(&path, "tinker = false\n").unwrap();
+        let mut settings = Settings::load(&path).unwrap();
+        assert_eq!(settings.debug_output, DebugOutput::Off);
+        for output in [DebugOutput::Screen, DebugOutput::Console, DebugOutput::Off] {
+            settings.debug_output.cycle();
+            assert_eq!(settings.debug_output, output);
+            settings.save(&path).unwrap();
+            assert_eq!(Settings::load(&path).unwrap(), settings);
+            assert!(!settings.machine_differs_from(&Settings::default()));
+        }
+        fs::write(&path, "debug_output = 'file'\n").unwrap();
+        assert!(Settings::load(&path).is_err());
     }
 
     #[test]

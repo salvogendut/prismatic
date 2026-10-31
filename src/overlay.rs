@@ -110,6 +110,7 @@ impl Session {
                     self.draft.advanced.serial_logging.label().into(),
                 ),
                 ("Bilinear filtering", on_off(self.draft.smoothing)),
+                ("Debug output", self.draft.debug_output.label().into()),
             ],
             Tab::Media => [
                 "SCSI 0:1", "SCSI 0:2", "SCSI 0:3", "SCSI 0:4", "SCSI 0:5", "SCSI 0:6", "SCSI 0:7",
@@ -270,6 +271,7 @@ impl Overlay {
                 }
                 (Tab::Advanced, 4) => session.draft.advanced.cycle_serial_logging(),
                 (Tab::Advanced, 5) => session.draft.smoothing = !session.draft.smoothing,
+                (Tab::Advanced, 6) => session.draft.debug_output.cycle(),
                 (Tab::Media, row) => {
                     self.dialog = Some(Dialog::Media {
                         id: row as u8 + 1,
@@ -287,6 +289,37 @@ impl Overlay {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_changes_are_drafts_until_saved_and_discard_restores_output() {
+        use crate::settings::DebugOutput;
+        let live = Settings {
+            tinker: true,
+            ..Default::default()
+        };
+        let mut overlay = Overlay::default();
+        for key in [Key::Options, Key::Right, Key::Right, Key::Up, Key::Enter] {
+            overlay.key(key, &live);
+        }
+        assert_eq!(
+            overlay.session.as_ref().unwrap().draft.debug_output,
+            DebugOutput::Screen
+        );
+        let Effect::Save(draft) = overlay.key(Key::Options, &live) else {
+            panic!("Expected a Save draft");
+        };
+        assert!(!draft.machine_differs_from(&live));
+        assert_eq!(live.debug_output, DebugOutput::Off);
+        overlay.save_failed();
+        assert!(overlay.session.as_ref().unwrap().dirty());
+        for key in [Key::Escape, Key::Left, Key::Enter, Key::Options] {
+            overlay.key(key, &live);
+        }
+        assert_eq!(
+            overlay.session.as_ref().unwrap().draft.debug_output,
+            DebugOutput::Off
+        );
+    }
 
     #[test]
     fn advanced_changes_remain_drafts_survive_hiding_and_can_be_discarded() {

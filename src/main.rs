@@ -1,4 +1,5 @@
 mod activity;
+mod diagnostics;
 mod display;
 mod emulator;
 mod input;
@@ -60,7 +61,7 @@ F9 Options  F11 Fullscreen  F12 Quit
 Shift+F9/F11/F12: send a bare guest function-key tap while captured
 
 General: machine, RAM, CPU and keyboard. Core changes require restart.
-Tinker > Advanced: resolution, cache, clock offset, SCSI timing and serial logging.
+Tinker > Advanced: resolution, cache, clock offset, SCSI timing, serial and debug output.
 Media: raw/CHD hard disks and ISO9660/EFS/CHD CD-ROMs.
 Boots diskless by default with bundled firmware. Audio is not connected yet.
 --keyboard overrides the saved keyboard type for this session.
@@ -195,7 +196,10 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         .config
         .unwrap_or_else(|| preferences.join("prismatic.cfg"));
     let mut settings = Settings::open(&path, legacy.as_deref())?;
-    eprintln!("Prismatic: configuration {}", path.display());
+    let debug_log = Arc::new(diagnostics::DebugLog::new(settings.debug_output));
+    iris::diagnostics::set_sink(Some(debug_log.clone()));
+    let mut debug_lines = Vec::new();
+    iris::diagnostics::stderr(format_args!("Prismatic: configuration {}", path.display()));
     if let Some(keyboard) = options.keyboard {
         settings.machine.keyboard = keyboard;
     }
@@ -380,6 +384,8 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                                 && y >= area.y() as f32
                                 && x < area.right() as f32
                                 && y < area.bottom() as f32
+                                && !view::debug_rect(&settings)
+                                    .is_some_and(|rect| rect.contains_point((x as i32, y as i32)))
                         }) {
                             mouse.set_relative_mouse_mode(canvas.window(), true);
                             if mouse.relative_mouse_mode(canvas.window()) {
@@ -483,6 +489,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 match draft.save(&path) {
                     Ok(()) => {
+                        debug_log.set_output(draft.debug_output);
                         settings = draft;
                         overlay.saved();
                         if needs_restart {
@@ -519,7 +526,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 if next.monitor != status.monitor
                     && let Some(address) = next.monitor
                 {
-                    eprintln!("Prismatic: Iris monitor at {address}");
+                    iris::diagnostics::stderr(format_args!("Prismatic: Iris monitor at {address}"));
                 }
                 if let Phase::Failed(error) = &next.phase {
                     eprintln!("Prismatic: {error}");
@@ -549,10 +556,10 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 texture.update(None, &next.rgba, next.width as usize * 4)?;
                 if machine_smoke && first_content.is_none() && has_picture(&next) {
                     first_content = Some(Instant::now());
-                    eprintln!(
+                    iris::diagnostics::stderr(format_args!(
                         "Prismatic: guest display content received ({}x{})",
                         next.width, next.height
-                    );
+                    ));
                 }
                 frame = next;
                 guest_frame_received = true;
@@ -715,6 +722,10 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             toast = None;
             redraw = true;
         }
+        if let Some(lines) = debug_log.take_update() {
+            debug_lines = lines;
+            redraw = true;
+        }
         if redraw || options.smoke_test || capture_boot {
             texture.set_scale_mode(if settings.smoothing {
                 ScaleMode::Linear
@@ -756,6 +767,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                     leds: leds.lit,
                     media: &active.media,
                     running: status.phase == Phase::Running && stopping.is_none(),
+                    debug_lines: &debug_lines,
                 },
             )?;
             frames += 1;

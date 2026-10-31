@@ -1,9 +1,10 @@
 use crate::{
     activity,
+    diagnostics::SCREEN_LINES,
     display::{Frame, fit},
     media::{MediaKind, MediaSettings},
     overlay::{Dialog, Overlay, Tab},
-    settings::Settings,
+    settings::{DebugOutput, Settings},
 };
 use sdl3::{
     pixels::Color,
@@ -29,6 +30,7 @@ pub struct Presentation<'a> {
     pub leds: u64,
     pub media: &'a MediaSettings,
     pub running: bool,
+    pub debug_lines: &'a [String],
 }
 
 pub fn guest_rect(frame: &Frame, settings: &Settings) -> Rect {
@@ -110,6 +112,7 @@ pub fn draw(
         )?;
     }
 
+    draw_debug(canvas, settings, presentation.debug_lines)?;
     draw_status(canvas, settings, &presentation)?;
     draw_leds(canvas, &presentation)?;
 
@@ -159,6 +162,55 @@ fn short_ascii(value: &str, max: usize) -> String {
     text
 }
 
+pub fn debug_rect(settings: &Settings) -> Option<Rect> {
+    if settings.debug_output != DebugOutput::Screen {
+        return None;
+    }
+    let bottom = HEIGHT - LED_HEIGHT - if settings.show_status { HINT_HEIGHT } else { 0 };
+    let height = 28 + SCREEN_LINES as u32 * 12;
+    // Leave the notification band and both bottom bars unobstructed.
+    Some(Rect::new(24, (bottom - height - 52) as i32, 912, height))
+}
+
+fn draw_debug(
+    canvas: &mut WindowCanvas,
+    settings: &Settings,
+    lines: &[String],
+) -> Result<(), sdl3::Error> {
+    let Some(rect) = debug_rect(settings) else {
+        return Ok(());
+    };
+    fill(canvas, rect, Color::RGBA(8, 10, 18, 230))?;
+    canvas.set_draw_color(BORDER);
+    canvas.draw_rect(rect)?;
+    text(
+        canvas,
+        rect.x() + 12,
+        rect.y() + 8,
+        "IRIS DEBUG - latest messages",
+        BORDER,
+    )?;
+    if lines.is_empty() {
+        text(
+            canvas,
+            rect.x() + 12,
+            rect.y() + 24,
+            "Waiting for new diagnostics...",
+            MUTED,
+        )?;
+    }
+    for (index, line) in lines.iter().enumerate() {
+        text(
+            canvas,
+            rect.x() + 12,
+            rect.y() + 24 + index as i32 * 12,
+            line,
+            TEXT,
+        )?;
+    }
+    Ok(())
+}
+
 // The 1989 view uses an 8px inset, 20px rows and a content-sized panel.
 // Scale inside the existing logical window so fullscreen letterboxing and
 // guest hit testing keep using the same coordinate system.
@@ -190,7 +242,8 @@ fn draw_overlay(
             2 => "Shifts the guest clock relative to host time at boot; it then runs normally.",
             3 => "Deferred is Iris's BSD-compatible default. Immediate changes SCSI timing.",
             4 => "Appends to serial.log in this machine's state directory. Timestamps use host UTC.",
-            _ => "Bilinear filtering smooths the display when scaled; applies without restart.",
+            5 => "Bilinear filtering smooths the display when scaled; applies without restart.",
+            _ => "Debug: Off, Screen (latest messages), Console (terminal). Applies on Save.",
         }.into(), "Core options require restart. Turning Tinker off keeps the saved values active.".into()],
         Tab::About => vec![],
     };
