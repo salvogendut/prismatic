@@ -204,6 +204,7 @@ impl GifEncoder {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct GifSettings {
+    /// Zero selects the guest's native resolution at recording start.
     pub width: u16,
     pub fps: u16,
     pub encoder: GifEncoder,
@@ -212,7 +213,7 @@ pub struct GifSettings {
 impl Default for GifSettings {
     fn default() -> Self {
         Self {
-            width: 480,
+            width: 0,
             fps: 25,
             encoder: GifEncoder::BuiltIn,
         }
@@ -221,7 +222,14 @@ impl Default for GifSettings {
 
 impl GifSettings {
     pub fn cycle_width(&mut self) {
-        self.width = next(self.width, &[320, 480, 640]);
+        self.width = next(self.width, &[0, 320, 480, 640]);
+    }
+    pub fn resolution_label(&self) -> String {
+        if self.width == 0 {
+            "Native (guest screen resolution)".into()
+        } else {
+            format!("{} px wide (guest aspect ratio)", self.width)
+        }
     }
     pub fn cycle_fps(&mut self) {
         self.fps = next(self.fps, &[10, 20, 25]);
@@ -230,8 +238,8 @@ impl GifSettings {
         self.encoder = next(self.encoder, &[GifEncoder::BuiltIn, GifEncoder::Ffmpeg]);
     }
     pub fn validate(&self) -> Result<(), String> {
-        if ![320, 480, 640].contains(&self.width) {
-            return Err("GIF width must be 320, 480 or 640 pixels".into());
+        if ![0, 320, 480, 640].contains(&self.width) {
+            return Err("GIF width must be 0 (native), 320, 480 or 640 pixels".into());
         }
         if ![10, 20, 25].contains(&self.fps) {
             return Err("GIF frame rate must be 10, 20 or 25 fps".into());
@@ -500,6 +508,7 @@ mod tests {
         fs::write(&path, "tinker = false\n").unwrap();
         let mut settings = Settings::load(&path).unwrap();
         assert_eq!(settings.gif, GifSettings::default());
+        assert_eq!(settings.gif.width, 0);
         settings.gif = GifSettings {
             width: 640,
             fps: 10,
@@ -508,13 +517,33 @@ mod tests {
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), settings);
         let original = fs::read(&path).unwrap();
-        settings.gif.width = 0;
+        settings.gif.width = 1;
         assert!(settings.save(&path).is_err());
         assert_eq!(fs::read(&path).unwrap(), original);
         for invalid in ["width = 2048", "fps = 0", "fps = 60", "encoder = 'unknown'"] {
             fs::write(&path, format!("[gif]\n{invalid}\n")).unwrap();
             assert!(Settings::load(&path).is_err());
         }
+    }
+
+    #[test]
+    fn gif_native_and_scaled_choices_cycle_persist_and_keep_existing_preferences() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prismatic.cfg");
+        fs::write(&path, "[gif]\nwidth = 640\n").unwrap();
+        let mut settings = Settings::load(&path).unwrap();
+        assert_eq!(settings.gif.width, 640);
+        for width in [0, 320, 480, 640, 0] {
+            settings.gif.cycle_width();
+            assert_eq!(settings.gif.width, width);
+            assert!(!settings.machine_differs_from(&Settings::default()));
+            settings.save(&path).unwrap();
+            assert_eq!(Settings::load(&path).unwrap(), settings);
+        }
+        assert_eq!(
+            settings.gif.resolution_label(),
+            "Native (guest screen resolution)"
+        );
     }
 
     #[test]

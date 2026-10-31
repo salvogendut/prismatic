@@ -173,7 +173,10 @@ reported once and never turns a successful file save into a capture failure.
 This UI sound is independent of Iris's still-disabled guest audio.
 
 GIF width, fps and encoder persist in `[gif]`, independently of restart-required
-Iris settings. A recording snapshots them at start, so editing or saving a draft
+Iris settings. Width 0 means native guest resolution and is the default; saved
+320/480/640-pixel widths retain their meaning. Native capture uses the first
+guest frame's exact dimensions and skips scaling when subsequent frames match.
+A recording snapshots settings at start, so editing or saving a draft
 cannot change the current recording. Optional FFmpeg optimization uses two
 bounded-time passes (palette generation, then encoding) to avoid buffering the
 whole video. Only a smaller, decodable result with matching dimensions and

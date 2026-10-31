@@ -245,7 +245,7 @@ fn draw_overlay(
             4 => "Appends to serial.log in this machine's state directory. Timestamps use host UTC.",
             5 => "Bilinear filtering smooths the display when scaled; applies without restart.",
             6 => "Debug: Off, Screen (latest messages), Console (terminal). Applies on Save.",
-            7 => "GIF width preserves the guest aspect ratio. Changes apply to the next recording.",
+            7 => "Native uses the guest screen size; scaled widths are optional. Applies to the next GIF.",
             8 => "GIF sampling rate. Changes apply to the next recording; F6 starts or stops.",
             _ => "FFmpeg optionally optimizes after recording; the built-in GIF is kept on failure.",
         }.into(), "Core options require restart. Turning Tinker off keeps the saved values active.".into()],

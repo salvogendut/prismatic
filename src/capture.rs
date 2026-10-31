@@ -298,6 +298,9 @@ fn save_ppm(directory: &Path, frame: &Frame) -> io::Result<Report> {
 
 fn gif_size(frame: &Frame, width: u16) -> Result<(u16, u16), String> {
     validate_frame(frame)?;
+    if width == 0 {
+        return Ok((frame.width as u16, frame.height as u16));
+    }
     let height = (width as u64 * frame.height as u64 / frame.width as u64).max(1);
     if height > 2048 {
         return Err("Guest aspect ratio is too tall for GIF capture".into());
@@ -310,6 +313,14 @@ fn gif_size(frame: &Frame, width: u16) -> Result<(u16, u16), String> {
 fn scale_rgb(frame: &Frame, (width, height): (u16, u16)) -> Result<Vec<u8>, String> {
     validate_frame(frame)?;
     let (width, height) = (width as usize, height as usize);
+    if (width, height) == (frame.width as usize, frame.height as usize) {
+        // Native capture needs only an RGBA-to-RGB conversion, without scaling.
+        let mut rgb = Vec::with_capacity(width * height * 3);
+        for pixel in frame.rgba.as_chunks::<4>().0 {
+            rgb.extend_from_slice(&pixel[..3]);
+        }
+        return Ok(rgb);
+    }
     let scale = (width as f64 / frame.width as f64).min(height as f64 / frame.height as f64);
     let w = (frame.width as f64 * scale).round().max(1.0) as usize;
     let h = (frame.height as f64 * scale).round().max(1.0) as usize;
@@ -666,6 +677,48 @@ mod tests {
             .is_err()
         );
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn native_gif_preserves_full_guest_dimensions_and_single_pixel_details() {
+        let dir = tempfile::tempdir().unwrap();
+        let (width, height) = (1282, 1024);
+        let mut rgba = [20, 40, 60, 255].repeat(width * height);
+        // These isolated pixels disappear if the frame is scaled down.
+        for (x, y) in [(1, 1), (641, 513), (1281, 1023)] {
+            let offset = (y * width + x) * 4;
+            rgba[offset..offset + 4].copy_from_slice(&[255, 0, 0, 255]);
+        }
+        let frame = Arc::new(Frame {
+            width: width as u32,
+            height: height as u32,
+            rgba,
+        });
+        let settings = GifSettings::default();
+        let size = gif_size(&frame, settings.width).unwrap();
+        assert_eq!(size, (1282, 1024));
+        let (tx, rx) = mpsc::sync_channel(2);
+        drop(tx);
+        let report = save_gif(
+            dir.path(),
+            frame.clone(),
+            size,
+            &settings,
+            rx,
+            Arc::new(Mutex::new(Duration::from_millis(100))),
+        )
+        .unwrap();
+        let mut options = gif::DecodeOptions::new();
+        options.set_color_output(gif::ColorOutput::RGBA);
+        let mut decoder = options
+            .read_info(File::open(&report.path).unwrap())
+            .unwrap();
+        assert_eq!((decoder.width(), decoder.height()), size);
+        assert_eq!(
+            &*decoder.read_next_frame().unwrap().unwrap().buffer,
+            frame.rgba
+        );
+        assert!(decoder.read_next_frame().unwrap().is_none());
     }
 
     #[test]

@@ -64,7 +64,7 @@ Shift+F4/F6/F9/F11/F12: send a bare guest function-key tap while captured
 
 General: machine, RAM, CPU and keyboard. Core changes require restart.
 Tinker > Advanced: resolution, cache, clock offset, SCSI timing, serial and debug output.
-Advanced also sets GIF width (320/480/640), frame rate (10/20/25) and encoder.
+Advanced sets GIF resolution (Native/320/480/640), frame rate (10/20/25) and encoder.
 Captures save the guest display as timestamped PPM/GIF files in the working directory.
 Media: raw/CHD hard disks and ISO9660/EFS/CHD CD-ROMs.
 Boots diskless by default with bundled firmware. Guest audio is not connected yet.

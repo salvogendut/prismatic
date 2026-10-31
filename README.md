@@ -124,10 +124,14 @@ and failures; the LED bar shows **GIF REC - F6 STOP** while recording and
 the active recording before proceeding. Cancelling quit/restart keeps it running.
 
 Use **General > Tinker > Advanced** for GIF resolution, frame rate and encoder.
-Defaults match 1989: **480 pixels wide, 25 fps, built-in encoder**. Saved changes
-apply to the next recording, without restarting Iris. Output height follows
-the guest aspect ratio at recording start; later guest resolution changes fit
-inside that canvas with black borders. Identical frames share a longer delay.
+The default is **Native resolution, 25 fps, built-in encoder**. Native captures
+the guest's exact pixel dimensions at recording start (for example, 1282×1024),
+independently of the window size. Toggle **GIF resolution** between Native and
+320/480/640-pixel widths with Enter, then F9 to save. Existing saved widths stay
+selected until changed. Saved changes apply to the next recording without
+restarting Iris. Scaled widths preserve the guest aspect ratio; later guest
+resolution changes fit inside the recording's initial canvas with black borders.
+Identical frames share a longer delay.
 If encoding falls behind, samples may be skipped while elapsed timing is retained.
 
 **FFmpeg optimize** optionally runs `ffmpeg` from PATH after recording. The
@@ -181,7 +185,7 @@ Turning Tinker off hides the controls without resetting their values.
 | Serial console log | Off, Raw, Timestamped (UTC) | Off |
 | Bilinear filtering | Off, On; applies without restarting | Off |
 | Debug output | Off, Screen, Console; applies without restarting | Off |
-| GIF resolution | 320, 480, 640 pixels wide; preserves guest aspect ratio | 480 |
+| GIF resolution | Native guest resolution, or 320/480/640 pixels wide | Native |
 | GIF frame rate | 10, 20, 25 fps | 25 |
 | GIF encoder | Built-in, FFmpeg optimize (if available) | Built-in |
 
@@ -303,7 +307,7 @@ scsi_deferred_interrupts = true
 serial_logging = "off"
 
 [gif]
-width = 480
+width = 0 # Native guest resolution; alternatively 320, 480 or 640.
 fps = 25
 encoder = "built_in"
 

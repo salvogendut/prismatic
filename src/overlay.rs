@@ -111,10 +111,7 @@ impl Session {
                 ),
                 ("Bilinear filtering", on_off(self.draft.smoothing)),
                 ("Debug output", self.draft.debug_output.label().into()),
-                (
-                    "GIF resolution",
-                    format!("{} px wide (guest aspect ratio)", self.draft.gif.width),
-                ),
+                ("GIF resolution", self.draft.gif.resolution_label()),
                 ("GIF frame rate", format!("{} fps", self.draft.gif.fps)),
                 ("GIF encoder", self.draft.gif.encoder.label().into()),
             ],
@@ -359,7 +356,7 @@ mod tests {
         let Effect::Save(draft) = overlay.key(Key::Options, &live) else {
             panic!("Expected save");
         };
-        assert_eq!(draft.gif.width, 640);
+        assert_eq!(draft.gif.width, 320);
         assert_eq!(draft.gif.fps, 10);
         assert_eq!(draft.gif.encoder, crate::settings::GifEncoder::Ffmpeg);
         assert!(!draft.machine_differs_from(&live));
