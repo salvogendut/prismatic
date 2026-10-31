@@ -9,12 +9,14 @@ following the desktop conventions of the Happy Years emulators
 Prismatic now embeds Iris and starts a **diskless SGI Indy** with an R4400,
 64 MB RAM, Newport graphics and Iris's built-in PROM. The guest framebuffer
 appears in the SDL3 window, with the Happy Years F9 overlay, fullscreen,
-scanlines, filtering and saved desktop preferences.
+scanlines, filtering and saved desktop preferences. SDL keyboard and relative
+mouse input now reach the guest through Iris's PS/2 controller.
 
-**Guest keyboard/mouse input, audio and media configuration are not connected
-yet.** This milestone is PROM startup and display integration, not a usable
-IRIX workstation. With fresh NVRAM and no disk, the PROM normally displays
-"Unable to boot; press any key to continue". Startup errors appear in the window
+**Audio and media configuration are not connected yet.** With fresh NVRAM and
+no disk, the PROM normally displays "Unable to boot; press any key to continue".
+Click the display to capture input, then press Enter to reach the PROM menu.
+Choose **Enter Command Monitor** (5) and try `hinv` to inspect the emulated
+hardware. Startup errors appear in the window
 and terminal; confirmed quit stops the worker and saves the machine's NVRAM before closing.
 
 ## Build and run
@@ -61,13 +63,31 @@ remaining work.
 
 | Key | Action |
 | --- | --- |
+| Click guest display | Capture keyboard and mouse; the capture click is consumed |
+| Ctrl+Enter | Release input and return the pointer to the desktop |
 | F9 | Open options; save and close an open options session |
-| Left / Right | Change section or confirmation choice |
-| Up / Down | Select a row |
-| Enter | Toggle an option or accept a confirmation |
-| Escape | Close options; offer Save / Discard / Cancel if changed |
+| Left / Right (in options/dialogs) | Change section or confirmation choice |
+| Up / Down (in options) | Select a row |
+| Enter (in options/dialogs) | Toggle an option or accept a confirmation |
+| Escape (in options/dialogs) | Close; offer Save / Discard / Cancel if changed |
 | F11 | Toggle fullscreen |
 | F12 / window close | Confirm quit |
+| Shift+F9 / Shift+F11 / Shift+F12 (captured) | Send a bare guest function-key tap |
+
+While captured, other keys, including Escape and the remaining function keys,
+go to the guest. Opening options or a quit confirmation, losing focus, or
+stopping the machine releases capture and any held guest keys/buttons. Click
+the display again to resume input. The host shortcuts remain available when
+input is released. Shift+reserved-function-key sends one unmodified tap, not
+a held key or a Shift combination.
+
+Keyboard input follows **physical key positions**, preserving left/right
+modifiers and the numeric keypad. `--keyboard ansi|iso|jis` selects Iris's
+physical keyboard type (default: ANSI); use `--keyboard iso` for a European
+keyboard. Character layout is determined by the guest. Text paste and IME
+input are not implemented. Left, middle and right mouse buttons are forwarded;
+wheel and extra buttons work when the guest enables the corresponding PS/2
+mouse protocol.
 
 Enable **General > Tinker** to expose Advanced, which currently contains
 bilinear filtering. Options are edited in a private draft and applied only
@@ -89,6 +109,7 @@ cargo clippy --locked --all-targets --no-deps -- -D warnings
 cargo test --locked
 SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --smoke-test
 IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --boot-smoke-test --screenshot /tmp/prismatic-prom.bmp
+IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --input-smoke-test --screenshot /tmp/prismatic-input.bmp
 ```
 
 `--smoke-test` renders three UI frames with the options open and exits without
@@ -98,9 +119,19 @@ the SDL output, and stops Iris. It fails if startup, display output (120-second
 timeout), or shutdown fails. This checks the display path; it does not identify
 PROM text or prove that a complete OS boot works.
 
-The boot command above redirects Iris's draw-shape cache to `/tmp` as well.
-Both tests use temporary preferences unless `--config` is supplied, and neither
-automatically saves frontend options. The boot test always uses temporary
-machine state and rejects `--state-dir`. A screenshot path is accepted only
-with a smoke test. Unit tests cover draft settings, persistence, confirmation
-behavior, framebuffer packing/stride, frame replacement and startup failure.
+`--input-smoke-test` also boots with fresh NVRAM. It queues SDL events to capture
+input, dismiss the boot error, move the pointer, enter the command monitor and
+type `hinv`. It checks release/recapture through Ctrl+Enter, F9 and focus loss,
+then captures the final display and stops. Inspect the screenshot for the
+hardware listing: the test checks routing and capture state but does not read
+PROM text. Omit `SDL_VIDEODRIVER` and `SDL_RENDER_DRIVER` to exercise the native
+desktop window; leave it focused while the scripted test runs.
+
+The machine smoke commands redirect Iris's draw-shape cache to `/tmp` as well.
+All tests use temporary preferences unless `--config` is supplied, and none
+automatically saves frontend options. The boot and input tests always use
+temporary machine state and reject `--state-dir`. A screenshot path is accepted
+only with a smoke test. Unit tests cover draft settings, persistence,
+confirmation behavior, framebuffer packing/stride, frame replacement, startup
+failure, physical key mapping, host/modal routing, PS/2 releases, mouse motion
+and scrolling, and pointer conversion for resized/high-DPI windows.

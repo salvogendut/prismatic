@@ -18,6 +18,8 @@ the display area, leaving room for the optional status strip.
 | --- | --- |
 | `src/main.rs` | CLI, SDL lifecycle, events, texture uploads, asynchronous shutdown, smoke runs |
 | `src/emulator.rs` | Diskless Iris configuration, worker ownership, software frame capture, latest-frame slot, machine status |
+| `src/input.rs` | Host/modal key routing, physical scancode mapping, held guest input, PS/2 delivery |
+| `src/smoke.rs` | Scripted SDL input smoke test through the diskless PROM |
 | `src/overlay.rs` | Draft settings, navigation, modal choices and effects |
 | `src/settings.rs` | Desktop preferences, validation and atomic file replacement |
 | `src/display.rs` | Packed RGBA frame type, startup/UI-preview pixels and aspect-preserving placement |
@@ -80,6 +82,41 @@ The SDL thread takes the frame, releases the lock, recreates the texture when
 dimensions change, and uploads it. Heartbeat-only frames are skipped unless
 Iris requests readback. No SDL renderer or texture crosses threads.
 
+## Input handoff
+
+After starting the devices, the worker publishes an `Arc<Ps2Controller>` from
+`Workstation::get_ps2()`. SDL events use its internally synchronized input API
+directly, without a second event queue or the machine-slot lock. The worker
+withdraws the handle before stop and on failure; the frontend also releases
+capture whenever the machine leaves Running. The retained Arc keeps the
+controller alive during handoff, and Iris ignores events after device stop.
+
+SDL physical scancodes map explicitly to the `winit::keyboard::KeyCode` enum
+currently required by Iris. Prismatic depends on winit only for this API type;
+SDL remains the host event owner. `--keyboard ansi|iso|jis` selects the core's
+physical keyboard type. The guest chooses its character layout. SDL text/IME
+events are not interpreted as key presses.
+
+A left click inside the guest rectangle enables SDL relative mouse mode.
+Hit testing converts window points through renderer pixels to the letterboxed
+logical view, including high-DPI scaling. The capture click is consumed. Only
+captured input reaches the guest. Ctrl+Enter, F9, the quit dialog, focus loss,
+window hiding/minimizing and machine stop release all tracked keys/buttons and
+disable relative mode. Closing an overlay or regaining focus does not recapture.
+
+F9/F11/F12 are host shortcuts. While captured, Shift plus a reserved function
+key sends a bare guest tap by temporarily lifting held modifiers and restoring
+them afterward. Modal navigation consumes keys before guest delivery. Repeats
+are forwarded only for keys first pressed during capture; Iris applies the
+guest's typematic policy. Unmatched key/button releases are ignored.
+
+Relative motion retains fractional counts and splits large deltas into PS/2
+packet-sized steps. Screen-down-positive Y is passed to Iris, which performs
+the PS/2 inversion. Vertical wheel input retains fractional steps and respects
+SDL's flipped direction flag. The core controls mouse protocol negotiation and
+queue coalescing; scrolling/extra buttons require guest support. Horizontal
+scroll, text paste and IME composition remain outside this milestone.
+
 ## Settings and verification
 
 Desktop options are private drafts. The model emits a save request and the
@@ -93,16 +130,19 @@ output after ten additional seconds and requests normal stop. It has a
 Visual inspection of its screenshot establishes what PROM actually displayed;
 a nonuniform-frame check alone does not identify a PROM menu or an OS boot.
 
+The input smoke test uses the same temporary-state lifecycle and deadline. It
+queues SDL events through the normal application loop to enter the command
+monitor and type `hinv`, then checks capture release/recapture and modal entry.
+Its screenshot needs visual inspection to establish the firmware response.
+Unit tests also verify the resulting bytes using a real Iris PS/2 controller,
+including held-state cleanup, modifier restoration and fractional mouse input.
+
 ## Next milestones
 
-1. Connect SDL physical scancodes and relative mouse input to
-   `Workstation::get_ps2()`. Release held guest keys/buttons on focus loss,
-   capture release and overlay entry. Keep modal input and host shortcuts out
-   of the guest, with an explicit way to send guest function keys.
-2. Add SDL audio and feature boundaries for Iris's existing host backends.
+1. Add SDL audio and feature boundaries for Iris's existing host backends.
    Validate Linux, Windows and macOS builds and device behavior.
-3. Add General, Media, Extensions and Tinker-gated Advanced machine controls.
+2. Add General, Media, Extensions and Tinker-gated Advanced machine controls.
    Classify settings as live, next boot or restart-required. Validate before
    applying, confirm disruptive changes and use native media pickers.
-4. Add F4 screenshots, F5 confirmed reset, F6 recording, F7 pause, activity
+3. Add F4 screenshots, F5 confirmed reset, F6 recording, F7 pause, activity
    indicators and window persistence as their backend behavior becomes ready.

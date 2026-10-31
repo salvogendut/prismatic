@@ -43,9 +43,44 @@ pub fn fit(width: u32, height: u32, area: Rect) -> Rect {
     )
 }
 
+/// SDL events use window points; the renderer letterboxes a fixed logical view.
+/// Converting through output pixels also handles high-DPI window/output sizes.
+pub fn window_to_view(
+    point: (f32, f32),
+    window: (u32, u32),
+    output: (u32, u32),
+    view: (u32, u32),
+) -> Option<(f32, f32)> {
+    if [window.0, window.1, output.0, output.1, view.0, view.1].contains(&0) {
+        return None;
+    }
+    let scale = (output.0 as f32 / view.0 as f32).min(output.1 as f32 / view.1 as f32);
+    Some((
+        (point.0 * output.0 as f32 / window.0 as f32
+            - (output.0 as f32 - view.0 as f32 * scale) / 2.0)
+            / scale,
+        (point.1 * output.1 as f32 / window.1 as f32
+            - (output.1 as f32 - view.1 as f32 * scale) / 2.0)
+            / scale,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pointer_conversion_accounts_for_hidpi_and_letterboxing() {
+        assert_eq!(
+            window_to_view((600.0, 360.0), (1200, 720), (2400, 1440), (960, 720)),
+            Some((480.0, 360.0))
+        );
+        assert_eq!(
+            window_to_view((100.0, 360.0), (1200, 720), (2400, 1440), (960, 720)),
+            Some((-20.0, 360.0))
+        );
+        assert_eq!(window_to_view((0.0, 0.0), (0, 0), (0, 0), (960, 720)), None);
+    }
 
     #[test]
     fn guest_aspect_ratio_is_preserved_inside_status_strip_area() {

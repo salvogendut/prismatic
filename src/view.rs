@@ -20,6 +20,20 @@ const MUTED: Color = Color::RGB(170, 190, 215);
 pub struct Presentation<'a> {
     pub status: &'a str,
     pub placeholder: Option<&'a str>,
+    pub captured: bool,
+}
+
+pub fn guest_rect(frame: &Frame, settings: &Settings) -> Rect {
+    fit(
+        frame.width,
+        frame.height,
+        Rect::new(
+            0,
+            0,
+            WIDTH,
+            HEIGHT - if settings.show_status { 36 } else { 0 },
+        ),
+    )
 }
 
 fn text(
@@ -61,7 +75,7 @@ pub fn draw(
         WIDTH,
         HEIGHT - if settings.show_status { 36 } else { 0 },
     );
-    let destination = fit(frame.width, frame.height, area);
+    let destination = guest_rect(frame, settings);
     canvas.copy(texture, None, destination)?;
     canvas.set_blend_mode(BlendMode::Blend);
     if settings.scanlines {
@@ -94,10 +108,14 @@ pub fn draw(
             canvas,
             16,
             HEIGHT as i32 - 22,
-            "F9 Options   F11 Fullscreen   F12 Quit",
+            if presentation.captured {
+                "Ctrl+Enter Release | F9 Options | F11 Full | F12 Quit"
+            } else {
+                "Click display to capture | F9 Options | F11 Full | F12 Quit"
+            },
             TEXT,
         )?;
-        text(canvas, 640, HEIGHT as i32 - 22, presentation.status, MUTED)?;
+        text(canvas, 704, HEIGHT as i32 - 22, presentation.status, MUTED)?;
     }
 
     if let Some(session) = &overlay.session {
@@ -170,7 +188,7 @@ pub fn draw(
                     "Prismatic - Happy Years interface for Iris",
                     "Rust / SDL3",
                     "Iris Indy / R4400 / Newport - diskless embedded PROM boot.",
-                    "Guest input, audio and media configuration are not connected yet.",
+                    "Click captures input; Ctrl+Enter releases. Shift+F9/F11/F12: guest key.",
                 ]
                 .iter()
                 .enumerate()

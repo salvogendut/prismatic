@@ -2,9 +2,10 @@
 use crate::display::Frame;
 use iris::{
     compositor::SwCompositor,
-    config::{CpuModel, GraphicsBoard, MachineConfig, MachineProfile, banks_from4},
+    config::{CpuModel, GraphicsBoard, KeyboardLayout, MachineConfig, MachineProfile, banks_from4},
     debug_overlay::DebugOverlay,
     dev::ng1::rex3::Renderer,
+    dev::ps2::Ps2Controller,
     disp::{BarStats, FB_MAX_H, FB_STRIDE, Rex3Screen, StatusBar, StatusBarTexture},
     workstation::{MachineSlot, Workstation},
 };
@@ -136,7 +137,7 @@ fn pack_frame(pixels: &[u32], width: usize, height: usize, stride: usize) -> Fra
     }
 }
 
-fn diskless_config(state_dir: &Path) -> Result<MachineConfig, String> {
+fn diskless_config(state_dir: &Path, keyboard: KeyboardLayout) -> Result<MachineConfig, String> {
     let path = |name: &str| {
         state_dir
             .join(name)
@@ -153,6 +154,7 @@ fn diskless_config(state_dir: &Path) -> Result<MachineConfig, String> {
         scsi: Default::default(),
         no_audio: true,
         headless: false,
+        keyboard,
         // Ephemeral loopback ports avoid collisions with another Iris instance.
         monitor_port: Some(0),
         serial_port_a: Some(0),
@@ -205,17 +207,20 @@ pub struct Emulator {
     status: Arc<Mutex<Status>>,
     stop: mpsc::SyncSender<()>,
     thread: Option<JoinHandle<()>>,
+    input: Arc<Mutex<Option<Arc<Ps2Controller>>>>,
 }
 
 impl Emulator {
-    pub fn spawn(state_dir: &Path) -> Result<Self, String> {
-        let config = diskless_config(state_dir)?;
+    pub fn spawn(state_dir: &Path, keyboard: KeyboardLayout) -> Result<Self, String> {
+        let config = diskless_config(state_dir, keyboard)?;
         let state_dir = state_dir.to_owned();
         let frames = FrameSlot::default();
         let status = Arc::new(Mutex::new(Status::default()));
         let (stop, receiver) = mpsc::sync_channel(1);
         let worker_frames = frames.clone();
         let worker_status = status.clone();
+        let input = Arc::new(Mutex::new(None));
+        let worker_input = input.clone();
         let thread = thread::Builder::new()
             .name("prismatic-iris".into())
             .stack_size(64 * 1024 * 1024)
@@ -239,6 +244,7 @@ impl Emulator {
                             if !owned.machine.cpu_is_running() {
                                 owned.machine.cpu_start();
                             }
+                            *worker_input.lock().unwrap() = Some(owned.machine.get_ps2());
                         } else {
                             return Ok(());
                         }
@@ -262,9 +268,11 @@ impl Emulator {
                         }
                     }
                     worker_status.lock().unwrap().phase = Phase::Stopping;
+                    *worker_input.lock().unwrap() = None;
                     owned.stop();
                     Ok(())
                 }));
+                *worker_input.lock().unwrap() = None;
                 let phase = match result {
                     Ok(Ok(())) => Phase::Stopped,
                     Ok(Err(error)) => Phase::Failed(error),
@@ -278,11 +286,16 @@ impl Emulator {
             status,
             stop,
             thread: Some(thread),
+            input,
         })
     }
 
     pub fn status(&self) -> Status {
         self.status.lock().unwrap().clone()
+    }
+
+    pub fn input(&self) -> Option<Arc<Ps2Controller>> {
+        self.input.lock().unwrap().clone()
     }
 
     pub fn request_stop(&self) {
@@ -327,7 +340,8 @@ mod tests {
     #[test]
     fn diskless_profile_never_uses_default_media_or_cwd_state() {
         let directory = tempfile::tempdir().unwrap();
-        let config = diskless_config(directory.path()).unwrap();
+        let config = diskless_config(directory.path(), KeyboardLayout::Iso).unwrap();
+        assert_eq!(config.keyboard, KeyboardLayout::Iso);
         assert!(config.scsi.is_empty());
         assert!(config.prom.is_empty());
         assert_eq!(
@@ -375,7 +389,8 @@ mod tests {
     #[test]
     fn startup_failure_is_reported_without_blocking_the_caller() {
         let file = tempfile::NamedTempFile::new().unwrap();
-        let mut emulator = Emulator::spawn(&file.path().join("invalid")).unwrap();
+        let mut emulator =
+            Emulator::spawn(&file.path().join("invalid"), KeyboardLayout::Ansi).unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while !emulator.finished() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));

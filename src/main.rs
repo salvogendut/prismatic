@@ -1,14 +1,18 @@
 mod display;
 mod emulator;
+mod input;
 mod overlay;
 mod settings;
+mod smoke;
 mod view;
 
 use emulator::{Emulator, Phase, Status};
+use input::{GuestInput, KeyRoute};
+use iris::config::KeyboardLayout;
 use overlay::{Effect, Key, Overlay};
 use sdl3::{
     event::{Event, WindowEvent},
-    keyboard::Keycode,
+    mouse::{MouseButton, MouseWheelDirection},
     pixels::PixelFormat,
     render::ScaleMode,
 };
@@ -24,8 +28,10 @@ struct Options {
     config: Option<PathBuf>,
     smoke_test: bool,
     boot_smoke_test: bool,
+    input_smoke_test: bool,
     state_dir: Option<PathBuf>,
     screenshot: Option<PathBuf>,
+    keyboard: KeyboardLayout,
 }
 
 impl Options {
@@ -36,7 +42,7 @@ impl Options {
             match arg.to_str() {
                 Some("--help" | "-h") => {
                     println!(
-                        "Prismatic - Happy Years interface for Iris\n\nUsage: prismatic [--config PATH] [--state-dir PATH] [--smoke-test | --boot-smoke-test] [--screenshot PATH.bmp]\n\nF9 Options  F11 Fullscreen  F12 Quit\n\nBoots a diskless Indy using the embedded PROM. Guest input and audio are not connected yet.\n--smoke-test renders the UI without starting Iris.\n--boot-smoke-test waits for guest display output, captures after ten more seconds, and stops Iris.\n--state-dir overrides the directory for machine NVRAM.\n--config overrides the desktop preferences path."
+                        "Prismatic - Happy Years interface for Iris\n\nUsage: prismatic [--config PATH] [--state-dir PATH] [--keyboard ansi|iso|jis] [--smoke-test | --boot-smoke-test | --input-smoke-test] [--screenshot PATH.bmp]\n\nClick display: capture input  Ctrl+Enter: release\nF9 Options  F11 Fullscreen  F12 Quit\nShift+F9/F11/F12: send a bare guest function-key tap while captured\n\nBoots a diskless Indy using the embedded PROM. Audio is not connected yet.\n--keyboard selects the physical keyboard type (default: ansi).\n--smoke-test renders the UI without starting Iris.\n--boot-smoke-test waits for guest display output, captures after ten more seconds, and stops Iris.\n--input-smoke-test drives the PROM through SDL events, checks capture, and stops Iris.\n--state-dir overrides the directory for machine NVRAM.\n--config overrides the desktop preferences path."
                     );
                     return Ok(None);
                 }
@@ -49,6 +55,15 @@ impl Options {
                 }
                 Some("--smoke-test") => options.smoke_test = true,
                 Some("--boot-smoke-test") => options.boot_smoke_test = true,
+                Some("--input-smoke-test") => options.input_smoke_test = true,
+                Some("--keyboard") => {
+                    options.keyboard = match args.next().as_deref().and_then(|arg| arg.to_str()) {
+                        Some("ansi") => KeyboardLayout::Ansi,
+                        Some("iso") => KeyboardLayout::Iso,
+                        Some("jis") => KeyboardLayout::Jis,
+                        _ => return Err("--keyboard requires ansi, iso or jis".into()),
+                    };
+                }
                 Some("--state-dir") => {
                     options.state_dir =
                         Some(args.next().ok_or("--state-dir requires a path")?.into());
@@ -65,39 +80,49 @@ impl Options {
                 }
             }
         }
-        if options.smoke_test && options.boot_smoke_test {
-            return Err("Choose either --smoke-test or --boot-smoke-test".into());
+        if [
+            options.smoke_test,
+            options.boot_smoke_test,
+            options.input_smoke_test,
+        ]
+        .into_iter()
+        .filter(|&set| set)
+        .count()
+            > 1
+        {
+            return Err("Choose only one smoke test".into());
         }
-        if options.screenshot.is_some() && !options.smoke_test && !options.boot_smoke_test {
-            return Err("--screenshot requires --smoke-test or --boot-smoke-test".into());
+        if options.screenshot.is_some()
+            && !options.smoke_test
+            && !options.boot_smoke_test
+            && !options.input_smoke_test
+        {
+            return Err("--screenshot requires a smoke test".into());
         }
-        if options.boot_smoke_test && options.state_dir.is_some() {
+        if (options.boot_smoke_test || options.input_smoke_test) && options.state_dir.is_some() {
             return Err(
-                "--boot-smoke-test always uses temporary machine state; omit --state-dir".into(),
+                "Boot/input smoke tests always use temporary machine state; omit --state-dir"
+                    .into(),
             );
         }
         Ok(Some(options))
     }
 }
 
-fn keycode(key: Keycode) -> Option<Key> {
-    Some(match key {
-        Keycode::F9 => Key::Options,
-        Keycode::Escape => Key::Escape,
-        Keycode::Return | Keycode::KpEnter => Key::Enter,
-        Keycode::Left => Key::Left,
-        Keycode::Right => Key::Right,
-        Keycode::Up => Key::Up,
-        Keycode::Down => Key::Down,
-        Keycode::F12 => Key::Quit,
-        _ => return None,
-    })
+fn release_input(
+    guest: &mut GuestInput,
+    mouse: &sdl3::mouse::MouseUtil,
+    window: &sdl3::video::Window,
+) {
+    guest.release();
+    mouse.set_relative_mouse_mode(window, false);
 }
 
 fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let sdl = sdl3::init()?;
     let video = sdl.video()?;
-    let testing = options.smoke_test || options.boot_smoke_test;
+    let machine_smoke = options.boot_smoke_test || options.input_smoke_test;
+    let testing = options.smoke_test || machine_smoke;
     // Keep test preferences and NVRAM away from the normal machine state.
     let temporary = if testing {
         Some(tempfile::tempdir()?)
@@ -140,11 +165,16 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let mut emulator = if options.smoke_test {
         None
     } else {
-        Some(Emulator::spawn(&state_dir)?)
+        Some(Emulator::spawn(&state_dir, options.keyboard)?)
     };
+    let mouse = sdl.mouse();
+    let mut guest = GuestInput::default();
     let mut status = Status::default();
     let mut events = sdl.event_pump()?;
+    let event_sender = sdl.event()?;
+    let mut input_smoke = smoke::InputSmoke::default();
     let mut fullscreen = false;
+    let mut title_captured = false;
     let mut toast: Option<(String, Instant)> = None;
     let mut redraw = true;
     let mut frames = 0;
@@ -155,6 +185,10 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let mut failure: Option<String> = None;
 
     loop {
+        guest.attach(emulator.as_ref().and_then(Emulator::input));
+        if !guest.captured && mouse.relative_mouse_mode(canvas.window()) {
+            mouse.set_relative_mouse_mode(canvas.window(), false);
+        }
         let timeout = if options.smoke_test {
             1
         } else if emulator.is_some() {
@@ -174,35 +208,115 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                     win_event: WindowEvent::CloseRequested,
                     ..
                 } => Some(Key::Quit),
+                Event::Window {
+                    win_event: WindowEvent::FocusLost | WindowEvent::Hidden | WindowEvent::Minimized,
+                    ..
+                } => {
+                    release_input(&mut guest, &mouse, canvas.window());
+                    None
+                }
                 Event::KeyDown {
-                    keycode: Some(key),
+                    scancode: Some(scan),
+                    keymod,
                     repeat,
                     ..
                 } => {
-                    if repeat
-                        && !matches!(
-                            key,
-                            Keycode::Left | Keycode::Right | Keycode::Up | Keycode::Down
-                        )
-                    {
-                        continue;
+                    let modal = overlay.session.is_some() || overlay.dialog.is_some();
+                    match input::route_key(scan, keymod, repeat, guest.captured, modal) {
+                        KeyRoute::Guest => {
+                            guest.key(scan, true, repeat);
+                            None
+                        }
+                        KeyRoute::FunctionTap => {
+                            guest.function_tap(scan);
+                            None
+                        }
+                        KeyRoute::Release => {
+                            release_input(&mut guest, &mouse, canvas.window());
+                            None
+                        }
+                        KeyRoute::Ignore => None,
+                        KeyRoute::Host(key) => Some(key),
+                        KeyRoute::Fullscreen => {
+                            match canvas.window_mut().set_fullscreen(!fullscreen) {
+                                Ok(()) => fullscreen = !fullscreen,
+                                Err(e) => {
+                                    eprintln!("{e}");
+                                    toast =
+                                        Some((format!("Fullscreen failed: {e}"), Instant::now()));
+                                }
+                            }
+                            None
+                        }
                     }
-                    if key == Keycode::F11 {
-                        match canvas.window_mut().set_fullscreen(!fullscreen) {
-                            Ok(()) => fullscreen = !fullscreen,
-                            Err(e) => {
-                                eprintln!("{e}");
-                                toast = Some((format!("Fullscreen failed: {e}"), Instant::now()));
+                }
+                Event::KeyUp {
+                    scancode: Some(scan),
+                    ..
+                } => {
+                    guest.key(scan, false, false);
+                    None
+                }
+                Event::MouseButtonDown {
+                    mouse_btn, x, y, ..
+                } => {
+                    if guest.captured {
+                        guest.button(mouse_btn, true);
+                    } else if mouse_btn == MouseButton::Left
+                        && guest.available()
+                        && guest_frame_received
+                        && status.phase == Phase::Running
+                        && overlay.session.is_none()
+                        && overlay.dialog.is_none()
+                    {
+                        let point = display::window_to_view(
+                            (x, y),
+                            canvas.window().size(),
+                            canvas.output_size()?,
+                            (view::WIDTH, view::HEIGHT),
+                        );
+                        let area = view::guest_rect(&frame, &settings);
+                        if point.is_some_and(|(x, y)| {
+                            x >= area.x() as f32
+                                && y >= area.y() as f32
+                                && x < area.right() as f32
+                                && y < area.bottom() as f32
+                        }) {
+                            mouse.set_relative_mouse_mode(canvas.window(), true);
+                            if mouse.relative_mouse_mode(canvas.window()) {
+                                guest.capture();
+                            } else {
+                                toast = Some((
+                                    format!("Mouse capture failed: {}", sdl3::get_error()),
+                                    Instant::now(),
+                                ));
                             }
                         }
-                        None
-                    } else {
-                        keycode(key)
                     }
+                    None
+                }
+                Event::MouseButtonUp { mouse_btn, .. } => {
+                    guest.button(mouse_btn, false);
+                    None
+                }
+                Event::MouseMotion { xrel, yrel, .. } => {
+                    guest.motion(xrel, yrel);
+                    None
+                }
+                Event::MouseWheel { y, direction, .. } => {
+                    guest.scroll(if direction == MouseWheelDirection::Flipped {
+                        -y
+                    } else {
+                        y
+                    });
+                    None
                 }
                 _ => None,
             };
             if let Some(key) = key {
+                if matches!(key, Key::Options | Key::Quit) {
+                    release_input(&mut guest, &mouse, canvas.window());
+                }
                 match overlay.key(key, &settings) {
                     Effect::None => {}
                     Effect::Quit => {
@@ -240,11 +354,14 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                         "Iris failed. See terminal for details; F12 closes the window.".into(),
                         Instant::now(),
                     ));
-                    if options.boot_smoke_test {
+                    if machine_smoke {
                         stopping = Some(Instant::now());
                     }
                 }
                 status = next;
+                if status.phase != Phase::Running {
+                    release_input(&mut guest, &mouse, canvas.window());
+                }
                 redraw = true;
             }
             if let Some(next) = machine.frames.take() {
@@ -256,7 +373,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                     )?;
                 }
                 texture.update(None, &next.rgba, next.width as usize * 4)?;
-                if options.boot_smoke_test && first_content.is_none() && has_picture(&next) {
+                if machine_smoke && first_content.is_none() && has_picture(&next) {
                     first_content = Some(Instant::now());
                     eprintln!(
                         "Prismatic: guest display content received ({}x{})",
@@ -268,17 +385,46 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 redraw = true;
             }
         }
-        if options.boot_smoke_test
-            && stopping.is_none()
-            && started.elapsed() >= Duration::from_secs(120)
-        {
-            failure = Some("PROM display smoke test timed out after 120 seconds".into());
+        if machine_smoke && stopping.is_none() && started.elapsed() >= Duration::from_secs(120) {
+            failure = Some("PROM smoke test timed out after 120 seconds".into());
             stopping = Some(Instant::now());
             redraw = true;
         }
-        let capture_boot = options.boot_smoke_test
+        let input_done = if options.input_smoke_test
             && stopping.is_none()
-            && first_content.is_some_and(|time| time.elapsed() >= Duration::from_secs(10));
+            && let Some(time) = first_content
+        {
+            match input_smoke.advance(
+                time.elapsed(),
+                &event_sender,
+                canvas.window(),
+                guest.captured,
+                overlay.session.is_some() || overlay.dialog.is_some(),
+            ) {
+                Ok(done) => done,
+                Err(error) => {
+                    failure = Some(error);
+                    stopping = Some(Instant::now());
+                    redraw = true;
+                    false
+                }
+            }
+        } else {
+            false
+        };
+        let capture_boot = (options.boot_smoke_test
+            && stopping.is_none()
+            && first_content.is_some_and(|time| time.elapsed() >= Duration::from_secs(10)))
+            || input_done;
+        if guest.captured != title_captured {
+            canvas.window_mut().set_title(if guest.captured {
+                "Prismatic - Input captured (Ctrl+Enter releases)"
+            } else {
+                "Prismatic - Happy Years"
+            })?;
+            title_captured = guest.captured;
+            redraw = true;
+        }
         if toast
             .as_ref()
             .is_some_and(|(_, time)| time.elapsed() >= Duration::from_secs(4))
@@ -316,6 +462,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 view::Presentation {
                     status: label,
                     placeholder,
+                    captured: guest.captured,
                 },
             )?;
             frames += 1;
@@ -328,7 +475,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             redraw = false;
         }
         if capture_boot {
-            eprintln!("Prismatic: PROM display smoke test captured; stopping Iris");
+            eprintln!("Prismatic: PROM smoke test captured; stopping Iris");
             stopping = Some(Instant::now());
             redraw = true;
         }
@@ -336,6 +483,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
         if let Some(time) = stopping {
+            release_input(&mut guest, &mouse, canvas.window());
             if let Some(machine) = &mut emulator {
                 machine.request_stop();
                 if machine.finished() {
