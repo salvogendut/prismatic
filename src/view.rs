@@ -17,6 +17,11 @@ const SELECTED: Color = Color::RGB(0x80, 0x60, 0x20);
 const TEXT: Color = Color::RGB(240, 240, 240);
 const MUTED: Color = Color::RGB(170, 190, 215);
 
+pub struct Presentation<'a> {
+    pub status: &'a str,
+    pub placeholder: Option<&'a str>,
+}
+
 fn text(
     canvas: &mut WindowCanvas,
     x: i32,
@@ -46,6 +51,7 @@ pub fn draw(
     settings: &Settings,
     overlay: &Overlay,
     notification: Option<&str>,
+    presentation: Presentation<'_>,
 ) -> Result<(), sdl3::Error> {
     canvas.set_draw_color(Color::RGB(5, 8, 14));
     canvas.clear();
@@ -67,24 +73,20 @@ pub fn draw(
             )?;
         }
     }
-    let x = 256;
-    let y = area.height() as i32 / 2 - 56;
-    text(canvas, x, y, "P R I S M A T I C", TEXT)?;
-    text(canvas, x, y + 28, "Happy Years / SGI", BORDER)?;
-    text(
-        canvas,
-        x,
-        y + 68,
-        "Display preview - no machine connected",
-        MUTED,
-    )?;
-    text(
-        canvas,
-        x,
-        y + 92,
-        "F9 Options     F11 Fullscreen     F12 Quit",
-        MUTED,
-    )?;
+    if let Some(message) = presentation.placeholder {
+        let x = 256;
+        let y = area.height() as i32 / 2 - 56;
+        text(canvas, x, y, "P R I S M A T I C", TEXT)?;
+        text(canvas, x, y + 28, "Happy Years / SGI", BORDER)?;
+        text(canvas, x, y + 68, message, MUTED)?;
+        text(
+            canvas,
+            x,
+            y + 92,
+            "F9 Options     F11 Fullscreen     F12 Quit",
+            MUTED,
+        )?;
+    }
 
     if settings.show_status {
         fill(canvas, Rect::new(0, (HEIGHT - 36) as i32, WIDTH, 36), PANEL)?;
@@ -95,13 +97,7 @@ pub fn draw(
             "F9 Options   F11 Fullscreen   F12 Quit",
             TEXT,
         )?;
-        text(
-            canvas,
-            664,
-            HEIGHT as i32 - 22,
-            "PRISMATIC 0.1 / PREVIEW",
-            MUTED,
-        )?;
+        text(canvas, 640, HEIGHT as i32 - 22, presentation.status, MUTED)?;
     }
 
     if let Some(session) = &overlay.session {
@@ -173,8 +169,8 @@ pub fn draw(
                 for (index, line) in [
                     "Prismatic - Happy Years interface for Iris",
                     "Rust / SDL3",
-                    "Frontend foundation: display preview and desktop options.",
-                    "Iris machine, input and audio integration is not implemented yet.",
+                    "Iris Indy / R4400 / Newport - diskless embedded PROM boot.",
+                    "Guest input, audio and media configuration are not connected yet.",
                 ]
                 .iter()
                 .enumerate()
@@ -209,7 +205,7 @@ pub fn draw(
             ),
             Dialog::Quit { confirm } => (
                 "Quit Prismatic?",
-                "Any unsaved options will be discarded.",
+                "Stop the machine and discard any unsaved options?",
                 vec!["Quit", "Cancel"],
                 usize::from(!confirm),
             ),

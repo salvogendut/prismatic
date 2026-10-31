@@ -14,6 +14,10 @@
   not block the UI. Do not use unbounded queues for video or audio.
 - Do not claim preview controls implement emulation. Keep README status and
   `docs/architecture.md` accurate as integration progresses.
-- Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`,
+- Run `cargo fmt -p prismatic --check`,
+  `cargo clippy --locked --all-targets --no-deps -- -D warnings`,
   `cargo test --locked` and the dummy-video smoke test for frontend changes.
   Add focused tests for behavior and failure paths, not drawing constants.
+- For lifecycle or display changes, also run the diskless PROM smoke test in
+  README.md. Its environment override keeps Iris's shader corpus in `/tmp`.
+  Avoid `cargo fmt --all`: it follows path dependencies into the Iris checkout.

@@ -1,7 +1,7 @@
 use sdl3::rect::Rect;
 
 // The SDL side accepts packed RGBA bytes, with no dependency on Iris internals.
-// A future Iris renderer will publish frames in this format on its refresh thread.
+// Iris publishes frames in this format from its refresh thread.
 pub struct Frame {
     pub width: u32,
     pub height: u32,

@@ -6,10 +6,23 @@ publish = false
 description = "A Happy Years desktop frontend for the Iris SGI emulator"
 
 [dependencies]
+iris = { path = "../iris" }
 sdl3 = "0.20"
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 tempfile = "3"
+
+# Cargo only applies patches declared by the root package. Preserve the fork's
+# patched host dependencies when embedding Iris from this separate repository.
+[patch.crates-io]
+winit = { path = "../iris/third_party/winit-0.30.13" }
+block = { path = "../iris/third_party/block-0.1.6" }
+
+[profile.dev.package.iris]
+opt-level = 2
+
+[profile.test.package.iris]
+opt-level = 2
 
 [lints.rust]
 unsafe_code = "forbid"
