@@ -1,5 +1,5 @@
 use crate::media::{MediaKind, Medium};
-use crate::settings::Settings;
+use crate::settings::{Settings, WindowScale};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
@@ -135,6 +135,15 @@ pub struct Overlay {
 }
 
 impl Overlay {
+    /// A separately saved window preference must survive Save and Discard,
+    /// without changing whether the rest of this session has unsaved edits.
+    pub fn window_scale_saved(&mut self, scale: WindowScale) {
+        if let Some(session) = &mut self.session {
+            session.original.window_scale = scale;
+            session.draft.window_scale = scale;
+        }
+    }
+
     pub fn picked(&mut self, id: u8, medium: Medium) {
         if let Some(session) = &mut self.session {
             session.draft.media.devices.insert(id, medium);
@@ -295,6 +304,43 @@ impl Overlay {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_window_scale_preserves_clean_and_dirty_menu_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prismatic.cfg");
+        let mut live = Settings::default();
+        let mut overlay = Overlay::default();
+        overlay.key(Key::Options, &live);
+        let scale = live.window_scale.step(true);
+        live.save_window_scale(&path, scale).unwrap();
+        overlay.window_scale_saved(scale);
+        assert!(!overlay.session.as_ref().unwrap().dirty());
+        overlay.key(Key::Escape, &live);
+        assert!(overlay.session.is_none());
+
+        overlay.key(Key::Options, &live);
+        overlay.key(Key::Down, &live);
+        overlay.key(Key::Enter, &live);
+        let draft_ram = overlay.session.as_ref().unwrap().draft.machine.ram_mb;
+        let scale = scale.step(true);
+        live.save_window_scale(&path, scale).unwrap();
+        overlay.window_scale_saved(scale);
+        assert!(overlay.session.as_ref().unwrap().dirty());
+        assert_eq!(Settings::load(&path).unwrap(), live);
+        let Effect::Save(draft) = overlay.key(Key::Options, &live) else {
+            panic!("Expected a Save draft");
+        };
+        assert_eq!(draft.window_scale, scale);
+        assert_eq!(draft.machine.ram_mb, draft_ram);
+        overlay.key(Key::Escape, &live);
+        overlay.key(Key::Left, &live); // Discard.
+        overlay.key(Key::Enter, &live);
+        assert!(overlay.session.is_none());
+        assert_eq!(Settings::load(&path).unwrap(), live);
+        assert_eq!(live.window_scale, scale);
+        assert_eq!(live.machine, Settings::default().machine);
+    }
 
     #[test]
     fn debug_changes_are_drafts_until_saved_and_discard_restores_output() {

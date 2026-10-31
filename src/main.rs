@@ -61,6 +61,7 @@ Usage: prismatic [--config PATH] [--state-dir PATH] [--keyboard ansi|iso|jis]
 Click display: capture input  Ctrl+Enter: release
 F4 Screenshot  F6 Start/stop GIF  F9 Options  F11 Fullscreen  F12 Quit
 Shift+F4/F6/F9/F11/F12: send a bare guest function-key tap while captured
+Ctrl+Plus/Minus (also Ctrl+= and keypad +/-): scale window by 25% and save
 
 General: machine, RAM, CPU and keyboard. Core changes require restart.
 Tinker > Advanced: resolution, cache, clock offset, SCSI timing, serial and debug output.
@@ -213,8 +214,9 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     if machine_smoke && !active.media.devices.is_empty() {
         return Err("Machine smoke tests start with disconnected media".into());
     }
+    let (width, height) = settings.window_scale.dimensions(view::WIDTH, view::HEIGHT);
     let mut window = video
-        .window("Prismatic - Happy Years", view::WIDTH, view::HEIGHT)
+        .window("Prismatic - Happy Years", width, height)
         .position_centered()
         .resizable()
         .high_pixel_density()
@@ -262,6 +264,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut generation = 0;
     let mut fullscreen = false;
+    let mut pending_window_scale = false;
     let mut title_captured = false;
     let mut toast: Option<(String, Instant)> = None;
     let mut redraw = true;
@@ -348,12 +351,17 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Event::KeyDown {
                     scancode: Some(scan),
+                    keycode,
                     keymod,
                     repeat,
                     ..
                 } => {
                     let modal = overlay.session.is_some() || overlay.dialog.is_some();
-                    match input::route_key(scan, keymod, repeat, guest.captured, modal) {
+                    let route = input::scale_shortcut(scan, keycode, keymod, repeat)
+                        .unwrap_or_else(|| {
+                            input::route_key(scan, keymod, repeat, guest.captured, modal)
+                        });
+                    match route {
                         KeyRoute::Guest => {
                             guest.key(scan, true, repeat);
                             None
@@ -368,6 +376,32 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                         }
                         KeyRoute::Ignore => None,
                         KeyRoute::Host(key) => Some(key),
+                        KeyRoute::WindowScale(increase) => {
+                            let scale = settings.window_scale.step(increase);
+                            match settings.save_window_scale(&path, scale) {
+                                Ok(()) => {
+                                    overlay.window_scale_saved(scale);
+                                    pending_window_scale = true;
+                                    let suffix = if fullscreen {
+                                        " (after fullscreen)"
+                                    } else {
+                                        ""
+                                    };
+                                    toast = Some((
+                                        format!("Window scale: {}%{suffix}", scale.percent()),
+                                        Instant::now(),
+                                    ));
+                                }
+                                Err(error) => {
+                                    eprintln!("Prismatic: {error}");
+                                    toast = Some((
+                                        "Could not save window scale; see terminal".into(),
+                                        Instant::now(),
+                                    ));
+                                }
+                            }
+                            None
+                        }
                         KeyRoute::Screenshot => {
                             let result = if guest_frame_received {
                                 captures.screenshot(frame.clone())
@@ -524,7 +558,41 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        if let Some((draft, confirmed)) = ready_save {
+        // Fullscreen/maximize transitions can be asynchronous. Keep pumping SDL
+        // until the window is floating before requesting its saved dimensions.
+        if pending_window_scale
+            && !fullscreen
+            && canvas.window().fullscreen_state() == sdl3::video::FullscreenType::Off
+            && !canvas.window().is_minimized()
+        {
+            let result = if canvas.window().is_maximized() {
+                if canvas.window_mut().restore() {
+                    Ok(())
+                } else {
+                    Err(sdl3::get_error().to_string())
+                }
+            } else {
+                pending_window_scale = false;
+                let (width, height) = settings.window_scale.dimensions(view::WIDTH, view::HEIGHT);
+                canvas
+                    .window_mut()
+                    .set_size(width, height)
+                    .map_err(|e| e.to_string())
+            };
+            if let Err(error) = result {
+                pending_window_scale = false;
+                eprintln!("Prismatic: window resize failed: {error}");
+                toast = Some((
+                    "Scale saved; window resize failed. See terminal".into(),
+                    Instant::now(),
+                ));
+            }
+            redraw = true;
+        }
+        if let Some((mut draft, confirmed)) = ready_save {
+            // File validation runs off-thread and may return a snapshot from
+            // before a scaling shortcut. Retain the separately saved scale.
+            draft.window_scale = settings.window_scale;
             overlay.busy = false;
             let needs_restart = !options.smoke_test
                 && (draft.machine_differs_from(&active)

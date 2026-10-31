@@ -106,6 +106,23 @@ The SDL thread takes the frame, releases the lock, recreates the texture when
 dimensions change, and uploads it. Heartbeat-only frames are skipped unless
 Iris requests readback. No SDL renderer or texture crosses threads.
 
+Ctrl+Plus/Minus requests a window size relative to the 960×720 logical view,
+in quarter steps from 0.75 to 4.0. `WindowScale` stores exact integer quarter
+steps and serializes as the `window_scale` TOML factor; older files default to
+1.0. Startup uses the saved factor before creating the SDL window. Resizing
+does not change the logical view, guest framebuffer, hit-testing transform or
+capture resolution. Window managers may constrain requested dimensions.
+
+Scaling shortcuts save live preferences atomically before requesting a resize.
+A failed save leaves both the live factor and window size unchanged. The saved
+factor is copied into both the original and draft menu snapshots, preserving
+unrelated edits and the session's dirty state. Completed asynchronous media
+validation also merges the latest live factor before saving its older snapshot.
+Thus menu Save, Discard and delayed validation cannot overwrite a newer scale.
+Fullscreen defers the resize until windowed mode; maximized windows first
+request restore. The main loop waits for the relevant SDL state without blocking
+on a window synchronization call, then requests the saved dimensions.
+
 ## Media and activity
 
 Media maps controller 0 targets 1–7 to an explicit disk/CD type and image path.
@@ -215,6 +232,11 @@ captured input reaches the guest. Ctrl+Enter, F9, the quit dialog, focus loss,
 window hiding/minimizing and machine stop release all tracked keys/buttons and
 disable relative mode. Closing an overlay or regaining focus does not recapture.
 
+Ctrl+Plus/Minus are host shortcuts even with menus open or input captured.
+Host key symbols recognize non-US layouts, Ctrl+= and keypad plus/minus;
+Alt/GUI combinations and autorepeats do not trigger scaling. Guest key mapping
+continues to use physical scancodes.
+
 F4/F6/F9/F11/F12 are host shortcuts. While captured, Shift plus a reserved function
 key sends a bare guest tap by temporarily lifting held modifiers and restoring
 them afterward. Modal navigation consumes keys before guest delivery. Repeats
@@ -230,7 +252,8 @@ scroll, text paste and IME composition remain outside this milestone.
 
 ## Settings and verification
 
-Desktop, hardware and media options are private drafts. `prismatic.cfg` uses
+Menu desktop, hardware and media options are private drafts; window scale is an
+immediate, separately saved shortcut preference. `prismatic.cfg` uses
 TOML and persists `[machine]`, `[advanced]` and `[media.devices.ID]` alongside
 display preferences. First launch creates the file in SDL's preference directory;
 `--config` selects another path. An existing default `prismatic.toml` migrates
@@ -326,5 +349,4 @@ preservation, invalid log targets and restart detection independent of UI flags.
    Classify settings as live, next boot or restart-required. Validate before
    applying and confirm disruptive changes. Add explicit COW management and
    guest-aware media swapping when their core interfaces are ready.
-3. Add F5 confirmed reset, F7 pause controls and window persistence as their
-   backend behavior becomes ready.
+3. Add F5 confirmed reset and F7 pause controls as their backend behavior becomes ready.

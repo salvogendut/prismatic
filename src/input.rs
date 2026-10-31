@@ -2,7 +2,7 @@
 use crate::overlay::Key;
 use iris::dev::ps2::Ps2Controller;
 use sdl3::{
-    keyboard::{Mod, Scancode},
+    keyboard::{Keycode, Mod, Scancode},
     mouse::MouseButton,
 };
 use std::{collections::HashSet, sync::Arc};
@@ -16,8 +16,39 @@ pub enum KeyRoute {
     Fullscreen,
     Screenshot,
     Gif,
+    WindowScale(bool),
     Release,
     Ignore,
+}
+
+/// Use host key symbols so plus/minus also work on non-US layouts. Accept
+/// Ctrl+= as the unshifted shortcut, and keep AltGr / desktop chords separate.
+pub fn scale_shortcut(
+    scan: Scancode,
+    key: Option<Keycode>,
+    modifiers: Mod,
+    repeat: bool,
+) -> Option<KeyRoute> {
+    if !modifiers.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD)
+        || modifiers.intersects(Mod::LALTMOD | Mod::RALTMOD | Mod::LGUIMOD | Mod::RGUIMOD)
+    {
+        return None;
+    }
+    let increase = match key {
+        Some(Keycode::Plus | Keycode::Equals | Keycode::KpPlus) => true,
+        Some(Keycode::Minus | Keycode::Underscore | Keycode::KpMinus) => false,
+        None => match scan {
+            Scancode::Equals | Scancode::KpPlus => true,
+            Scancode::Minus | Scancode::KpMinus => false,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    Some(if repeat {
+        KeyRoute::Ignore
+    } else {
+        KeyRoute::WindowScale(increase)
+    })
 }
 
 pub fn route_key(
@@ -387,6 +418,45 @@ pub fn physical_key(scan: Scancode) -> Option<KeyCode> {
 mod tests {
     use super::*;
     use iris::{config::KeyboardLayout, traits::Device};
+
+    #[test]
+    fn scaling_uses_host_symbols_and_excludes_repeats_and_altgr() {
+        for (scan, key, increase) in [
+            (Scancode::Equals, Keycode::Equals, true),
+            (Scancode::Equals, Keycode::Plus, true),
+            (Scancode::RightBracket, Keycode::Plus, true),
+            (Scancode::KpPlus, Keycode::KpPlus, true),
+            (Scancode::Minus, Keycode::Minus, false),
+            (Scancode::Minus, Keycode::Underscore, false),
+            (Scancode::KpMinus, Keycode::KpMinus, false),
+        ] {
+            for modifiers in [Mod::LCTRLMOD, Mod::RCTRLMOD | Mod::LSHIFTMOD] {
+                assert_eq!(
+                    scale_shortcut(scan, Some(key), modifiers, false),
+                    Some(KeyRoute::WindowScale(increase))
+                );
+                assert_eq!(
+                    scale_shortcut(scan, Some(key), modifiers, true),
+                    Some(KeyRoute::Ignore)
+                );
+            }
+            for modifiers in [
+                Mod::NOMOD,
+                Mod::LCTRLMOD | Mod::RALTMOD,
+                Mod::RCTRLMOD | Mod::LGUIMOD,
+            ] {
+                assert_eq!(scale_shortcut(scan, Some(key), modifiers, false), None);
+            }
+        }
+        assert_eq!(
+            scale_shortcut(Scancode::Equals, Some(Keycode::A), Mod::LCTRLMOD, false),
+            None
+        );
+        assert_eq!(
+            scale_shortcut(Scancode::KpPlus, None, Mod::RCTRLMOD, false),
+            Some(KeyRoute::WindowScale(true))
+        );
+    }
 
     fn drain(controller: &Ps2Controller, mouse: bool) -> Vec<u8> {
         std::iter::from_fn(|| controller.pop_from(mouse)).collect()

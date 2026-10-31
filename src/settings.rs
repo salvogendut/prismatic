@@ -325,6 +325,55 @@ impl AdvancedSettings {
     }
 }
 
+/// Quarter steps keep persisted factors exact and comparable in menu drafts.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(try_from = "f64", into = "f64")]
+pub struct WindowScale(u8);
+
+impl Default for WindowScale {
+    fn default() -> Self {
+        Self(4)
+    }
+}
+
+impl TryFrom<f64> for WindowScale {
+    type Error = String;
+
+    fn try_from(value: f64) -> Result<Self, Self::Error> {
+        if !(0.75..=4.0).contains(&value) || (value * 4.0).fract() != 0.0 {
+            return Err("Window scale must be 0.75 through 4.0 in steps of 0.25".into());
+        }
+        Ok(Self((value * 4.0) as u8))
+    }
+}
+
+impl From<WindowScale> for f64 {
+    fn from(value: WindowScale) -> Self {
+        f64::from(value.0) / 4.0
+    }
+}
+
+impl WindowScale {
+    pub fn step(self, increase: bool) -> Self {
+        Self(if increase {
+            (self.0 + 1).min(16)
+        } else {
+            (self.0 - 1).max(3)
+        })
+    }
+
+    pub fn percent(self) -> u32 {
+        u32::from(self.0) * 25
+    }
+
+    pub fn dimensions(self, width: u32, height: u32) -> (u32, u32) {
+        (
+            width * u32::from(self.0) / 4,
+            height * u32::from(self.0) / 4,
+        )
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
@@ -333,6 +382,7 @@ pub struct Settings {
     pub smoothing: bool,
     pub tinker: bool,
     pub debug_output: DebugOutput,
+    pub window_scale: WindowScale,
     pub gif: GifSettings,
     pub machine: MachineSettings,
     pub media: MediaSettings,
@@ -347,6 +397,7 @@ impl Default for Settings {
             smoothing: false,
             tinker: false,
             debug_output: DebugOutput::Off,
+            window_scale: WindowScale::default(),
             gif: GifSettings::default(),
             machine: MachineSettings::default(),
             media: MediaSettings::default(),
@@ -356,6 +407,17 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// Save only live preferences. Menu drafts must never leak into a shortcut save.
+    pub fn save_window_scale(&mut self, path: &Path, scale: WindowScale) -> Result<(), String> {
+        if self.window_scale != scale {
+            let mut next = self.clone();
+            next.window_scale = scale;
+            next.save(path)?;
+            *self = next;
+        }
+        Ok(())
+    }
+
     pub fn machine_differs_from(&self, active: &Self) -> bool {
         self.machine != active.machine
             || self.media != active.media
@@ -423,6 +485,57 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_scale_migrates_persists_and_rejects_invalid_factors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prismatic.cfg");
+        fs::write(&path, "scanlines = true").unwrap();
+        let mut settings = Settings::load(&path).unwrap();
+        assert_eq!(f64::from(settings.window_scale), 1.0);
+        let initial = settings.clone();
+        for factor in [0.75, 1.0, 1.25, 2.5, 4.0] {
+            settings
+                .save_window_scale(&path, WindowScale::try_from(factor).unwrap())
+                .unwrap();
+            assert_eq!(Settings::load(&path).unwrap(), settings);
+            assert!(!settings.machine_differs_from(&initial));
+            assert!(settings.scanlines);
+        }
+        for value in ["0", "0.5", "1.1", "4.25", "-1", "nan", "inf"] {
+            let invalid = format!("window_scale = {value}\n");
+            fs::write(&path, &invalid).unwrap();
+            assert!(Settings::load(&path).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), invalid);
+        }
+    }
+
+    #[test]
+    fn window_scale_bounds_and_save_failure_preserve_live_preferences() {
+        let mut scale = WindowScale::default();
+        for _ in 0..50 {
+            scale = scale.step(true);
+        }
+        assert_eq!(f64::from(scale), 4.0);
+        for _ in 0..50 {
+            scale = scale.step(false);
+        }
+        assert_eq!(f64::from(scale), 0.75);
+        assert_eq!(scale.dimensions(960, 720), (720, 540));
+        assert_eq!(scale.step(true), WindowScale::default());
+        let dir = tempfile::tempdir().unwrap();
+        let blocked = dir.path().join("not-a-directory");
+        fs::write(&blocked, "keep this file").unwrap();
+        let mut settings = Settings::default();
+        let before = settings.clone();
+        assert!(
+            settings
+                .save_window_scale(&blocked.join("prismatic.cfg"), scale)
+                .is_err()
+        );
+        assert_eq!(settings, before);
+        assert_eq!(fs::read_to_string(blocked).unwrap(), "keep this file");
+    }
 
     #[test]
     fn advanced_settings_migrate_roundtrip_and_reject_invalid_values() {

@@ -2,9 +2,10 @@
 
 ![Prismatic logo](images/Prismatic%20Rainbow%20Emulator%20Logo.png)
 
-Prismatic is the Rust/SDL3 frontend being developed for our [Iris fork](../iris),
+Prismatic is the Rust/SDL3 frontend being developed for our [Iris fork](https://github.com/salvogendut/iris),
 following the desktop conventions of the Happy Years emulators
-([1984](../1984), [1985](../1985), [1986](../1986), and [1989](../1989)).
+([1984](https://github.com/salvogendut/1984), [1985](https://github.com/salvogendut/1985),
+[1986](https://github.com/salvogendut/1986), and [1989](https://github.com/salvogendut/1989)).
 
 Prismatic embeds Iris and starts a **diskless SGI Indy** by default, with an
 R4400, 64 MB RAM, Newport graphics and Iris's built-in PROM. **F9 > General**
@@ -56,7 +57,7 @@ No guest disk or external PROM is needed. The default is diskless; only images
 selected in Prismatic are attached. It does not read `iris.toml`, `prom.bin`,
 or default SCSI image paths from either checkout. Normal machine state is kept under
 SDL's per-user application directory, normally
-`~/.config/prismatic/indy/` on Linux, or `~/.config/prismatic/indigo2/` for Indigo2.
+`~/.local/share/prismatic/indy/` on Linux, or `~/.local/share/prismatic/indigo2/` for Indigo2.
 The models have separate NVRAM and EEPROM files. `--state-dir PATH` keeps the
 existing Indy layout at `PATH`; Indigo2 uses `PATH/indigo2/` when overridden.
 The Iris monitor binds an ephemeral loopback port,
@@ -73,6 +74,7 @@ remaining work.
 | --- | --- |
 | Click guest display | Capture keyboard and mouse; the capture click is consumed |
 | Ctrl+Enter | Release input and return the pointer to the desktop |
+| Ctrl+Plus / Ctrl+Minus | Increase / decrease window scale by 25%; also accepts Ctrl+= and keypad +/− |
 | F4 | Save a guest-display screenshot (PPM) |
 | F6 | Start or stop an animated GIF capture |
 | F9 | Open options; save and close an open options session |
@@ -90,6 +92,16 @@ stopping the machine releases capture and any held guest keys/buttons. Click
 the display again to resume input. The host shortcuts remain available when
 input is released. Shift+reserved-function-key sends one unmodified tap, not
 a held key or a Shift combination.
+
+Window scaling ranges from **75% to 400%**, relative to the default 960×720
+window (100%). Each shortcut saves `window_scale` immediately in `prismatic.cfg`,
+and the next launch restores it. A notification shows the selected percentage.
+The shortcuts also work with guest input captured and menus open; unfinished
+menu edits remain separate, and Save/Discard preserves the saved scale.
+In fullscreen, scaling selects the size used after F11 returns to windowed mode.
+A maximized window is restored before resizing. The desktop may constrain
+large requested sizes. Guest resolution and screenshot/GIF dimensions remain
+independent of the window scale.
 
 Keyboard input follows **physical key positions**, preserving left/right
 modifiers and the numeric keypad. General > Keyboard selects Iris's physical
@@ -210,8 +222,8 @@ also accepts individual whole years from −30 through 0. Iris clamps RTC dates
 to the emulated chip's supported range (1970–2039).
 
 Serial logging appends channel-B console output to **`serial.log`** beside the
-selected machine's NVRAM: normally `~/.config/prismatic/indy/serial.log` or
-`~/.config/prismatic/indigo2/serial.log`. `--state-dir` moves the log with the
+selected machine's NVRAM: normally `~/.local/share/prismatic/indy/serial.log` or
+`~/.local/share/prismatic/indigo2/serial.log`. `--state-dir` moves the log with the
 machine state. Raw preserves serial bytes; Timestamped prefixes lines with
 host UTC timestamps. The graphical display is not transcribed. Existing logs
 are preserved, and no log is created merely by editing or discarding a draft.
@@ -300,10 +312,11 @@ frame is drawn. Opening an overlay dims both bottom bands consistently.
 
 **`prismatic.cfg`** contains the current saved General, Media and display
 configuration, including Advanced options. It is created on first launch in
-SDL's per-user application directory, normally **`~/.config/prismatic/prismatic.cfg`** on Linux, and loaded
+SDL's per-user application directory, normally **`~/.local/share/prismatic/prismatic.cfg`** on Linux, and loaded
 on subsequent launches. Every successful menu Save atomically updates this
-file. Cancel/Discard do not change it, and restart changes are saved only
-after confirmation. The path is printed at startup.
+file. Ctrl+Plus/Minus also save the window scale immediately. Menu Cancel/Discard
+do not change the saved configuration, and restart changes are saved only
+after confirmation. The path is printed at startup when Debug output is Console.
 
 For a configuration in the current directory, run:
 
@@ -320,6 +333,7 @@ show_status = true
 smoothing = false
 tinker = false
 debug_output = "off"
+window_scale = 1.0 # 0.75 through 4.0, in steps of 0.25.
 
 [machine]
 profile = "indy_ip24"
