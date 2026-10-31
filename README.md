@@ -97,9 +97,9 @@ input are not implemented. Left, middle and right mouse buttons are forwarded;
 wheel and extra buttons work when the guest enables the corresponding PS/2
 mouse protocol.
 
-Enable **General > Tinker** to expose Advanced, which currently contains
-bilinear filtering. Options are edited in a private draft and applied only
-after a successful save. Cancelling or discarding leaves the live display
+Enable **General > Tinker** to expose Advanced, including Iris core options
+and bilinear filtering. Hiding Advanced retains its saved settings. Options
+are edited in a private draft and applied only after a successful save. Cancelling or discarding leaves the live display
 unchanged. Confirmation dialogs initially select Cancel.
 
 ## Machine settings
@@ -130,6 +130,42 @@ Both models use Newport graphics and bundled firmware. Prismatic explicitly
 passes a temporary copy of Iris's bundled Indigo2 PROM to avoid Iris's alternate
 ROM search in the working directory. IMPACT, O2 and Octane need other display
 integrations and are not selectable yet.
+
+## Advanced settings
+
+Enable **F9 > General > Tinker**, then use Left/Right to open **Advanced**.
+Up/Down selects a row and Enter cycles its value. F9 saves; core changes use
+the same **Restart / Cancel** confirmation as General and Media. Cancel keeps
+the draft, and Discard leaves the running machine and saved file unchanged.
+Turning Tinker off hides the controls without resetting their values.
+
+| Setting | Choices | Default |
+| --- | --- | --- |
+| Guest resolution | Guest-controlled, 1024×768, 1280×960, 1280×1024 | Guest-controlled |
+| CPU cache model | Auto, Full, Shadow | Auto |
+| Guest clock offset | Host time or −5/−10/−15/−20/−25/−30 years | Host time |
+| SCSI interrupt timing | Deferred, Immediate | Deferred |
+| Serial console log | Off, Raw, Timestamped (UTC) | Off |
+| Bilinear filtering | Off, On; applies without restarting | Off |
+
+Resolution selects the **initial Newport video mode**; the PROM or guest may
+program another mode later. Cache Auto selects Iris's implementation for the
+build (Full in the current interpreter build). This is a cache model control,
+not a JIT switch. Deferred SCSI interrupts are Iris's BSD-compatible default.
+
+The clock offset shifts the RTC's host-time seed at each boot; time then runs
+normally and the guest can still set its clock. It is a relative offset, not a
+fixed date. The menu uses five-year presets; `clock_offset_years` in the file
+also accepts individual whole years from −30 through 0. Iris clamps RTC dates
+to the emulated chip's supported range (1970–2039).
+
+Serial logging appends channel-B console output to **`serial.log`** beside the
+selected machine's NVRAM: normally `~/.config/prismatic/indy/serial.log` or
+`~/.config/prismatic/indigo2/serial.log`. `--state-dir` moves the log with the
+machine state. Raw preserves serial bytes; Timestamped prefixes lines with
+host UTC timestamps. The graphical display is not transcribed. Existing logs
+are preserved, and no log is created merely by editing or discarding a draft.
+An unopenable log is reported as a startup error.
 
 ## Media and activity LEDs
 
@@ -171,8 +207,8 @@ visible briefly even when no new guest frame is drawn.
 ## Persistent configuration
 
 **`prismatic.cfg`** contains the current saved General, Media and display
-configuration. It is created on first launch in SDL's per-user application
-directory, normally **`~/.config/prismatic/prismatic.cfg`** on Linux, and loaded
+configuration, including Advanced options. It is created on first launch in
+SDL's per-user application directory, normally **`~/.config/prismatic/prismatic.cfg`** on Linux, and loaded
 on subsequent launches. Every successful menu Save atomically updates this
 file. Cancel/Discard do not change it, and restart changes are saved only
 after confirmation. The path is printed at startup.
@@ -183,7 +219,7 @@ For a configuration in the current directory, run:
 cargo run --release --locked -- --config ./prismatic.cfg
 ```
 
-The file uses human-readable TOML with a `[machine]` table and one table per
+The file uses human-readable TOML with `[machine]`, `[advanced]` and one table per
 attached device, for example:
 
 ```toml
@@ -198,6 +234,13 @@ cpu = "r4400"
 ram_mb = 64
 keyboard = "ansi"
 
+[advanced]
+resolution = "guest"
+cache = "auto"
+clock_offset_years = 0
+scsi_deferred_interrupts = true
+serial_logging = "off"
+
 [media.devices.1]
 kind = "disk"
 path = "/path/to/irix.chd"
@@ -210,7 +253,8 @@ path = "/path/to/install.efs"
 Relative image paths resolve beside the configuration file; menu selections
 are saved as absolute paths. With the default location, an older
 `prismatic.toml` is migrated if `prismatic.cfg` is absent; the old file is
-retained. Invalid configurations report an error and are never replaced with
+retained. Older files without `[advanced]` receive the defaults above.
+Invalid configurations report an error and are never replaced with
 defaults. NVRAM/EEPROM remain separate machine-state files.
 
 ## Checks
@@ -224,6 +268,7 @@ IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RE
 IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --input-smoke-test --screenshot /tmp/prismatic-input.bmp
 IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --settings-smoke-test --screenshot /tmp/prismatic-settings.bmp
 IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --media-smoke-test --screenshot /tmp/prismatic-media.bmp
+IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --advanced-smoke-test --screenshot /tmp/prismatic-advanced.bmp
 ```
 
 `--smoke-test` renders three UI frames with the options open and exits without
@@ -255,14 +300,25 @@ paths for the OS file chooser, but exercises normal asynchronous validation,
 attachment and shutdown. These are synthetic sector fixtures, not bootable
 IRIX installation media; this does not establish a full OS installation.
 
+`--advanced-smoke-test` enables Tinker and edits all five core options. It
+cancels restart and discards once, then hides Tinker and confirms the changes.
+After restarting with 1024×768 initial resolution, Shadow cache, −5 years,
+immediate SCSI interrupts and timestamped logging, it runs the input script,
+checks saved preferences and log creation, and reopens Advanced for the
+screenshot. This test uses temporary state and a 240-second total timeout;
+it checks integration and PROM operation, not guest OS compatibility for
+every combination of expert options.
+
 The machine smoke commands redirect Iris's draw-shape cache to `/tmp` as well.
-All tests use temporary preferences unless `--config` is supplied. Settings
-and media tests automatically save options and reject `--config`. Missing
-configuration files are initialized on startup. Machine smoke tests always use
+All tests use temporary preferences unless `--config` is supplied. General,
+Media and Advanced menu tests automatically save options and reject `--config`.
+Missing configuration files are initialized on startup. Machine smoke tests always use
 temporary NVRAM and reject `--state-dir`; diskless tests reject configurations
-with attached media. A screenshot path is accepted only with a smoke test. Unit tests cover draft settings, persistence and failures,
+with attached media. A screenshot path is accepted only with a smoke test.
+Unit tests cover draft settings, persistence and failures,
 hardware compatibility/bank mapping, state-directory isolation, confirmation
 behavior, framebuffer packing/stride, frame replacement, startup failure,
 physical keys, host/modal routing, PS/2 releases, mouse input, high-DPI hit
 testing, configuration migration, COW persistence, CD read-only access,
-invalid media, flush failures and LED pulses. Linux is validated; other platforms still need integration checks.
+invalid media, flush failures, LED pulses, Advanced option mapping, restart
+detection and retained settings when Tinker is hidden. Linux is validated; other platforms still need integration checks.

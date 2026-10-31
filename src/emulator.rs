@@ -3,7 +3,7 @@ use crate::{
     activity::{self, Activity},
     display::Frame,
     media::{self, MediaSettings},
-    settings::MachineSettings,
+    settings::{AdvancedSettings, MachineSettings, SerialLogging},
 };
 use iris::{
     compositor::SwCompositor,
@@ -158,8 +158,10 @@ pub fn machine_config(
     state_dir: &Path,
     hardware: &MachineSettings,
     media: &MediaSettings,
+    advanced: &AdvancedSettings,
 ) -> Result<MachineConfig, String> {
     media.validate()?;
+    advanced.validate()?;
     let path = |name: &str| {
         state_dir
             .join(name)
@@ -178,6 +180,18 @@ pub fn machine_config(
         no_audio: true,
         headless: false,
         keyboard: hardware.keyboard,
+        rtc_offset: advanced.rtc_offset(),
+        scsi_deferred_int: advanced.scsi_deferred_interrupts,
+        serial_log: if advanced.serial_logging == SerialLogging::Off {
+            None
+        } else {
+            Some(path("serial.log")?)
+        },
+        serial_log_timestamps: if advanced.serial_logging == SerialLogging::Timestamped {
+            iris::dev::serial_log::SerialLogTimestamps::Wall
+        } else {
+            iris::dev::serial_log::SerialLogTimestamps::Off
+        },
         // Ephemeral loopback ports avoid collisions with another Iris instance.
         monitor_port: Some(0),
         serial_port_a: Some(0),
@@ -186,10 +200,29 @@ pub fn machine_config(
     };
     config.machine.profile = hardware.profile;
     config.machine.cpu = hardware.cpu;
+    config.machine.cache = advanced.cache;
+    config.graphics.resolution = advanced.resolution;
     config.graphics.board = Some(GraphicsBoard::Newport);
     config.graphics.heads = 1;
     config.validate()?;
     Ok(config)
+}
+
+// Iris reports an unopenable log only on stderr. Check on the worker before
+// building the machine so the frontend can report startup failure in its UI.
+// This is never called while editing/validating a draft.
+fn prepare_serial_log(config: &MachineConfig) -> Result<(), String> {
+    if let Some(path) = &config.serial_log {
+        if std::fs::metadata(path).is_ok_and(|m| !m.is_file()) {
+            return Err(format!("Serial log must be a regular file: {path}"));
+        }
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(|e| format!("Cannot open serial log {path}: {e}"))?;
+    }
+    Ok(())
 }
 
 // Serialize access with Iris's monitor/event controller. Dropping the machine
@@ -245,8 +278,9 @@ impl Emulator {
         state_dir: &Path,
         hardware: &MachineSettings,
         media: &MediaSettings,
+        advanced: &AdvancedSettings,
     ) -> Result<Self, String> {
-        let mut config = machine_config(state_dir, hardware, media)?;
+        let mut config = machine_config(state_dir, hardware, media, advanced)?;
         // Attach explicitly before CPU start: Iris's CLI constructor exits the
         // process on media errors. The frontend must report them in the window.
         config.scsi.clear();
@@ -270,6 +304,7 @@ impl Emulator {
                 let result = catch_unwind(AssertUnwindSafe(|| -> Result<(), String> {
                     std::fs::create_dir_all(&state_dir)
                         .map_err(|e| format!("Cannot create machine state directory: {e}"))?;
+                    prepare_serial_log(&config)?;
                     // Iris's Indigo2 fallback also searches the current directory.
                     // Give it the bundled image explicitly so a local ROM cannot
                     // silently change a configured machine's firmware.
@@ -408,14 +443,94 @@ mod tests {
     use iris::config::KeyboardLayout;
 
     #[test]
+    fn advanced_options_map_to_iris_without_creating_log_during_validation() {
+        use iris::{
+            config::CacheModel, dev::ng1::vc2_timings::NewportResolution,
+            dev::serial_log::SerialLogTimestamps,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let defaults = machine_config(
+            dir.path(),
+            &MachineSettings::default(),
+            &MediaSettings::default(),
+            &AdvancedSettings::default(),
+        )
+        .unwrap();
+        assert_eq!(defaults.graphics.resolution, NewportResolution::Guest);
+        assert_eq!(defaults.machine.cache, CacheModel::Auto);
+        assert!(defaults.rtc_offset.is_zero());
+        assert!(defaults.scsi_deferred_int);
+        assert!(defaults.serial_log.is_none());
+        let advanced = AdvancedSettings {
+            resolution: NewportResolution::Res1024x768,
+            cache: CacheModel::Shadow,
+            clock_offset_years: -20,
+            scsi_deferred_interrupts: false,
+            serial_logging: SerialLogging::Timestamped,
+        };
+        let cfg = machine_config(
+            dir.path(),
+            &MachineSettings::default(),
+            &MediaSettings::default(),
+            &advanced,
+        )
+        .unwrap();
+        assert_eq!(cfg.graphics.resolution, advanced.resolution);
+        assert_eq!(cfg.machine.cache, advanced.cache);
+        assert_eq!(cfg.rtc_offset.years, -20);
+        assert!(!cfg.scsi_deferred_int);
+        assert_eq!(
+            cfg.serial_log.as_deref(),
+            dir.path().join("serial.log").to_str()
+        );
+        assert_eq!(cfg.serial_log_timestamps, SerialLogTimestamps::Wall);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn serial_log_preparation_preserves_transcripts_and_reports_invalid_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let advanced = AdvancedSettings {
+            serial_logging: SerialLogging::Raw,
+            ..Default::default()
+        };
+        let config = machine_config(
+            dir.path(),
+            &MachineSettings::default(),
+            &MediaSettings::default(),
+            &advanced,
+        )
+        .unwrap();
+        let path = dir.path().join("serial.log");
+        std::fs::write(&path, "previous session\n").unwrap();
+        prepare_serial_log(&config).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "previous session\n"
+        );
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(
+            prepare_serial_log(&config)
+                .unwrap_err()
+                .contains("regular file")
+        );
+    }
+
+    #[test]
     fn diskless_profile_never_uses_default_media_or_cwd_state() {
         let directory = tempfile::tempdir().unwrap();
         let hardware = MachineSettings {
             keyboard: KeyboardLayout::Iso,
             ..Default::default()
         };
-        let config =
-            machine_config(directory.path(), &hardware, &MediaSettings::default()).unwrap();
+        let config = machine_config(
+            directory.path(),
+            &hardware,
+            &MediaSettings::default(),
+            &AdvancedSettings::default(),
+        )
+        .unwrap();
         assert_eq!(config.keyboard, KeyboardLayout::Iso);
         assert!(config.scsi.is_empty());
         assert!(config.prom.is_empty());
@@ -468,6 +583,7 @@ mod tests {
             &file.path().join("invalid"),
             &MachineSettings::default(),
             &MediaSettings::default(),
+            &AdvancedSettings::default(),
         )
         .unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -493,6 +609,7 @@ mod tests {
                         Path::new("/tmp/prismatic-config-test"),
                         &hardware,
                         &MediaSettings::default(),
+                        &AdvancedSettings::default(),
                     )
                     .unwrap();
                     assert_eq!(config.machine.profile, profile);

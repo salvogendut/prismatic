@@ -89,7 +89,28 @@ impl Session {
                 ("Status strip", on_off(self.draft.show_status)),
                 ("Tinker", on_off(self.draft.tinker)),
             ],
-            Tab::Advanced => vec![("Bilinear filtering", on_off(self.draft.smoothing))],
+            Tab::Advanced => vec![
+                (
+                    "Guest resolution",
+                    self.draft.advanced.resolution.label().replace('×', "x"),
+                ),
+                ("CPU cache model", self.draft.advanced.cache_label().into()),
+                ("Guest clock offset", self.draft.advanced.clock_label()),
+                (
+                    "SCSI interrupt timing",
+                    if self.draft.advanced.scsi_deferred_interrupts {
+                        "Deferred (default)"
+                    } else {
+                        "Immediate"
+                    }
+                    .into(),
+                ),
+                (
+                    "Serial console log",
+                    self.draft.advanced.serial_logging.label().into(),
+                ),
+                ("Bilinear filtering", on_off(self.draft.smoothing)),
+            ],
             Tab::Media => [
                 "SCSI 0:1", "SCSI 0:2", "SCSI 0:3", "SCSI 0:4", "SCSI 0:5", "SCSI 0:6", "SCSI 0:7",
             ]
@@ -240,7 +261,15 @@ impl Overlay {
                 (Tab::General, 4) => session.draft.scanlines = !session.draft.scanlines,
                 (Tab::General, 5) => session.draft.show_status = !session.draft.show_status,
                 (Tab::General, 6) => session.draft.tinker = !session.draft.tinker,
-                (Tab::Advanced, 0) => session.draft.smoothing = !session.draft.smoothing,
+                (Tab::Advanced, 0) => session.draft.advanced.cycle_resolution(),
+                (Tab::Advanced, 1) => session.draft.advanced.cycle_cache(),
+                (Tab::Advanced, 2) => session.draft.advanced.cycle_clock_offset(),
+                (Tab::Advanced, 3) => {
+                    session.draft.advanced.scsi_deferred_interrupts =
+                        !session.draft.advanced.scsi_deferred_interrupts
+                }
+                (Tab::Advanced, 4) => session.draft.advanced.cycle_serial_logging(),
+                (Tab::Advanced, 5) => session.draft.smoothing = !session.draft.smoothing,
                 (Tab::Media, row) => {
                     self.dialog = Some(Dialog::Media {
                         id: row as u8 + 1,
@@ -258,6 +287,41 @@ impl Overlay {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn advanced_changes_remain_drafts_survive_hiding_and_can_be_discarded() {
+        let live = Settings::default();
+        let mut overlay = Overlay::default();
+        for key in [Key::Options, Key::Up, Key::Enter, Key::Right, Key::Right] {
+            overlay.key(key, &live);
+        }
+        assert_eq!(overlay.session.as_ref().unwrap().tab, Tab::Advanced);
+        for row in 0..5 {
+            overlay.key(Key::Enter, &live);
+            if row != 4 {
+                overlay.key(Key::Down, &live);
+            }
+        }
+        let advanced = overlay.session.as_ref().unwrap().draft.advanced.clone();
+        assert_ne!(advanced, live.advanced);
+        // Return to General and hide Tinker. Core settings must not reset.
+        for key in [Key::Left, Key::Left, Key::Up, Key::Enter] {
+            overlay.key(key, &live);
+        }
+        let session = overlay.session.as_ref().unwrap();
+        assert!(!session.tabs().contains(&Tab::Advanced));
+        assert_eq!(session.draft.advanced, advanced);
+        assert!(
+            matches!(overlay.key(Key::Options, &live), Effect::Save(draft) if draft.advanced == advanced)
+        );
+        overlay.confirm_restart();
+        overlay.key(Key::Enter, &live); // Cancel is selected initially.
+        assert_eq!(overlay.session.as_ref().unwrap().draft.advanced, advanced);
+        for key in [Key::Escape, Key::Left, Key::Enter, Key::Options] {
+            overlay.key(key, &live);
+        }
+        assert_eq!(overlay.session.as_ref().unwrap().draft, live);
+    }
 
     #[test]
     fn media_choice_cancel_disconnect_and_discard_preserve_live_devices() {

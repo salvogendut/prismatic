@@ -183,7 +183,9 @@ pub fn draw(
                 &short_ascii(value, 70),
                 Color::RGB(255, 208, 128),
             )?;
-            if session.tab == Tab::General && index < 4 {
+            if (session.tab == Tab::General && index < 4)
+                || (session.tab == Tab::Advanced && index < 5)
+            {
                 text(canvas, 704, row_y, "Requires restart", MUTED)?;
             }
         }
@@ -236,8 +238,32 @@ pub fn draw(
                 text(
                     canvas,
                     32,
-                    192,
-                    "Bilinear filtering smooths the display when scaled.",
+                    284,
+                    match session.row {
+                        0 => "Sets the initial Newport video mode; the guest may change it later.",
+                        1 => {
+                            "Auto selects the cache model for this build. Full/Shadow are expert overrides."
+                        }
+                        2 => {
+                            "Shifts the guest clock relative to host time at boot; it then runs normally."
+                        }
+                        3 => {
+                            "Deferred is Iris's BSD-compatible default. Immediate changes SCSI timing."
+                        }
+                        4 => {
+                            "Appends to serial.log in this machine's state directory. Timestamps use host UTC."
+                        }
+                        _ => {
+                            "Bilinear filtering smooths the display when scaled; applies without restart."
+                        }
+                    },
+                    MUTED,
+                )?;
+                text(
+                    canvas,
+                    32,
+                    312,
+                    "Core options require restart. Turning Tinker off keeps the saved values active.",
                     MUTED,
                 )?;
             }
@@ -302,7 +328,7 @@ pub fn draw(
                 usize::from(!confirm),
             ),
             Dialog::Restart { confirm } => (
-                "Save hardware/media changes and restart?",
+                "Save machine options and restart?",
                 "Shut down the guest OS first. The current session will be lost.",
                 vec!["Restart", "Cancel"],
                 usize::from(!confirm),

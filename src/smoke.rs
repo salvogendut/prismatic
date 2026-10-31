@@ -400,3 +400,141 @@ impl MediaSmoke {
         Ok(false)
     }
 }
+
+#[derive(Default)]
+pub struct AdvancedSmoke {
+    step: usize,
+    input: InputSmoke,
+    showing_menu: bool,
+}
+
+impl AdvancedSmoke {
+    fn expected() -> crate::settings::AdvancedSettings {
+        crate::settings::AdvancedSettings {
+            resolution: iris::dev::ng1::vc2_timings::NewportResolution::Res1024x768,
+            cache: iris::config::CacheModel::Shadow,
+            clock_offset_years: -5,
+            scsi_deferred_interrupts: false,
+            serial_logging: crate::settings::SerialLogging::Timestamped,
+        }
+    }
+
+    pub fn advance(
+        &mut self,
+        state: SettingsSmokeState<'_>,
+        events: &EventSubsystem,
+        window: &Window,
+    ) -> Result<bool, String> {
+        use Scancode as S;
+        let Some(elapsed) = state.elapsed else {
+            return Ok(false);
+        };
+        if state.generation == 1 {
+            if self.step != 4
+                || state.settings.advanced != Self::expected()
+                || state.settings.tinker
+            {
+                return Err("Advanced smoke restarted with unexpected options".into());
+            }
+            if !self.input.advance(
+                elapsed,
+                events,
+                window,
+                state.captured,
+                state.overlay.session.is_some() || state.overlay.dialog.is_some(),
+            )? {
+                return Ok(false);
+            }
+            // Reopen Advanced for the screenshot. Showing it is a draft change;
+            // persisted Tinker remains off and the core settings remain active.
+            if !self.showing_menu {
+                for scan in [S::F9, S::Up, S::Return, S::Right, S::Right] {
+                    tap(events, window, scan)?;
+                }
+                self.showing_menu = true;
+                return Ok(false);
+            }
+            let session = state
+                .overlay
+                .session
+                .as_ref()
+                .ok_or("Advanced smoke did not reopen options")?;
+            if session.tab != crate::overlay::Tab::Advanced
+                || session.draft.advanced != Self::expected()
+            {
+                return Err("Advanced smoke did not retain hidden options".into());
+            }
+            return Ok(elapsed >= Duration::from_secs(28));
+        }
+        if state.generation != 0 {
+            return Err("Advanced smoke restarted more than once".into());
+        }
+        if state.overlay.busy
+            || self.step >= 4
+            || elapsed < Duration::from_secs(10 + self.step as u64)
+        {
+            return Ok(false);
+        }
+        if state.settings.advanced != Default::default() || state.settings.tinker {
+            return Err("Advanced options applied before confirmation".into());
+        }
+        let edit = [
+            S::F9,
+            S::Up,
+            S::Return,
+            S::Right,
+            S::Right,
+            S::Return,
+            S::Down,
+            S::Return,
+            S::Return,
+            S::Down,
+            S::Return,
+            S::Down,
+            S::Return,
+            S::Down,
+            S::Return,
+            S::Return,
+        ];
+        match self.step {
+            0 | 2 => {
+                if self.step == 2
+                    && (state.overlay.session.is_some() || state.overlay.dialog.is_some())
+                {
+                    return Err("Advanced smoke failed to discard options".into());
+                }
+                for scan in edit {
+                    tap(events, window, scan)?;
+                }
+                // Second attempt: hide Tinker before saving all five options.
+                if self.step == 2 {
+                    for scan in [S::Left, S::Left, S::Up, S::Return] {
+                        tap(events, window, scan)?;
+                    }
+                }
+                tap(events, window, S::F9)?;
+            }
+            1 | 3 => {
+                if state.overlay.dialog != Some(Dialog::Restart { confirm: false }) {
+                    return Err("Advanced smoke expected restart confirmation".into());
+                }
+                let draft = &state.overlay.session.as_ref().unwrap().draft;
+                if draft.advanced != Self::expected() {
+                    return Err("Advanced smoke edits did not reach the draft".into());
+                }
+                let keys: &[Scancode] = if self.step == 1 {
+                    &[S::Return, S::Escape, S::Left, S::Return] // Cancel, discard.
+                } else {
+                    &[S::Left, S::Return]
+                };
+                for &scan in keys {
+                    tap(events, window, scan)?;
+                }
+            }
+            _ => unreachable!(),
+        }
+        eprintln!("Prismatic: advanced smoke step {} complete", self.step);
+        self.step += 1;
+        Ok(false)
+    }
+}

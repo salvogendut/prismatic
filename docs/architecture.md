@@ -20,9 +20,9 @@ bottom LED strip.
 | `src/main.rs` | CLI, SDL lifecycle, events, texture uploads, asynchronous shutdown, smoke runs |
 | `src/emulator.rs` | Validated Iris configuration and media attachment, worker ownership, bundled firmware, frame capture, latest-frame slot, machine status |
 | `src/input.rs` | Host/modal key routing, physical scancode mapping, held guest input, PS/2 delivery |
-| `src/smoke.rs` | Scripted SDL input and General/Media menu and restart smoke tests |
+| `src/smoke.rs` | Scripted SDL input and General/Media/Advanced menu and restart smoke tests |
 | `src/overlay.rs` | Draft settings, navigation, modal choices and effects |
-| `src/settings.rs` | Desktop/hardware/media settings, compatibility, RAM banks, state paths and atomic persistence |
+| `src/settings.rs` | Desktop/hardware/media/Advanced settings, compatibility, RAM banks, state paths and atomic persistence |
 | `src/display.rs` | Packed RGBA frame type, startup/UI-preview pixels and aspect-preserving placement |
 | `src/view.rs` | SDL drawing, status strip, LEDs, options, confirmations and notifications |
 | `src/media.rs` | Native file chooser, asynchronous read-only probes, media settings and Iris block-node adapters |
@@ -167,8 +167,8 @@ scroll, text paste and IME composition remain outside this milestone.
 ## Settings and verification
 
 Desktop, hardware and media options are private drafts. `prismatic.cfg` uses
-TOML and persists `[machine]` plus `[media.devices.ID]` alongside display
-preferences. First launch creates the file in SDL's preference directory;
+TOML and persists `[machine]`, `[advanced]` and `[media.devices.ID]` alongside
+display preferences. First launch creates the file in SDL's preference directory;
 `--config` selects another path. An existing default `prismatic.toml` migrates
 only when the new file is absent. Invalid files remain untouched. Relative
 image paths resolve beside the configuration file.
@@ -178,20 +178,35 @@ choices in the draft. `--keyboard` overrides the loaded value; a later Save
 persists the override along with the other settings.
 
 The model emits a save request; the application validates the proposed Iris
-configuration and compares hardware/media against the active machine. Changes to
-hardware/media during Starting/Running/Halted open a Restart/Cancel dialog, initially
-on Cancel. Both direct F9 save and Save from the unsaved-changes dialog follow
+configuration and compares hardware/media/Advanced options against the active
+machine. Changes to core options during Starting/Running/Halted open a
+Restart/Cancel dialog, initially on Cancel. Both direct F9 save and Save from the unsaved-changes dialog follow
 this path. Cancel retains the draft, Discard has no runtime or file side effect,
 and a failed validation/write keeps the editor open. Display-only saves do not
 restart. The session closes only after atomic persistence succeeds.
 
-A confirmed hardware/media save releases capture and requests normal worker stop.
+A confirmed core-options save releases capture and requests normal worker stop.
 SDL keeps pumping events while the worker stops and joins; no second machine
 is constructed concurrently. After a successful stop, the frontend drops old
 input/frame handles, clears the old image and starts the selected configuration
 with its model's NVRAM directory. Status labels describe the active hardware.
 Stop failures/timeouts prevent replacement; construction/startup failures are
 reported with the saved configuration retained for correction in F9.
+
+Advanced stores Newport resolution, CPU cache model, RTC year offset, SCSI
+interrupt timing and serial logging independently of the Tinker visibility
+flag. Default values match Iris. All five participate in machine restart
+detection; hiding Tinker or changing filtering alone does not restart. The
+frontend maps these values into `MachineConfig` before construction. Newport
+resolution is an initial mode, not an override of later guest programming.
+Clock offsets seed the RTC from host time on construction/NVRAM load.
+
+Serial logging uses Iris's channel-B sink and raw or wall-clock timestamps.
+The path is `serial.log` within the selected machine's state directory. The
+worker checks that this is an appendable regular file before construction,
+because Iris's constructor otherwise logs an open failure only to stderr.
+No log is opened during draft editing, validation or Discard. The log follows
+Iris's existing write/flush behavior and never truncates an existing transcript.
 
 The UI smoke test never starts a machine. The PROM display smoke test creates
 fresh temporary NVRAM, waits for a nonuniform guest image, captures the SDL
@@ -220,11 +235,18 @@ It verifies saved `prismatic.cfg` and then runs the input script. Its `hinv`
 screenshot verifies SCSI target enumeration; synthetic fixtures do not test
 an operating-system installation or the native dialog UI.
 
+The Advanced smoke test changes all five core options, tests cancel/discard,
+hides Tinker before saving, then confirms a restart and checks persisted
+settings and log creation. It runs the input script and reopens Advanced for
+visual inspection while keeping the saved Tinker flag off. Unit tests also
+verify old-file defaults, invalid values, the Iris config mapping, append
+preservation, invalid log targets and restart detection independent of UI flags.
+
 ## Next milestones
 
 1. Add SDL audio and feature boundaries for Iris's existing host backends.
    Validate Linux, Windows and macOS builds and device behavior.
-2. Extend General/Media and add Extensions and Tinker-gated Advanced controls.
+2. Extend General/Media/Advanced and add Extensions and Network controls.
    Classify settings as live, next boot or restart-required. Validate before
    applying and confirm disruptive changes. Add explicit COW management and
    guest-aware media swapping when their core interfaces are ready.

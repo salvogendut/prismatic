@@ -1,5 +1,10 @@
 use crate::media::MediaSettings;
-use iris::config::{CpuModel, KeyboardLayout, MAX_BANKS, MachineProfile, banks_from4};
+use iris::{
+    config::{
+        CacheModel, CpuModel, KeyboardLayout, MAX_BANKS, MachineProfile, RtcOffset, banks_from4,
+    },
+    dev::ng1::vc2_timings::NewportResolution,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -137,6 +142,102 @@ fn next<T: Copy + PartialEq>(current: T, choices: &[T]) -> T {
     choices[(index + 1) % choices.len()]
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SerialLogging {
+    #[default]
+    Off,
+    Raw,
+    Timestamped,
+}
+
+impl SerialLogging {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Raw => "Raw",
+            Self::Timestamped => "Timestamped (UTC)",
+        }
+    }
+}
+
+/// Core settings stay active even when Tinker hides their controls.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct AdvancedSettings {
+    pub resolution: NewportResolution,
+    pub cache: CacheModel,
+    pub clock_offset_years: i64,
+    pub scsi_deferred_interrupts: bool,
+    pub serial_logging: SerialLogging,
+}
+
+impl Default for AdvancedSettings {
+    fn default() -> Self {
+        Self {
+            resolution: NewportResolution::Guest,
+            cache: CacheModel::Auto,
+            clock_offset_years: 0,
+            scsi_deferred_interrupts: true,
+            serial_logging: SerialLogging::Off,
+        }
+    }
+}
+
+impl AdvancedSettings {
+    pub fn cycle_resolution(&mut self) {
+        self.resolution = next(self.resolution, &NewportResolution::ALL);
+    }
+    pub fn cycle_cache(&mut self) {
+        self.cache = next(
+            self.cache,
+            &[CacheModel::Auto, CacheModel::Full, CacheModel::Shadow],
+        );
+    }
+    pub fn cycle_clock_offset(&mut self) {
+        self.clock_offset_years = next(self.clock_offset_years, &[0, -5, -10, -15, -20, -25, -30]);
+    }
+    pub fn cycle_serial_logging(&mut self) {
+        self.serial_logging = next(
+            self.serial_logging,
+            &[
+                SerialLogging::Off,
+                SerialLogging::Raw,
+                SerialLogging::Timestamped,
+            ],
+        );
+    }
+
+    pub fn cache_label(&self) -> &'static str {
+        match self.cache {
+            CacheModel::Auto => "Auto",
+            CacheModel::Full => "Full",
+            CacheModel::Shadow => "Shadow",
+        }
+    }
+    pub fn clock_label(&self) -> String {
+        if self.clock_offset_years == 0 {
+            "Host time".into()
+        } else {
+            format!("Host time {} years", self.clock_offset_years)
+        }
+    }
+    pub fn rtc_offset(&self) -> RtcOffset {
+        RtcOffset {
+            years: self.clock_offset_years,
+            ..Default::default()
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        // The file also accepts individual years between the menu presets.
+        if !(-30..=0).contains(&self.clock_offset_years) {
+            return Err("Advanced clock offset must be between -30 and 0 years".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
@@ -146,6 +247,7 @@ pub struct Settings {
     pub tinker: bool,
     pub machine: MachineSettings,
     pub media: MediaSettings,
+    pub advanced: AdvancedSettings,
 }
 
 impl Default for Settings {
@@ -157,11 +259,17 @@ impl Default for Settings {
             tinker: false,
             machine: MachineSettings::default(),
             media: MediaSettings::default(),
+            advanced: AdvancedSettings::default(),
         }
     }
 }
 
 impl Settings {
+    pub fn machine_differs_from(&self, active: &Self) -> bool {
+        self.machine != active.machine
+            || self.media != active.media
+            || self.advanced != active.advanced
+    }
     /// Create a complete configuration on first launch, or migrate the previous
     /// default filename. An existing (even invalid) destination is never replaced.
     pub fn open(path: &Path, legacy: Option<&Path>) -> Result<Self, String> {
@@ -186,6 +294,7 @@ impl Settings {
                     .map_err(|e| format!("Cannot read settings {}: {e}", path.display()))?;
                 settings.machine.validate()?;
                 settings.media.validate()?;
+                settings.advanced.validate()?;
                 settings
                     .media
                     .resolve_paths(path.parent().unwrap_or(Path::new(".")))?;
@@ -200,6 +309,7 @@ impl Settings {
     pub fn save(&self, path: &Path) -> Result<(), String> {
         self.machine.validate()?;
         self.media.validate()?;
+        self.advanced.validate()?;
         let parent = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -220,6 +330,61 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn advanced_settings_migrate_roundtrip_and_reject_invalid_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prismatic.cfg");
+        fs::write(&path, "tinker = false").unwrap();
+        let mut settings = Settings::load(&path).unwrap();
+        assert_eq!(settings.advanced, AdvancedSettings::default());
+        settings.advanced = AdvancedSettings {
+            resolution: NewportResolution::Res1024x768,
+            cache: CacheModel::Shadow,
+            clock_offset_years: -18,
+            scsi_deferred_interrupts: false,
+            serial_logging: SerialLogging::Timestamped,
+        };
+        settings.save(&path).unwrap();
+        assert_eq!(Settings::load(&path).unwrap(), settings);
+        let original = fs::read(&path).unwrap();
+        settings.advanced.clock_offset_years = -31;
+        assert!(settings.save(&path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        for value in [
+            "clock_offset_years = 1",
+            "resolution = '800x600'",
+            "cache = 'fast'",
+            "serial_logging = 'append'",
+            "unknown = true",
+        ] {
+            fs::write(&path, format!("[advanced]\n{value}\n")).unwrap();
+            assert!(Settings::load(&path).is_err());
+        }
+    }
+
+    #[test]
+    fn only_core_changes_require_restart_even_when_tinker_is_hidden() {
+        let active = Settings::default();
+        let mut draft = active.clone();
+        draft.tinker = true;
+        draft.smoothing = true;
+        draft.scanlines = true;
+        draft.show_status = false;
+        assert!(!draft.machine_differs_from(&active));
+        for change in [
+            AdvancedSettings::cycle_resolution,
+            AdvancedSettings::cycle_cache,
+            AdvancedSettings::cycle_clock_offset,
+            AdvancedSettings::cycle_serial_logging,
+            |a: &mut AdvancedSettings| a.scsi_deferred_interrupts = !a.scsi_deferred_interrupts,
+        ] {
+            draft.advanced = active.advanced.clone();
+            change(&mut draft.advanced);
+            draft.tinker = false;
+            assert!(draft.machine_differs_from(&active));
+        }
+    }
 
     #[test]
     fn cfg_is_created_migrates_old_preferences_and_wins_on_subsequent_launches() {
