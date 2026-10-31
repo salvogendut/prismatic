@@ -29,6 +29,8 @@ including when the hints are hidden.
 | `src/overlay.rs` | Draft settings, navigation, modal choices and effects |
 | `src/settings.rs` | Desktop/hardware/media/Advanced settings, compatibility, RAM banks, state paths and atomic persistence |
 | `src/diagnostics.rs` | Live Off/Screen/Console routing of Iris diagnostics, bounded screen text and redraw updates |
+| `src/capture.rs` | Asynchronous PPM screenshots, bounded GIF recording, atomic publication and optional FFmpeg optimization |
+| `src/sound.rs` | Embedded Happy Years screenshot shutter through a main-thread SDL audio stream |
 | `src/display.rs` | Packed RGBA frame type, startup/UI-preview pixels and aspect-preserving placement |
 | `src/view.rs` | SDL drawing, status strip, LEDs, options, confirmations and notifications |
 | `src/media.rs` | Native file chooser, asynchronous read-only probes, media settings and Iris block-node adapters |
@@ -54,7 +56,7 @@ default SCSI image or Iris configuration file is selected. Other profiles need
 display paths beyond this Newport renderer and are rejected by validation.
 
 Iris's current library still compiles winit/glutin, CPAL, and camera support.
-Prismatic does not call `Ui::run`, so there is only the SDL window. Audio is
+Prismatic does not call `Ui::run`, so there is only the SDL window. Guest audio is
 disabled in the machine config. Removing unused host dependencies and exposing
 a PCM sink for SDL audio are later changes in the fork.
 
@@ -139,6 +141,45 @@ media cyan; RUN uses blue, and writes flash amber. Idle colors preserve each
 function's hue. Lamps have black borders, a shared top separator and spacing
 computed from the actual labels so the entire group is centered.
 
+## Screenshot and GIF capture
+
+F4 and F6 are host shortcuts, including when menus are open; repeats are ignored.
+Shift plus either key sends a bare guest tap while input is captured, like the
+other reserved function keys. Capture takes the latest immutable Iris `Frame`,
+including its composed guest cursor. It does not read SDL pixels, so window size,
+overlays, debug text, scanlines and the bottom bars do not enter captures.
+
+There is at most one screenshot worker and one GIF worker. Recording starts
+with a guest frame and fixed output dimensions. A two-entry synchronous channel
+receives timed frame samples through nonblocking sends. The SDL event loop wakes
+at the selected sampling interval even if Iris has not published a new image.
+Full queues skip samples; timestamps preserve elapsed time. On the worker,
+aspect-preserving scaling, color quantization and GIF/LZW encoding operate with
+bounded frame storage. Identical images coalesce and long holds split at GIF's
+16-bit delay limit. Closing the channel requests stop without competing for a
+queue slot; the final delay includes time through the stop request.
+
+PPM/GIF files use UTC timestamped names and unique suffixes in the working
+directory. Workers flush temporary files and publish without replacing existing
+captures. Failures remove incomplete files and report back to the UI. Quit and
+restart stop sampling and wait asynchronously for capture completion while SDL
+keeps pumping events. Fatal UI error cleanup also joins the writers.
+
+Successful screenshot completion queues the shared 1984/1985/1986 shutter sample
+through a dedicated SDL3 audio stream on the main thread. The embedded WAV is
+decoded and the default playback device opened lazily. Repeated shots clear the
+stream before replay, keeping queued audio bounded. Missing host audio is
+reported once and never turns a successful file save into a capture failure.
+This UI sound is independent of Iris's still-disabled guest audio.
+
+GIF width, fps and encoder persist in `[gif]`, independently of restart-required
+Iris settings. A recording snapshots them at start, so editing or saving a draft
+cannot change the current recording. Optional FFmpeg optimization uses two
+bounded-time passes (palette generation, then encoding) to avoid buffering the
+whole video. Only a smaller, decodable result with matching dimensions and
+duration replaces the built-in GIF. Missing FFmpeg or optimization failure keeps
+the original and reports a warning.
+
 ## Input handoff
 
 After starting the devices, the worker publishes an `Arc<Ps2Controller>` from
@@ -161,7 +202,7 @@ captured input reaches the guest. Ctrl+Enter, F9, the quit dialog, focus loss,
 window hiding/minimizing and machine stop release all tracked keys/buttons and
 disable relative mode. Closing an overlay or regaining focus does not recapture.
 
-F9/F11/F12 are host shortcuts. While captured, Shift plus a reserved function
+F4/F6/F9/F11/F12 are host shortcuts. While captured, Shift plus a reserved function
 key sends a bare guest tap by temporarily lifting held modifiers and restoring
 them afterward. Modal navigation consumes keys before guest delivery. Repeats
 are forwarded only for keys first pressed during capture; Iris applies the
@@ -266,11 +307,11 @@ preservation, invalid log targets and restart detection independent of UI flags.
 
 ## Next milestones
 
-1. Add SDL audio and feature boundaries for Iris's existing host backends.
+1. Add guest PCM playback through SDL audio and feature boundaries for Iris's existing host backends.
    Validate Linux, Windows and macOS builds and device behavior.
 2. Extend General/Media/Advanced and add Extensions and Network controls.
    Classify settings as live, next boot or restart-required. Validate before
    applying and confirm disruptive changes. Add explicit COW management and
    guest-aware media swapping when their core interfaces are ready.
-3. Add F4 screenshots, F5 confirmed reset, F6 recording, F7 pause
-   controls and window persistence as their backend behavior becomes ready.
+3. Add F5 confirmed reset, F7 pause controls and window persistence as their
+   backend behavior becomes ready.

@@ -31,6 +31,7 @@ pub struct Presentation<'a> {
     pub media: &'a MediaSettings,
     pub running: bool,
     pub debug_lines: &'a [String],
+    pub capture_label: Option<&'a str>,
 }
 
 pub fn guest_rect(frame: &Frame, settings: &Settings) -> Rect {
@@ -107,7 +108,7 @@ pub fn draw(
             canvas,
             x,
             y + 92,
-            "F9 Options     F11 Fullscreen     F12 Quit",
+            "F4 Screenshot  F6 GIF  F9 Options  F12 Quit",
             MUTED,
         )?;
     }
@@ -243,7 +244,10 @@ fn draw_overlay(
             3 => "Deferred is Iris's BSD-compatible default. Immediate changes SCSI timing.",
             4 => "Appends to serial.log in this machine's state directory. Timestamps use host UTC.",
             5 => "Bilinear filtering smooths the display when scaled; applies without restart.",
-            _ => "Debug: Off, Screen (latest messages), Console (terminal). Applies on Save.",
+            6 => "Debug: Off, Screen (latest messages), Console (terminal). Applies on Save.",
+            7 => "GIF width preserves the guest aspect ratio. Changes apply to the next recording.",
+            8 => "GIF sampling rate. Changes apply to the next recording; F6 starts or stops.",
+            _ => "FFmpeg optionally optimizes after recording; the built-in GIF is kept on failure.",
         }.into(), "Core options require restart. Turning Tinker off keeps the saved values active.".into()],
         Tab::About => vec![],
     };
@@ -310,7 +314,7 @@ fn draw_overlay(
             "Prismatic - Happy Years interface for Iris",
             "Rust / SDL3",
             "Iris Indy / Indigo2 / Newport - SCSI disk and CD-ROM support.",
-            "Click captures input; Ctrl+Enter releases. Shift+F9/F11/F12: guest key.",
+            "Click captures input; Ctrl+Enter releases. Shift+F4/F6/F9/F11/F12: guest key.",
         ]
         .iter()
         .enumerate()
@@ -427,9 +431,9 @@ fn draw_status(
     )?;
     let status = short_ascii(presentation.status, 48);
     let keys = if presentation.captured {
-        "  Ctrl+Enter=release  F9=options  F11=fullscreen  F12=quit"
+        "  Ctrl+Enter=release  F4=screenshot  F6=gif  F9=options  F11=full  F12=quit"
     } else {
-        "  Click=capture  F9=options  F11=fullscreen  F12=quit"
+        "  Click=capture  F4=screenshot  F6=gif  F9=options  F11=full  F12=quit"
     };
     let text_width = (status.len() + keys.len()) as f32 * 8.0;
     let scale = ((WIDTH - 16) as f32 / text_width).min(1.0);
@@ -490,6 +494,9 @@ fn draw_leds(
         Color::RGB(18, 18, 18),
     )?;
     fill(canvas, Rect::new(0, y, WIDTH, 1), Color::RGB(50, 50, 50))?;
+    if let Some(label) = presentation.capture_label {
+        text(canvas, 8, y + 7, label, Color::RGB(255, 96, 80))?;
+    }
     let mut lamps = vec![
         ("RUN".to_owned(), presentation.running, false, RUN_LED),
         (

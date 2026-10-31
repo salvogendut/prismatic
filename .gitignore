@@ -2,3 +2,8 @@
 *.bmp
 
 /prismatic.cfg
+
+# Timestamped F4/F6 guest captures and files still being encoded.
+/prismatic-*.ppm
+/prismatic-*.gif
+/prismatic-*.part

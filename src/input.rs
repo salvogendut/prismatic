@@ -14,6 +14,8 @@ pub enum KeyRoute {
     FunctionTap,
     Host(Key),
     Fullscreen,
+    Screenshot,
+    Gif,
     Release,
     Ignore,
 }
@@ -26,7 +28,7 @@ pub fn route_key(
     modal: bool,
 ) -> KeyRoute {
     use Scancode as S;
-    let reserved = matches!(scan, S::F9 | S::F11 | S::F12);
+    let reserved = matches!(scan, S::F4 | S::F6 | S::F9 | S::F11 | S::F12);
     if captured
         && !modal
         && modifiers.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD)
@@ -50,6 +52,8 @@ pub fn route_key(
             KeyRoute::Ignore
         } else {
             match scan {
+                S::F4 => KeyRoute::Screenshot,
+                S::F6 => KeyRoute::Gif,
                 S::F9 => KeyRoute::Host(Key::Options),
                 S::F12 => KeyRoute::Host(Key::Quit),
                 _ => KeyRoute::Fullscreen,
@@ -446,6 +450,35 @@ mod tests {
             R::Ignore
         );
         assert_eq!(route_key(S::A, Mod::NOMOD, false, true, true), R::Ignore);
+    }
+
+    #[test]
+    fn capture_keys_work_in_menus_ignore_repeats_and_allow_shift_guest_taps() {
+        for (scan, expected) in [
+            (Scancode::F4, KeyRoute::Screenshot),
+            (Scancode::F6, KeyRoute::Gif),
+        ] {
+            for captured in [false, true] {
+                for modal in [false, true] {
+                    assert_eq!(
+                        route_key(scan, Mod::NOMOD, false, captured, modal),
+                        expected
+                    );
+                    assert_eq!(
+                        route_key(scan, Mod::NOMOD, true, captured, modal),
+                        KeyRoute::Ignore
+                    );
+                }
+            }
+            assert_eq!(
+                route_key(scan, Mod::LSHIFTMOD, false, true, false),
+                KeyRoute::FunctionTap
+            );
+            assert_eq!(
+                route_key(scan, Mod::LSHIFTMOD, true, true, false),
+                KeyRoute::Ignore
+            );
+        }
     }
 
     #[test]

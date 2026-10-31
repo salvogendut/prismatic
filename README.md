@@ -15,7 +15,8 @@ scanlines, filtering and saved desktop preferences. SDL keyboard and relative
 mouse input now reach the guest through Iris's PS/2 controller.
 
 **F9 > Media** attaches hard disks and CD-ROMs; bottom LEDs show machine, CPU,
-network and disk activity. **Audio is not connected yet.** With fresh NVRAM and
+network and disk activity. **Guest audio is not connected yet**; screenshots
+play the shared Happy Years shutter sound through SDL3. With fresh NVRAM and
 no disk, the PROM normally displays "Unable to boot; press any key to continue".
 Click the display to capture input, then press Enter to reach the PROM menu.
 Choose **Enter Command Monitor** (5) and try `hinv` to inspect the emulated
@@ -45,7 +46,7 @@ cargo run --release --locked
 ```
 
 The current Iris library still compiles its winit/glutin, CPAL and camera
-modules. Prismatic does not open Iris's winit window, and audio is disabled
+modules. Prismatic does not open Iris's winit window, and guest audio is disabled
 for this milestone; libclang is needed to build the Linux camera bindings.
 SDL is linked dynamically through the [`sdl3` Rust bindings](https://github.com/vhspace/sdl3-rs).
 SDL_ttf and a separate widget toolkit are not required. Linux is the first
@@ -72,6 +73,8 @@ remaining work.
 | --- | --- |
 | Click guest display | Capture keyboard and mouse; the capture click is consumed |
 | Ctrl+Enter | Release input and return the pointer to the desktop |
+| F4 | Save a guest-display screenshot (PPM) |
+| F6 | Start or stop an animated GIF capture |
 | F9 | Open options; save and close an open options session |
 | Left / Right (in options/dialogs) | Change section or confirmation choice |
 | Up / Down (in options) | Select a row |
@@ -79,7 +82,7 @@ remaining work.
 | Escape (in options/dialogs) | Close; offer Save / Discard / Cancel if changed |
 | F11 | Toggle fullscreen |
 | F12 / window close | Confirm quit |
-| Shift+F9 / Shift+F11 / Shift+F12 (captured) | Send a bare guest function-key tap |
+| Shift+F4 / Shift+F6 / Shift+F9 / Shift+F11 / Shift+F12 (captured) | Send a bare guest function-key tap |
 
 While captured, other keys, including Escape and the remaining function keys,
 go to the guest. Opening options or a quit confirmation, losing focus, or
@@ -98,9 +101,39 @@ wheel and extra buttons work when the guest enables the corresponding PS/2
 mouse protocol.
 
 Enable **General > Tinker** to expose Advanced, including Iris core options,
-bilinear filtering and debug output. Hiding Advanced retains its saved settings. Options
+bilinear filtering, debug output and GIF capture settings. Hiding Advanced retains its saved settings. Options
 are edited in a private draft and applied only after a successful save. Cancelling or discarding leaves the live display
 unchanged. Confirmation dialogs initially select Cancel.
+
+## Screenshots and GIF capture
+
+**F4** saves the guest framebuffer at its native resolution as a PPM image,
+matching 1989. **F6** starts recording; press it again to finish the GIF. These
+shortcuts work while input is captured and while menus are open. Captures contain
+the guest display and guest cursor, without the frontend menus, debug panel,
+scanlines, notifications or bottom bars. A guest frame must have arrived first.
+
+Successful screenshots play the same embedded shutter sample as 1984/1985/1986.
+If host audio is unavailable, the image still saves and the terminal reports it.
+
+Files appear in the **current working directory**, with names such as
+`prismatic-20261031-142530Z-ABC123.gif` (UTC timestamp and a unique suffix).
+Completed files never replace an existing capture. Notifications report saves
+and failures; the LED bar shows **GIF REC - F6 STOP** while recording and
+**GIF SAVING...** while finishing. Confirmed quit or machine restart finishes
+the active recording before proceeding. Cancelling quit/restart keeps it running.
+
+Use **General > Tinker > Advanced** for GIF resolution, frame rate and encoder.
+Defaults match 1989: **480 pixels wide, 25 fps, built-in encoder**. Saved changes
+apply to the next recording, without restarting Iris. Output height follows
+the guest aspect ratio at recording start; later guest resolution changes fit
+inside that canvas with black borders. Identical frames share a longer delay.
+If encoding falls behind, samples may be skipped while elapsed timing is retained.
+
+**FFmpeg optimize** optionally runs `ffmpeg` from PATH after recording. The
+built-in GIF is kept if FFmpeg is unavailable, fails, changes dimensions/timing
+or produces a larger file. Screenshot and GIF writing, encoding and optimization
+run on workers while the window continues handling input.
 
 ## Machine settings
 
@@ -148,6 +181,9 @@ Turning Tinker off hides the controls without resetting their values.
 | Serial console log | Off, Raw, Timestamped (UTC) | Off |
 | Bilinear filtering | Off, On; applies without restarting | Off |
 | Debug output | Off, Screen, Console; applies without restarting | Off |
+| GIF resolution | 320, 480, 640 pixels wide; preserves guest aspect ratio | 480 |
+| GIF frame rate | 10, 20, 25 fps | 25 |
+| GIF encoder | Built-in, FFmpeg optimize (if available) | Built-in |
 
 Debug output routes Iris's routine startup, bus-probe, Newport register/display
 and draw-cache diagnostics. **Screen** shows the latest 12 wrapped lines above
@@ -243,7 +279,7 @@ For a configuration in the current directory, run:
 cargo run --release --locked -- --config ./prismatic.cfg
 ```
 
-The file uses human-readable TOML with `[machine]`, `[advanced]` and one table per
+The file uses human-readable TOML with `[machine]`, `[advanced]`, `[gif]` and one table per
 attached device, for example:
 
 ```toml
@@ -265,6 +301,11 @@ cache = "auto"
 clock_offset_years = 0
 scsi_deferred_interrupts = true
 serial_logging = "off"
+
+[gif]
+width = 480
+fps = 25
+encoder = "built_in"
 
 [media.devices.1]
 kind = "disk"

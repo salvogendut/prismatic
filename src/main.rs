@@ -1,4 +1,5 @@
 mod activity;
+mod capture;
 mod diagnostics;
 mod display;
 mod emulator;
@@ -7,6 +8,7 @@ mod media;
 mod overlay;
 mod settings;
 mod smoke;
+mod sound;
 mod view;
 
 use emulator::{Emulator, Phase, Status};
@@ -57,13 +59,15 @@ Usage: prismatic [--config PATH] [--state-dir PATH] [--keyboard ansi|iso|jis]
                  [--screenshot PATH.bmp]
 
 Click display: capture input  Ctrl+Enter: release
-F9 Options  F11 Fullscreen  F12 Quit
-Shift+F9/F11/F12: send a bare guest function-key tap while captured
+F4 Screenshot  F6 Start/stop GIF  F9 Options  F11 Fullscreen  F12 Quit
+Shift+F4/F6/F9/F11/F12: send a bare guest function-key tap while captured
 
 General: machine, RAM, CPU and keyboard. Core changes require restart.
 Tinker > Advanced: resolution, cache, clock offset, SCSI timing, serial and debug output.
+Advanced also sets GIF width (320/480/640), frame rate (10/20/25) and encoder.
+Captures save the guest display as timestamped PPM/GIF files in the working directory.
 Media: raw/CHD hard disks and ISO9660/EFS/CHD CD-ROMs.
-Boots diskless by default with bundled firmware. Audio is not connected yet.
+Boots diskless by default with bundled firmware. Guest audio is not connected yet.
 --keyboard overrides the saved keyboard type for this session.
 --smoke-test renders the UI without starting Iris.
 --boot-smoke-test waits for guest display output, captures ten seconds later, and stops.
@@ -264,6 +268,8 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let mut frames = 0;
     let mut guest_frame_received = false;
     let mut first_content: Option<Instant> = None;
+    let mut captures = capture::Captures::new(std::env::current_dir()?);
+    let mut shutter = sound::Shutter::default();
     let started = Instant::now();
     let mut stopping: Option<Instant> = None;
     // A new worker is constructed only after the previous worker has joined.
@@ -271,6 +277,24 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let mut failure: Option<String> = None;
 
     loop {
+        for result in captures.poll() {
+            let message = match result {
+                Ok(report) => {
+                    if report.kind == capture::Kind::Screenshot
+                        && let Err(error) = shutter.play(&sdl)
+                    {
+                        eprintln!(
+                            "Prismatic: screenshot saved, but shutter sound unavailable: {error}"
+                        );
+                    }
+                    report.message()
+                }
+                Err(error) => error,
+            };
+            eprintln!("Prismatic: {message}");
+            toast = Some((message, Instant::now()));
+            redraw = true;
+        }
         let mut ready_save = None;
         if let Some(result) = media_jobs.poll() {
             redraw = true;
@@ -299,7 +323,11 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         } else {
             100
         };
-        let first = events.wait_event_timeout(Duration::from_millis(timeout));
+        let first = events.wait_event_timeout(
+            captures
+                .wait_time(Duration::from_millis(timeout))
+                .max(Duration::from_millis(1)),
+        );
         for event in first.into_iter().chain(events.poll_iter()) {
             redraw = true;
             if stopping.is_some() {
@@ -340,6 +368,38 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                         }
                         KeyRoute::Ignore => None,
                         KeyRoute::Host(key) => Some(key),
+                        KeyRoute::Screenshot => {
+                            let result = if guest_frame_received {
+                                captures.screenshot(frame.clone())
+                            } else {
+                                Err("Screenshot unavailable - waiting for the guest display".into())
+                            };
+                            let message = match result {
+                                Ok(()) => "Saving screenshot...".into(),
+                                Err(error) => {
+                                    eprintln!("Prismatic: {error}");
+                                    error
+                                }
+                            };
+                            toast = Some((message, Instant::now()));
+                            None
+                        }
+                        KeyRoute::Gif => {
+                            let result = if guest_frame_received || captures.is_recording() {
+                                captures.toggle_gif(frame.clone(), &settings.gif)
+                            } else {
+                                Err("GIF unavailable - waiting for the guest display".into())
+                            };
+                            let message = match result {
+                                Ok(message) => message.to_owned(),
+                                Err(error) => {
+                                    eprintln!("Prismatic: {error}");
+                                    error
+                                }
+                            };
+                            toast = Some((message, Instant::now()));
+                            None
+                        }
                         KeyRoute::Fullscreen => {
                             match canvas.window_mut().set_fullscreen(!fullscreen) {
                                 Ok(()) => fullscreen = !fullscreen,
@@ -566,6 +626,11 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 redraw = true;
             }
         }
+        if stopping.is_none() {
+            captures.tick(&frame);
+        } else {
+            captures.stop();
+        }
         let smoke_timeout = if options.settings_smoke_test
             || options.media_smoke_test
             || options.advanced_smoke_test
@@ -768,6 +833,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                     media: &active.media,
                     running: status.phase == Phase::Running && stopping.is_none(),
                     debug_lines: &debug_lines,
+                    capture_label: captures.label(),
                 },
             )?;
             frames += 1;
@@ -788,6 +854,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
         if let Some(time) = stopping {
+            captures.stop();
             release_input(&mut guest, &mouse, canvas.window());
             let finished = if let Some(machine) = &mut emulator {
                 machine.request_stop();
@@ -795,7 +862,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 true
             };
-            if finished {
+            if finished && captures.idle() {
                 let stop_error =
                     emulator
                         .as_ref()
@@ -855,7 +922,10 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                     }
                     break;
                 }
-            } else if active.media.devices.is_empty() && time.elapsed() >= Duration::from_secs(10) {
+            } else if !finished
+                && active.media.devices.is_empty()
+                && time.elapsed() >= Duration::from_secs(10)
+            {
                 failure = Some("Iris did not finish stopping within ten seconds".into());
                 break;
             }

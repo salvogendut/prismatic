@@ -111,6 +111,12 @@ impl Session {
                 ),
                 ("Bilinear filtering", on_off(self.draft.smoothing)),
                 ("Debug output", self.draft.debug_output.label().into()),
+                (
+                    "GIF resolution",
+                    format!("{} px wide (guest aspect ratio)", self.draft.gif.width),
+                ),
+                ("GIF frame rate", format!("{} fps", self.draft.gif.fps)),
+                ("GIF encoder", self.draft.gif.encoder.label().into()),
             ],
             Tab::Media => [
                 "SCSI 0:1", "SCSI 0:2", "SCSI 0:3", "SCSI 0:4", "SCSI 0:5", "SCSI 0:6", "SCSI 0:7",
@@ -272,6 +278,9 @@ impl Overlay {
                 (Tab::Advanced, 4) => session.draft.advanced.cycle_serial_logging(),
                 (Tab::Advanced, 5) => session.draft.smoothing = !session.draft.smoothing,
                 (Tab::Advanced, 6) => session.draft.debug_output.cycle(),
+                (Tab::Advanced, 7) => session.draft.gif.cycle_width(),
+                (Tab::Advanced, 8) => session.draft.gif.cycle_fps(),
+                (Tab::Advanced, 9) => session.draft.gif.cycle_encoder(),
                 (Tab::Media, row) => {
                     self.dialog = Some(Dialog::Media {
                         id: row as u8 + 1,
@@ -298,9 +307,16 @@ mod tests {
             ..Default::default()
         };
         let mut overlay = Overlay::default();
-        for key in [Key::Options, Key::Right, Key::Right, Key::Up, Key::Enter] {
+        for key in [Key::Options, Key::Right, Key::Right] {
             overlay.key(key, &live);
         }
+        let session = overlay.session.as_mut().unwrap();
+        session.row = session
+            .rows()
+            .iter()
+            .position(|(label, _)| *label == "Debug output")
+            .unwrap();
+        overlay.key(Key::Enter, &live);
         assert_eq!(
             overlay.session.as_ref().unwrap().draft.debug_output,
             DebugOutput::Screen
@@ -319,6 +335,40 @@ mod tests {
             overlay.session.as_ref().unwrap().draft.debug_output,
             DebugOutput::Off
         );
+    }
+
+    #[test]
+    fn gif_options_are_saved_as_a_draft_without_restarting() {
+        let live = Settings {
+            tinker: true,
+            ..Default::default()
+        };
+        let mut overlay = Overlay::default();
+        for key in [Key::Options, Key::Right, Key::Right] {
+            overlay.key(key, &live);
+        }
+        for label in ["GIF resolution", "GIF frame rate", "GIF encoder"] {
+            let session = overlay.session.as_mut().unwrap();
+            session.row = session
+                .rows()
+                .iter()
+                .position(|(name, _)| *name == label)
+                .unwrap();
+            overlay.key(Key::Enter, &live);
+        }
+        let Effect::Save(draft) = overlay.key(Key::Options, &live) else {
+            panic!("Expected save");
+        };
+        assert_eq!(draft.gif.width, 640);
+        assert_eq!(draft.gif.fps, 10);
+        assert_eq!(draft.gif.encoder, crate::settings::GifEncoder::Ffmpeg);
+        assert!(!draft.machine_differs_from(&live));
+        assert_eq!(live.gif, Default::default());
+        overlay.save_failed();
+        for key in [Key::Escape, Key::Left, Key::Enter, Key::Options] {
+            overlay.key(key, &live);
+        }
+        assert_eq!(overlay.session.unwrap().draft.gif, live.gif);
     }
 
     #[test]

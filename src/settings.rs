@@ -184,6 +184,62 @@ impl DebugOutput {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GifEncoder {
+    #[default]
+    BuiltIn,
+    Ffmpeg,
+}
+
+impl GifEncoder {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::BuiltIn => "Built-in",
+            Self::Ffmpeg => "FFmpeg optimize (if available)",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct GifSettings {
+    pub width: u16,
+    pub fps: u16,
+    pub encoder: GifEncoder,
+}
+
+impl Default for GifSettings {
+    fn default() -> Self {
+        Self {
+            width: 480,
+            fps: 25,
+            encoder: GifEncoder::BuiltIn,
+        }
+    }
+}
+
+impl GifSettings {
+    pub fn cycle_width(&mut self) {
+        self.width = next(self.width, &[320, 480, 640]);
+    }
+    pub fn cycle_fps(&mut self) {
+        self.fps = next(self.fps, &[10, 20, 25]);
+    }
+    pub fn cycle_encoder(&mut self) {
+        self.encoder = next(self.encoder, &[GifEncoder::BuiltIn, GifEncoder::Ffmpeg]);
+    }
+    pub fn validate(&self) -> Result<(), String> {
+        if ![320, 480, 640].contains(&self.width) {
+            return Err("GIF width must be 320, 480 or 640 pixels".into());
+        }
+        if ![10, 20, 25].contains(&self.fps) {
+            return Err("GIF frame rate must be 10, 20 or 25 fps".into());
+        }
+        Ok(())
+    }
+}
+
 /// Core settings stay active even when Tinker hides their controls.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
@@ -269,6 +325,7 @@ pub struct Settings {
     pub smoothing: bool,
     pub tinker: bool,
     pub debug_output: DebugOutput,
+    pub gif: GifSettings,
     pub machine: MachineSettings,
     pub media: MediaSettings,
     pub advanced: AdvancedSettings,
@@ -282,6 +339,7 @@ impl Default for Settings {
             smoothing: false,
             tinker: false,
             debug_output: DebugOutput::Off,
+            gif: GifSettings::default(),
             machine: MachineSettings::default(),
             media: MediaSettings::default(),
             advanced: AdvancedSettings::default(),
@@ -320,6 +378,7 @@ impl Settings {
                 settings.machine.validate()?;
                 settings.media.validate()?;
                 settings.advanced.validate()?;
+                settings.gif.validate()?;
                 settings
                     .media
                     .resolve_paths(path.parent().unwrap_or(Path::new(".")))?;
@@ -335,6 +394,7 @@ impl Settings {
         self.machine.validate()?;
         self.media.validate()?;
         self.advanced.validate()?;
+        self.gif.validate()?;
         let parent = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -397,6 +457,9 @@ mod tests {
         draft.scanlines = true;
         draft.show_status = false;
         draft.debug_output = DebugOutput::Screen;
+        draft.gif.cycle_width();
+        draft.gif.cycle_fps();
+        draft.gif.cycle_encoder();
         assert!(!draft.machine_differs_from(&active));
         for change in [
             AdvancedSettings::cycle_resolution,
@@ -428,6 +491,30 @@ mod tests {
         }
         fs::write(&path, "debug_output = 'file'\n").unwrap();
         assert!(Settings::load(&path).is_err());
+    }
+
+    #[test]
+    fn gif_settings_migrate_persist_and_reject_invalid_values_without_overwriting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prismatic.cfg");
+        fs::write(&path, "tinker = false\n").unwrap();
+        let mut settings = Settings::load(&path).unwrap();
+        assert_eq!(settings.gif, GifSettings::default());
+        settings.gif = GifSettings {
+            width: 640,
+            fps: 10,
+            encoder: GifEncoder::Ffmpeg,
+        };
+        settings.save(&path).unwrap();
+        assert_eq!(Settings::load(&path).unwrap(), settings);
+        let original = fs::read(&path).unwrap();
+        settings.gif.width = 0;
+        assert!(settings.save(&path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        for invalid in ["width = 2048", "fps = 0", "fps = 60", "encoder = 'unknown'"] {
+            fs::write(&path, format!("[gif]\n{invalid}\n")).unwrap();
+            assert!(Settings::load(&path).is_err());
+        }
     }
 
     #[test]
