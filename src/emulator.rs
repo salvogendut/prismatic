@@ -7,7 +7,7 @@ use crate::{
 };
 use iris::{
     compositor::SwCompositor,
-    config::{GraphicsBoard, MachineConfig, MachineProfile},
+    config::{CacheModel, GraphicsBoard, MachineConfig, MachineProfile},
     debug_overlay::DebugOverlay,
     dev::ng1::rex3::Renderer,
     dev::ps2::Ps2Controller,
@@ -170,9 +170,8 @@ pub fn machine_config(
             .map_err(|_| "Iris requires a UTF-8 state directory".to_string())
     };
     let mut config = MachineConfig {
-        // Indy uses the embedded fallback. Indigo2 gets an explicit temporary
-        // copy of Iris's embedded PROM before construction (see spawn).
-        prom: String::new(),
+        // Embedded PROMs are materialized on the worker before construction.
+        prom: hardware.prom_path().unwrap_or_default().to_owned(),
         nvram: path("nvram.bin")?,
         nveeprom: path("nveeprom.bin")?,
         banks: hardware.banks()?,
@@ -200,9 +199,24 @@ pub fn machine_config(
     };
     config.machine.profile = hardware.profile;
     config.machine.cpu = hardware.cpu;
-    config.machine.cache = advanced.cache;
-    config.graphics.resolution = advanced.resolution;
-    config.graphics.board = Some(GraphicsBoard::Newport);
+    config.machine.cache = if hardware.newport() {
+        advanced.cache
+    } else {
+        CacheModel::Shadow
+    };
+    config.graphics.resolution = if hardware.newport() {
+        advanced.resolution
+    } else {
+        iris::dev::ng1::vc2_timings::NewportResolution::Guest
+    };
+    config.graphics.board = match hardware.profile {
+        MachineProfile::IndyIp24 | MachineProfile::Indigo2Ip22 => Some(GraphicsBoard::Newport),
+        MachineProfile::O2Ip32 => None, // Iris's O2 constructor always supplies integrated GBE.
+        _ => Some(GraphicsBoard::SolidImpact),
+    };
+    if hardware.profile == MachineProfile::OctaneIp30 {
+        config.octane.flash = Some(path("flash.bin")?);
+    }
     config.graphics.heads = 1;
     config.validate()?;
     Ok(config)
@@ -285,6 +299,7 @@ impl Emulator {
         // process on media errors. The frontend must report them in the window.
         config.scsi.clear();
         let media = media.clone();
+        let mut hardware = hardware.clone();
         let has_media = !media.devices.is_empty();
         iris::workstation::set_exit_on_guest_poweroff(false);
         let state_dir = state_dir.to_owned();
@@ -302,16 +317,21 @@ impl Emulator {
             .stack_size(64 * 1024 * 1024)
             .spawn(move || {
                 let result = catch_unwind(AssertUnwindSafe(|| -> Result<(), String> {
+                    hardware.validate_prom()?;
                     std::fs::create_dir_all(&state_dir)
                         .map_err(|e| format!("Cannot create machine state directory: {e}"))?;
                     prepare_serial_log(&config)?;
                     // Iris's Indigo2 fallback also searches the current directory.
                     // Give it the bundled image explicitly so a local ROM cannot
                     // silently change a configured machine's firmware.
-                    let _prom = if config.machine.profile == MachineProfile::Indigo2Ip22 {
+                    let bundled: Option<&[u8]> = match config.machine.profile {
+                        MachineProfile::Indigo2Ip22 => Some(&iris::prombini2::PROM0701367012),
+                        MachineProfile::Indigo2Ip28 => Some(&iris::prombinip28::PROM0701477002),
+                        _ => None,
+                    };
+                    let _prom = if let Some(prom) = bundled {
                         let mut file = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
-                        file.write_all(&iris::prombini2::PROM0701367012)
-                            .map_err(|e| e.to_string())?;
+                        file.write_all(prom).map_err(|e| e.to_string())?;
                         config.prom = file
                             .path()
                             .to_str()
@@ -322,6 +342,9 @@ impl Emulator {
                         None
                     };
                     let mut owned = OwnedMachine::new(iris::workstation::build(config)?);
+                    // O2/Octane constructors currently use a default PS/2 layout.
+                    // Set the shared controller before any CPU thread can query it.
+                    owned.machine.get_ps2().set_layout(hardware.keyboard);
                     media::attach(
                         owned.machine.as_mut(),
                         &media,
@@ -577,6 +600,138 @@ mod tests {
     }
 
     #[test]
+    fn impact_and_gbe_frames_keep_native_pixels_and_monitor_readback() {
+        let frames = FrameSlot::default();
+        let mut renderer = CaptureRenderer::new(frames.clone(), Activity::default());
+        let mut screen = Rex3Screen::new();
+        screen.prebuilt = true;
+        screen.width = 1280;
+        screen.height = 1024;
+        screen.fb_rgb[0] = 0xff332211;
+        screen.fb_rgb[1023 * FB_STRIDE + 1279] = 0xff665544;
+        let stats = BarStats {
+            now: Instant::now(),
+            cycles: 1,
+            fasttick: 0,
+            more_cpus: [None; iris::disp::MORE_CPUS],
+            decoded_delta: 0,
+            l1i_hits: 0,
+            l1i_fetches: 0,
+            uncached: 0,
+            hb: 0,
+            count_hz: 1,
+            gfifo_pending: 0,
+        };
+        renderer.present(
+            &mut screen,
+            &mut DebugOverlay::new(),
+            &mut StatusBar::new(),
+            &mut StatusBarTexture::new(),
+            &stats,
+            true,
+            None,
+            None,
+        );
+        let frame = frames.take().unwrap();
+        assert_eq!((frame.width, frame.height), (1280, 1024));
+        assert_eq!(&frame.rgba[..4], &[0x11, 0x22, 0x33, 255]);
+        assert_eq!(
+            &frame.rgba[frame.rgba.len() - 4..],
+            &[0x44, 0x55, 0x66, 255]
+        );
+        assert_eq!(screen.rgba[1023 * FB_STRIDE + 1279], 0xff665544);
+        assert_eq!(screen.frame_seq, 1);
+    }
+
+    #[test]
+    fn missing_external_prom_is_a_recoverable_worker_failure() {
+        for profile in [MachineProfile::O2Ip32, MachineProfile::OctaneIp30] {
+            let dir = tempfile::tempdir().unwrap();
+            let hardware = MachineSettings {
+                profile,
+                cpu: iris::config::CpuModel::R10000,
+                ..Default::default()
+            };
+            let mut emulator = Emulator::spawn(
+                dir.path(),
+                &hardware,
+                &MediaSettings::default(),
+                &AdvancedSettings::default(),
+            )
+            .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !emulator.finished() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(emulator.finished());
+            let Phase::Failed(error) = emulator.status().phase else {
+                panic!("Expected a PROM error")
+            };
+            assert!(error.contains("General > PROM"));
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn o2_and_octane_start_attach_media_and_stop_with_synthetic_firmware() {
+        // A MIPS branch-to-self checks construction, SCSI attachment, PS/2 and
+        // teardown without requiring copyrighted firmware or claiming a PROM boot.
+        for (profile, cpu) in [
+            (MachineProfile::O2Ip32, iris::config::CpuModel::R5000),
+            (MachineProfile::O2Ip32, iris::config::CpuModel::R10000),
+            (MachineProfile::OctaneIp30, iris::config::CpuModel::R10000),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut prom = vec![0; 512 * 1024];
+            prom[..4].copy_from_slice(&0x1000ffff_u32.to_be_bytes());
+            let rom = dir.path().join("loop.bin");
+            std::fs::write(&rom, &prom).unwrap();
+            let disk = dir.path().join("scratch.raw");
+            let cd = dir.path().join("cd.iso");
+            std::fs::write(&disk, vec![0x5a; 65536]).unwrap();
+            std::fs::write(&cd, vec![0x6b; 65536]).unwrap();
+            let mut media = MediaSettings::default();
+            for (id, path, kind) in [
+                (1, &disk, media::MediaKind::Disk),
+                (6, &cd, media::MediaKind::Cdrom),
+            ] {
+                media
+                    .devices
+                    .insert(id, media::Medium::inspect(path, kind).unwrap());
+            }
+            let mut hardware = MachineSettings {
+                profile,
+                cpu,
+                ..Default::default()
+            };
+            hardware.set_prom(Some(rom.to_str().unwrap().into()));
+            let mut emulator = Emulator::spawn(
+                &dir.path().join("state"),
+                &hardware,
+                &media,
+                &AdvancedSettings::default(),
+            )
+            .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while emulator.status().phase == Phase::Starting && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(emulator.status().phase, Phase::Running);
+            assert!(emulator.input.lock().unwrap().is_some());
+            emulator.request_stop();
+            while !emulator.finished() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(emulator.finished(), "Machine did not stop");
+            assert_eq!(emulator.status().phase, Phase::Stopped);
+            assert_eq!(std::fs::read(&disk).unwrap(), vec![0x5a; 65536]);
+            assert_eq!(std::fs::read(&cd).unwrap(), vec![0x6b; 65536]);
+            assert_eq!(std::fs::read(&rom).unwrap(), prom);
+            assert!(dir.path().join("scratch.raw.overlay").is_file());
+        }
+    }
+
+    #[test]
     fn startup_failure_is_reported_without_blocking_the_caller() {
         let file = tempfile::NamedTempFile::new().unwrap();
         let mut emulator = Emulator::spawn(
@@ -596,7 +751,7 @@ mod tests {
 
     #[test]
     fn every_menu_hardware_combination_builds_a_valid_iris_config() {
-        for profile in [MachineProfile::IndyIp24, MachineProfile::Indigo2Ip22] {
+        for profile in MachineSettings::PROFILES {
             let mut hardware = MachineSettings {
                 profile,
                 ..Default::default()
@@ -614,6 +769,23 @@ mod tests {
                     .unwrap();
                     assert_eq!(config.machine.profile, profile);
                     assert_eq!(config.machine.cpu, cpu);
+                    if !hardware.newport() {
+                        assert_eq!(
+                            config.graphics.resolution,
+                            iris::dev::ng1::vc2_timings::NewportResolution::Guest
+                        );
+                        assert_eq!(config.machine.cache, CacheModel::Shadow);
+                    }
+                    if matches!(
+                        profile,
+                        MachineProfile::Indigo2Ip28 | MachineProfile::OctaneIp30
+                    ) {
+                        assert_eq!(config.graphics.board, Some(GraphicsBoard::SolidImpact));
+                    }
+                    assert_eq!(
+                        config.octane.flash.is_some(),
+                        profile == MachineProfile::OctaneIp30
+                    );
                     assert_eq!(config.banks.iter().sum::<u32>(), ram_mb);
                     assert!(
                         config

@@ -303,6 +303,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             redraw = true;
             match result {
                 Ok(Completion::Picked { id, medium }) => overlay.picked(id, medium),
+                Ok(Completion::PromPicked { profile, path }) => overlay.prom_picked(profile, path),
                 Ok(Completion::Validated {
                     settings,
                     confirmed,
@@ -520,6 +521,17 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 let confirmed_restart = matches!(effect, Effect::Restart(_));
                 match effect {
                     Effect::None => {}
+                    Effect::PickProm => {
+                        let hardware = &overlay.session.as_ref().unwrap().draft.machine;
+                        if let Err(error) = media_jobs.pick_prom(
+                            canvas.window(),
+                            hardware.profile,
+                            hardware.prom_path(),
+                        ) {
+                            overlay.save_failed();
+                            toast = Some((error, Instant::now()));
+                        }
+                    }
                     Effect::CancelMedia => {
                         media_jobs.cancel();
                         ready_save = None;

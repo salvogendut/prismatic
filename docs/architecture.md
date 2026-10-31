@@ -42,18 +42,41 @@ The root Cargo manifest depends directly on `../iris`, preserving that fork's
 winit and block patches at the root where Cargo applies them. The nightly
 Rust toolchain matches Iris. No emulator source is copied into this repository.
 The default is Indy IP24, R4400, 64 MB RAM, one Newport head, and no SCSI
-devices. General also selects Indigo2 IP22, RAM presets, a compatible CPU and
-keyboard type. Indy supports R4400/R5000 and 32–256 MB; Indigo2 exposes R4400
-and 32–512 MB. RAM presets fill up to four MC banks, at most 128 MB per bank.
-Frontend validation restricts model/CPU/RAM choices; `MachineConfig::validate`
-also checks the generated Iris configuration before it is saved or started.
+devices. General selects all five workstation profiles: Indy IP24, Indigo2 IP22,
+Indigo2 IMPACT IP28, O2 IP32 and Octane IP30. Indy supports R4400/R5000, IP22
+R4400, O2 R5000/R10000, and IP28/Octane R10000. Octane uses one CPU. RAM presets
+fill up to four banks, largest first, with per-bank limits of 128 MB on Indy/IP22,
+512 MB on IP28/Octane, and 256 MB on O2. Total limits are 256 MB, 512 MB, 1 GiB,
+1 GiB and 2 GiB respectively. Frontend validation checks menu choices and the
+core validates each generated `MachineConfig`. IP28 avoids 32/128 MB single
+banks, which fail the current core's PROM sizing: 32 MB uses 16+16, 128 MB uses
+64+64, and 384 MB uses 256+64+64. This preserves menu totals without changing
+CPU/device emulation. The 1 GiB preset remains 512+512.
 
-An empty PROM path selects the embedded Indy firmware. Iris's Indigo2 fallback
-also searches the working directory, so the worker writes the public bundled
-`prombini2` bytes to a temporary file and passes that exact path to construction.
-The temporary file lives through machine teardown. No working-directory ROM,
-default SCSI image or Iris configuration file is selected. Other profiles need
-display paths beyond this Newport renderer and are rejected by validation.
+Indy uses its embedded PROM. For IP22/IP28 the worker writes Iris's bundled
+`prombini2`/`prombinip28` bytes to a temporary file kept through teardown.
+O2 and Octane require external PROMs, remembered independently in
+`machine.o2_prom`/`machine.octane_prom`. The native picker and asynchronous Save
+validation check a readable regular file and size (O2: 512 KiB; Octane: 512 KiB
+through 1 MiB), without writing flash/NVRAM. Content compatibility is the caller's
+responsibility. The worker rechecks before construction; missing firmware is a
+recoverable `Phase::Failed`, so F9 remains available. Relative firmware paths
+resolve against the configuration's directory, as media paths do.
+
+IP28 and Octane explicitly select Solid IMPACT. O2 uses its integrated CRIME/GBE
+path (no graphics-board override). All three pass guest resolution and Shadow
+cache; saved Newport settings remain available on returning to Indy/IP22.
+`CaptureRenderer` uses Iris's `prebuilt` compositor path for IMPACT/GBE and the
+existing Newport software compositor otherwise. Frame packing, readback, bounded
+latest-frame delivery, capture and SDL rendering are shared. The worker sets the
+common PS/2 layout before starting any CPU, including O2/Octane constructors that
+do not yet apply `MachineConfig.keyboard` themselves.
+
+Media attaches protected raw/CHD disks and read-only CDs to the common `ScsiBus`
+on controller 0: WD33C93A on Indy/Indigo2, AIC7880 on O2, ISP1040 on Octane.
+The activity/error adapter is retained on all models. CPU/device threads stop
+before targets are detached and flushed; no frontend constructor uses Iris's
+exit-on-media-error default attachment path.
 
 Iris's current library still compiles winit/glutin, CPAL, and camera support.
 Prismatic does not call `Ui::run`, so there is only the SDL window. Guest audio is
@@ -74,8 +97,10 @@ Shared status reports Starting, Running, Halted, Stopping, Stopped or Failed.
 Running follows the core's CPU-running flag. The monitor and serial endpoints
 bind ephemeral loopback ports; the monitor's actual address is printed in the
 terminal. NVRAM lives in Prismatic's machine-state directory, separate from
-the Iris checkout. Indy and Indigo2 have distinct state directories; custom
-`--state-dir` preserves the existing Indy path and nests Indigo2 under it.
+the Iris checkout. Each model has a distinct state directory (`indy`, `indigo2`, `indigo2-ip28`,
+`o2`, `octane`); custom `--state-dir` preserves the existing Indy path and nests
+other models under it. O2's `nvram.bin` is its persisted flash. Octane uses
+`nvram.bin` plus `flash.bin`; neither writes the PROM source.
 Use different `--state-dir` paths
 for simultaneous instances. Iris also writes its shared draw-shape corpus
 under `~/.iris/` unless `IRIS_REX_JIT_PROFILE` overrides that path; the documented
@@ -140,7 +165,7 @@ backend happens only when constructing the selected machine.
 
 The Iris CLI constructor exits the process on some media errors. Prismatic
 therefore constructs an empty SCSI configuration, opens the selected block
-nodes fallibly, and attaches `ScsiDevice`s through `ScsiTargets::with_targets`
+nodes fallibly, and attaches boxed `ScsiDevice`s through `ScsiBus::attach`
 before starting any devices or the CPU. Raw disks use `CowNode` over a read-only
 `RawNode`; CHD disks use Iris's `open_chd_cow`. Hashed bases retain MAME diffs;
 hashless uncompressed bases use a read-only CHD node under a sparse sector
@@ -286,7 +311,11 @@ flag. Default values match Iris. All five participate in machine restart
 detection; hiding Tinker or changing filtering/debug output alone does not restart.
 The frontend maps these values into `MachineConfig` before construction. Newport
 resolution is an initial mode, not an override of later guest programming.
-Clock offsets seed the RTC from host time on construction/NVRAM load.
+Clock offsets seed the Indy/Indigo2 RTC from host time on construction/NVRAM
+load. O2/Octane do not apply that override or WD33C93A deferred interrupts;
+those controls show fixed values and ignore Enter on these models. Their saved
+values are retained for switching back. Non-Newport profiles similarly show
+fixed Shadow cache and guest-controlled resolution.
 
 Serial logging uses Iris's channel-B sink and raw or wall-clock timestamps.
 The path is `serial.log` within the selected machine's state directory. The
@@ -311,7 +340,12 @@ The UI smoke test never starts a machine. The PROM display smoke test creates
 fresh temporary NVRAM, waits for a nonuniform guest image, captures the SDL
 output after ten additional seconds and requests normal stop. It has a
 120-second display timeout and returns failure for startup/shutdown errors.
-Visual inspection of its screenshot establishes what PROM actually displayed;
+IP28 was also checked with its bundled PROM and Solid IMPACT at 32 MB, 128 MB
+and 1 GiB. Its 128 MB input smoke screenshot shows the R10000/195 MHz CPU,
+128 MB memory and IMPACT graphics in `hinv`. O2/Octane have synthetic looping-ROM
+startup/media/PS2/shutdown tests and prebuilt-frame tests; real firmware boots
+have not yet been verified in Prismatic.
+Visual inspection of a screenshot establishes what PROM actually displayed;
 a nonuniform-frame check alone does not identify a PROM menu or an OS boot.
 
 The input smoke test uses the same temporary-state lifecycle and deadline. It

@@ -225,7 +225,10 @@ fn draw_overlay(
     let rows = session.rows();
     let hints: Vec<String> = match session.tab {
         Tab::General => vec![
-            "Machine changes keep compatible CPU/RAM choices; other values are adjusted.".into(),
+            if session.row == 7 {
+                session.draft.machine.prom_path().map(|p| short_ascii(p, 100)).unwrap_or_else(||
+                    "O2 and Octane need an external PROM; Indy and Indigo2 use bundled firmware.".into())
+            } else { "Machine changes keep compatible CPU/RAM choices; other values are adjusted.".into() },
             "Hardware changes ask to restart when saved. Display options apply on Save.".into(),
         ],
         Tab::Media => {
@@ -238,9 +241,13 @@ fn draw_overlay(
             hints
         }
         Tab::Advanced => vec![match session.row {
+            0 if !session.draft.machine.newport() => "IMPACT and GBE video modes are controlled by the PROM and guest OS.",
             0 => "Sets the initial Newport video mode; the guest may change it later.",
+            1 if !session.draft.machine.newport() => "This machine uses Shadow cache. The Newport model preference is retained.",
             1 => "Auto selects the cache model for this build. Full/Shadow are expert overrides.",
+            2 if session.draft.machine.external_prom() => "This machine starts from host time; the saved clock offset applies to Indy/Indigo2.",
             2 => "Shifts the guest clock relative to host time at boot; it then runs normally.",
+            3 if session.draft.machine.external_prom() => "This machine's SCSI controller manages interrupt timing automatically.",
             3 => "Deferred is Iris's BSD-compatible default. Immediate changes SCSI timing.",
             4 => "Appends to serial.log in this machine's state directory. Timestamps use host UTC.",
             5 => "Bilinear filtering smooths the display when scaled; applies without restart.",
@@ -295,7 +302,7 @@ fn draw_overlay(
         if index == session.row {
             fill(canvas, Rect::new(10, y, PANEL_WIDTH - 4, 16), SELECTED)?;
         }
-        let restart = (session.tab == Tab::General && index < 4)
+        let restart = (session.tab == Tab::General && (index < 4 || index == 7))
             || (session.tab == Tab::Advanced && index < 5);
         text(canvas, 20, y, label, TEXT)?;
         text(
@@ -350,6 +357,12 @@ fn shade(canvas: &mut WindowCanvas, alpha: u8) -> Result<(), sdl3::Error> {
 
 fn draw_dialog(canvas: &mut WindowCanvas, dialog: Dialog) -> Result<(), sdl3::Error> {
     let (title, detail, buttons, selected) = match dialog {
+        Dialog::Firmware { choice } => (
+            "Choose PROM firmware for this machine",
+            "O2 needs an IP32 PROM; Octane needs an IP30 PROM. Extract ZIPs first.",
+            vec!["Choose file", "Clear", "Cancel"],
+            choice,
+        ),
         Dialog::Media { choice, .. } => (
             "Choose media for this SCSI target",
             "Select a raw/CHD disk, or ISO9660/EFS/CHD CD-ROM.",

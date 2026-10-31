@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// The hardware currently supported by Prismatic's Newport display path.
+/// Hardware supported by Iris's Newport, IMPACT and GBE display paths.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct MachineSettings {
@@ -20,6 +20,8 @@ pub struct MachineSettings {
     pub cpu: CpuModel,
     pub ram_mb: u32,
     pub keyboard: KeyboardLayout,
+    pub o2_prom: Option<String>,
+    pub octane_prom: Option<String>,
 }
 
 impl Default for MachineSettings {
@@ -29,35 +31,50 @@ impl Default for MachineSettings {
             cpu: CpuModel::R4400,
             ram_mb: 64,
             keyboard: KeyboardLayout::Ansi,
+            o2_prom: None,
+            octane_prom: None,
         }
     }
 }
 
 impl MachineSettings {
+    pub const PROFILES: [MachineProfile; 5] = [
+        MachineProfile::IndyIp24,
+        MachineProfile::Indigo2Ip22,
+        MachineProfile::Indigo2Ip28,
+        MachineProfile::O2Ip32,
+        MachineProfile::OctaneIp30,
+    ];
+
     pub fn ram_sizes(&self) -> &'static [u32] {
         match self.profile {
             MachineProfile::Indigo2Ip22 => &[32, 64, 128, 256, 384, 512],
-            _ => &[32, 64, 128, 256],
+            MachineProfile::IndyIp24 => &[32, 64, 128, 256],
+            MachineProfile::Indigo2Ip28 | MachineProfile::O2Ip32 => {
+                &[32, 64, 128, 256, 384, 512, 768, 1024]
+            }
+            MachineProfile::OctaneIp30 => &[64, 128, 256, 384, 512, 768, 1024, 1536, 2048],
         }
     }
 
     pub fn cpus(&self) -> &'static [CpuModel] {
         match self.profile {
             MachineProfile::IndyIp24 => &[CpuModel::R4400, CpuModel::R5000],
-            _ => &[CpuModel::R4400],
+            MachineProfile::Indigo2Ip22 => &[CpuModel::R4400],
+            MachineProfile::O2Ip32 => &[CpuModel::R5000, CpuModel::R10000],
+            MachineProfile::Indigo2Ip28 | MachineProfile::OctaneIp30 => &[CpuModel::R10000],
         }
     }
 
     pub fn cycle_profile(&mut self) {
-        self.profile = match self.profile {
-            MachineProfile::IndyIp24 => MachineProfile::Indigo2Ip22,
-            _ => MachineProfile::IndyIp24,
-        };
+        self.profile = next(self.profile, &Self::PROFILES);
         if !self.cpus().contains(&self.cpu) {
             self.cpu = self.cpus()[0];
         }
         if !self.ram_sizes().contains(&self.ram_mb) {
-            self.ram_mb = *self.ram_sizes().last().unwrap();
+            self.ram_mb = self
+                .ram_mb
+                .clamp(self.ram_sizes()[0], *self.ram_sizes().last().unwrap());
         }
     }
 
@@ -72,15 +89,6 @@ impl MachineSettings {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if !matches!(
-            self.profile,
-            MachineProfile::IndyIp24 | MachineProfile::Indigo2Ip22
-        ) {
-            return Err(
-                "Prismatic currently supports Indy IP24 and Indigo2 IP22 with Newport graphics"
-                    .into(),
-            );
-        }
         if !self.cpus().contains(&self.cpu) {
             return Err(format!(
                 "{} is not supported on {}",
@@ -102,28 +110,52 @@ impl MachineSettings {
         self.validate()?;
         let mut remaining = self.ram_mb;
         let mut banks = [0; 4];
+        let max_bank = match self.profile {
+            MachineProfile::IndyIp24 | MachineProfile::Indigo2Ip22 => 128,
+            MachineProfile::O2Ip32 => 256,
+            _ => 512,
+        };
         for bank in &mut banks {
-            *bank = remaining.min(128);
+            *bank = self
+                .profile
+                .bank_sizes()
+                .iter()
+                .copied()
+                .filter(|&size| {
+                    size <= remaining && size <= max_bank
+                        // Iris's IP28 PROM rejects 32/128 MB single-bank layouts.
+                        // Keep the requested total using 16/64/256/512 MB banks.
+                        && !(self.profile == MachineProfile::Indigo2Ip28 && matches!(size, 32 | 128))
+                })
+                .max()
+                .unwrap_or(0);
             remaining -= *bank;
+        }
+        if remaining != 0 {
+            return Err("RAM does not fit the machine's four banks".into());
         }
         Ok(banks_from4(banks))
     }
 
     pub fn summary(&self) -> String {
-        let model = if self.profile == MachineProfile::IndyIp24 {
-            "Indy"
-        } else {
-            "Indigo2"
+        let model = match self.profile {
+            MachineProfile::IndyIp24 => "Indy",
+            MachineProfile::Indigo2Ip22 => "Indigo2",
+            MachineProfile::Indigo2Ip28 => "Indigo2 IMPACT",
+            MachineProfile::O2Ip32 => "O2",
+            MachineProfile::OctaneIp30 => "Octane",
         };
         let cpu = self.cpu.label().trim_start_matches("MIPS ");
         format!("{model} / {cpu} / {} MB", self.ram_mb)
     }
 
     pub fn state_dir(&self, preferences: &Path, override_dir: Option<&Path>) -> PathBuf {
-        let name = if self.profile == MachineProfile::IndyIp24 {
-            "indy"
-        } else {
-            "indigo2"
+        let name = match self.profile {
+            MachineProfile::IndyIp24 => "indy",
+            MachineProfile::Indigo2Ip22 => "indigo2",
+            MachineProfile::Indigo2Ip28 => "indigo2-ip28",
+            MachineProfile::O2Ip32 => "o2",
+            MachineProfile::OctaneIp30 => "octane",
         };
         match override_dir {
             // Preserve the existing --state-dir layout for Indy sessions.
@@ -132,6 +164,111 @@ impl MachineSettings {
             None => preferences.join(name),
         }
     }
+
+    pub fn newport(&self) -> bool {
+        matches!(
+            self.profile,
+            MachineProfile::IndyIp24 | MachineProfile::Indigo2Ip22
+        )
+    }
+
+    pub fn external_prom(&self) -> bool {
+        matches!(
+            self.profile,
+            MachineProfile::O2Ip32 | MachineProfile::OctaneIp30
+        )
+    }
+
+    pub fn prom_path(&self) -> Option<&str> {
+        match self.profile {
+            MachineProfile::O2Ip32 => self.o2_prom.as_deref(),
+            MachineProfile::OctaneIp30 => self.octane_prom.as_deref(),
+            _ => None,
+        }
+    }
+
+    pub fn set_prom(&mut self, path: Option<String>) {
+        match self.profile {
+            MachineProfile::O2Ip32 => self.o2_prom = path,
+            MachineProfile::OctaneIp30 => self.octane_prom = path,
+            _ => {}
+        }
+    }
+
+    pub fn prom_label(&self) -> String {
+        self.prom_path().map_or_else(
+            || {
+                if self.external_prom() {
+                    "Choose PROM file..."
+                } else {
+                    "Bundled with Iris"
+                }
+                .into()
+            },
+            |path| {
+                Path::new(path)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            },
+        )
+    }
+
+    pub fn validate_prom(&mut self) -> Result<(), String> {
+        if self.external_prom() {
+            let path = self.prom_path().ok_or_else(|| {
+                format!(
+                    "{} needs a PROM image; select General > PROM firmware",
+                    self.profile.label()
+                )
+            })?;
+            let path = inspect_prom(self.profile, Path::new(path))?;
+            self.set_prom(Some(path));
+        }
+        Ok(())
+    }
+
+    fn resolve_prom_paths(&mut self, directory: &Path) -> Result<(), String> {
+        for path in [&mut self.o2_prom, &mut self.octane_prom]
+            .into_iter()
+            .flatten()
+        {
+            if Path::new(path).is_relative() {
+                *path = std::path::absolute(directory.join(&*path))
+                    .map_err(|e| e.to_string())?
+                    .to_str()
+                    .ok_or("PROM paths must be UTF-8")?
+                    .to_owned();
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Read-only draft validation. No flash/NVRAM file is opened or created here.
+pub fn inspect_prom(profile: MachineProfile, path: &Path) -> Result<String, String> {
+    let path = path
+        .canonicalize()
+        .map_err(|e| format!("Cannot open PROM {}: {e}", path.display()))?;
+    let metadata = path.metadata().map_err(|e| e.to_string())?;
+    let valid_size = match profile {
+        MachineProfile::O2Ip32 => metadata.len() == 512 * 1024,
+        MachineProfile::OctaneIp30 => (512 * 1024..=1024 * 1024).contains(&metadata.len()),
+        _ => return Err("This machine uses bundled firmware".into()),
+    };
+    if !metadata.is_file() || !valid_size {
+        return Err(match profile {
+            MachineProfile::O2Ip32 => "O2 requires a 512 KiB IP32 PROM image",
+            _ => "Octane requires an IP30 PROM image (512 KiB to 1 MiB)",
+        }
+        .into());
+    }
+    // Reject directories and special files before opening (a FIFO can block).
+    fs::File::open(&path).map_err(|e| format!("Cannot read PROM: {e}"))?;
+    path.to_str()
+        .map(str::to_owned)
+        .ok_or("PROM paths must be UTF-8".into())
 }
 
 fn next<T: Copy + PartialEq>(current: T, choices: &[T]) -> T {
@@ -452,6 +589,9 @@ impl Settings {
                 settings
                     .media
                     .resolve_paths(path.parent().unwrap_or(Path::new(".")))?;
+                settings
+                    .machine
+                    .resolve_prom_paths(path.parent().unwrap_or(Path::new(".")))?;
                 Ok(settings)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
@@ -758,6 +898,17 @@ mod tests {
         assert_eq!(hardware.cpu, CpuModel::R4400);
         assert_eq!(hardware.ram_mb, 128);
         hardware.ram_mb = 512;
+        for profile in [
+            MachineProfile::Indigo2Ip28,
+            MachineProfile::O2Ip32,
+            MachineProfile::OctaneIp30,
+        ] {
+            hardware.cycle_profile();
+            assert_eq!(hardware.profile, profile);
+            assert_eq!(hardware.cpu, CpuModel::R10000);
+            assert_eq!(hardware.ram_mb, 512);
+            hardware.validate().unwrap();
+        }
         hardware.cycle_profile();
         assert_eq!(hardware.ram_mb, 256);
         hardware.cycle_ram();
@@ -778,6 +929,76 @@ mod tests {
             hardware.state_dir(root, Some(custom)),
             custom.join("indigo2")
         );
+    }
+
+    #[test]
+    fn all_machine_state_paths_are_distinct() {
+        let mut paths = std::collections::HashSet::new();
+        for profile in MachineSettings::PROFILES {
+            let hardware = MachineSettings {
+                profile,
+                ..Default::default()
+            };
+            assert!(paths.insert(hardware.state_dir(Path::new("/tmp/preferences"), None)));
+        }
+    }
+
+    #[test]
+    fn ip28_presets_use_bank_layouts_that_pass_prom_sizing() {
+        let mut hardware = MachineSettings {
+            profile: MachineProfile::Indigo2Ip28,
+            cpu: CpuModel::R10000,
+            ..Default::default()
+        };
+        for (ram_mb, banks) in [
+            (32, [16, 16, 0, 0]),
+            (128, [64, 64, 0, 0]),
+            (384, [256, 64, 64, 0]),
+            (1024, [512, 512, 0, 0]),
+        ] {
+            hardware.ram_mb = ram_mb;
+            assert_eq!(hardware.banks().unwrap(), banks_from4(banks));
+        }
+    }
+
+    #[test]
+    fn firmware_paths_roundtrip_per_model_and_validate_without_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let o2 = dir.path().join("ip32prom.bin");
+        let octane = dir.path().join("IP30prom.bin");
+        fs::write(&o2, vec![0x5a; 512 * 1024]).unwrap();
+        fs::write(&octane, vec![0x5a; 879_312]).unwrap();
+        let mut settings = Settings::default();
+        settings.machine.o2_prom = Some("ip32prom.bin".into());
+        settings.machine.octane_prom = Some("IP30prom.bin".into());
+        let cfg = dir.path().join("prismatic.cfg");
+        settings.save(&cfg).unwrap();
+        let mut loaded = Settings::load(&cfg).unwrap().machine;
+        for (profile, path) in [
+            (MachineProfile::O2Ip32, &o2),
+            (MachineProfile::OctaneIp30, &octane),
+        ] {
+            loaded.profile = profile;
+            loaded.cpu = loaded.cpus()[0];
+            loaded.validate_prom().unwrap();
+            assert_eq!(loaded.prom_path(), path.to_str());
+        }
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 3);
+        loaded.profile = MachineProfile::O2Ip32;
+        loaded.set_prom(None);
+        assert!(
+            loaded
+                .validate_prom()
+                .unwrap_err()
+                .contains("General > PROM")
+        );
+        assert!(inspect_prom(MachineProfile::O2Ip32, &octane).is_err());
+        for data in [vec![], vec![0; 512], vec![0; 1024 * 1024 + 1]] {
+            fs::write(&octane, data).unwrap();
+            assert!(inspect_prom(MachineProfile::OctaneIp30, &octane).is_err());
+        }
+        assert!(inspect_prom(MachineProfile::O2Ip32, dir.path()).is_err());
+        assert!(inspect_prom(MachineProfile::O2Ip32, &dir.path().join("missing")).is_err());
     }
 
     #[test]

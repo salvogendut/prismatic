@@ -9,7 +9,8 @@ following the desktop conventions of the Happy Years emulators
 
 Prismatic embeds Iris and starts a **diskless SGI Indy** by default, with an
 R4400, 64 MB RAM, Newport graphics and Iris's built-in PROM. **F9 > General**
-now configures the machine model, RAM, CPU and keyboard, including Indigo2 IP22.
+configures Indy IP24, Indigo2 IP22, Indigo2 IMPACT IP28, O2 IP32 and Octane IP30,
+with compatible RAM/CPU choices, keyboard layout and PROM selection.
 The guest framebuffer
 appears in the SDL3 window, with the Happy Years F9 overlay, fullscreen,
 scanlines, filtering and saved desktop preferences. SDL keyboard and relative
@@ -44,7 +45,7 @@ Dev/
 
 Prismatic uses the local Iris library directly, including the fork's power-off
 and diagnostic-routing embedding APIs. Use Iris branch `xiri/netbsd-newport`
-at commit `76b2227` or newer and update both checkouts. Its root Cargo manifest
+at commit `888c4bd` or newer and update both checkouts. Its root Cargo manifest
 also preserves the fork's patched winit and block dependencies. Install Rust through
 rustup; `rust-toolchain.toml` selects nightly, matching Iris's requirement.
 On a Fedora development system, install the native build dependencies:
@@ -61,13 +62,17 @@ SDL is linked dynamically through the [`sdl3` Rust bindings](https://github.com/
 SDL_ttf and a separate widget toolkit are not required. Linux is the first
 validated platform; Windows and macOS integration builds remain to be checked.
 
-No guest disk or external PROM is needed. The default is diskless; only images
+The default Indy needs no guest disk or external PROM. O2 and Octane need an
+external PROM image selected in General (see below). The default is diskless; only images
 selected in Prismatic are attached. It does not read `iris.toml`, `prom.bin`,
 or default SCSI image paths from either checkout. Normal machine state is kept under
 SDL's per-user application directory, normally
-`~/.local/share/prismatic/indy/` on Linux, or `~/.local/share/prismatic/indigo2/` for Indigo2.
-The models have separate NVRAM and EEPROM files. `--state-dir PATH` keeps the
-existing Indy layout at `PATH`; Indigo2 uses `PATH/indigo2/` when overridden.
+`~/.local/share/prismatic/` on Linux. Each model has its own directory: `indy/`,
+`indigo2/`, `indigo2-ip28/`, `o2/` or `octane/`, containing its NVRAM/EEPROM or
+persistent flash. `--state-dir PATH` keeps the existing Indy layout at `PATH`;
+other models use their named subdirectory under `PATH`. Firmware source files
+are read-only; O2 saves flash in `nvram.bin`, Octane in `flash.bin` alongside its
+`nvram.bin`. Existing flash preserves the guest's firmware and environment.
 The Iris monitor binds an ephemeral loopback port,
 printed in the terminal; serial ports also use ephemeral loopback ports.
 Iris also maintains its shared draw-shape cache at
@@ -166,14 +171,16 @@ value. F9 saves. Hardware changes ask for **Restart / Cancel** before they are
 saved and applied; choose Restart with Left/Right, then Enter. Cancel or Escape
 returns to the draft. Escape from the editor offers Save / Discard / Cancel.
 
-| Setting | Available values |
-| --- | --- |
-| Machine | SGI Indy IP24, SGI Indigo2 IP22 |
-| RAM (Indy) | 32, 64, 128, 256 MB |
-| RAM (Indigo2) | 32, 64, 128, 256, 384, 512 MB |
-| CPU (Indy) | R4400, R5000 |
-| CPU (Indigo2) | R4400 |
-| Keyboard | ANSI, ISO, JIS |
+| Machine | CPUs | RAM presets (MB) | Graphics | PROM |
+| --- | --- | --- | --- | --- |
+| Indy IP24 | R4400, R5000 | 32, 64, 128, 256 | Newport | Bundled |
+| Indigo2 IP22 | R4400 | 32, 64, 128, 256, 384, 512 | Newport | Bundled |
+| Indigo2 IMPACT IP28 | R10000 | 32, 64, 128, 256, 384, 512, 768, 1024 | Solid IMPACT | Bundled |
+| O2 IP32 | R5000, R10000 | 32, 64, 128, 256, 384, 512, 768, 1024 | CRIME/GBE | External IP32 PROM |
+| Octane IP30 | R10000 (one CPU) | 64, 128, 256, 384, 512, 768, 1024, 1536, 2048 | Solid IMPACT | External IP30 PROM |
+
+All models offer ANSI, ISO and JIS keyboard layouts. Octane's second CPU,
+additional graphics boards and second SCSI buses are not exposed yet.
 
 Changing models keeps compatible CPU/RAM choices, selects R4400 when changing
 from an R5000 Indy to Indigo2, and caps RAM at 256 MB when returning to Indy.
@@ -183,10 +190,34 @@ during restart. Display options apply on Save without restarting. Startup or
 restart failures remain visible in the window and terminal; F9 lets you revise
 the saved settings. A new worker is never started after a stop timeout.
 
-Both models use Newport graphics and bundled firmware. Prismatic explicitly
-passes a temporary copy of Iris's bundled Indigo2 PROM to avoid Iris's alternate
-ROM search in the working directory. IMPACT, O2 and Octane need other display
-integrations and are not selectable yet.
+Prismatic passes explicit temporary copies of Iris's bundled Indigo2 PROMs to
+avoid the core's alternate ROM search in the working directory. IMPACT and GBE
+use Iris's software-composed framebuffer through the same SDL display and capture
+path; F4/F6 retain the guest's native dimensions.
+
+### O2 and Octane firmware
+
+Select the machine, then **General > PROM firmware > Choose file**. Choose the
+extracted `.bin` image, press F9, and confirm restart. Paths are remembered
+separately as `o2_prom` and `octane_prom` under `[machine]` in `prismatic.cfg`.
+Relative paths in a hand-written config resolve beside that config. File selection
+and Save check readability and size on a worker without creating machine state;
+Save rejects a missing or invalid-sized PROM and keeps the draft open. Cancelling
+the picker or discarding the draft leaves the running machine untouched. These
+checks do not authenticate firmware contents or guarantee a successful guest boot.
+
+Iris recommends the 512 KiB O2 4.18 PROM. Octane accepts an IP30 flash image up to
+1 MiB, including the 879,312-byte IRIX `IP30prom.bin`; Prismatic accepts images
+from 512 KiB to 1 MiB. MAME documents these full flash dumps:
+
+| Model | File | SHA-1 |
+| --- | --- | --- |
+| O2 | `ip32prom.rev4.18.bin` | `f2cfa7246d67f88fe5490e40dac6c04b1deb4d28` |
+| Octane | `ip30prom.rev4.9.bin` | `de250875c608add63749d3f9fb81a82cb58c3586` |
+
+References: [MAME O2 firmware definitions](https://github.com/mamedev/mame/blob/master/src/mame/sgi/o2.cpp),
+[MAME Octane firmware definition](https://github.com/mamedev/mame/blob/master/src/mame/sgi/octane.cpp).
+Neither external PROM is bundled in Iris or Prismatic.
 
 ## Advanced settings
 
@@ -217,6 +248,11 @@ starts with new messages when enabled, and Off clears the screen log. To capture
 startup diagnostics, save Screen or Console before the next launch.
 Startup/storage failures still reach the terminal with debug output Off.
 This setting is separate from guest serial logging and Iris monitor tracing.
+
+On IP28, O2 and Octane, video mode is guest-controlled and the cache is fixed to
+Shadow. O2 and Octane also use their controllers' SCSI timing and host RTC time;
+those Advanced rows cannot be changed. Saved Newport/cache/clock/SCSI preferences
+are retained for models that support them.
 
 Resolution selects the **initial Newport video mode**; the PROM or guest may
 program another mode later. Cache Auto selects Iris's implementation for the
@@ -397,6 +433,25 @@ nonuniform guest framebuffer, renders for ten more seconds, optionally captures
 the SDL output, and stops Iris. It fails if startup, display output (120-second
 timeout), or shutdown fails. This checks the display path; it does not identify
 PROM text or prove that a complete OS boot works.
+
+For a diskless IP28 check, create a separate configuration and use the same
+smoke path (the input script also works with its PROM):
+
+```sh
+cat > /tmp/prismatic-ip28.cfg <<'EOF'
+[machine]
+profile = "indigo2_ip28"
+cpu = "r10000"
+ram_mb = 128
+EOF
+IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --release --locked -- --config /tmp/prismatic-ip28.cfg --input-smoke-test --screenshot /tmp/prismatic-ip28.bmp
+```
+
+IP28 has passed PROM display checks at 32 MB, 128 MB and 1 GiB, with keyboard,
+mouse and hardware inventory checked at 128 MB. O2/Octane have synthetic-ROM
+startup, media attachment and shutdown coverage; real PROM/OS boots in Prismatic
+still need verification with external firmware. These checks do not establish
+IRIX boot compatibility across all models or RAM configurations.
 
 `--input-smoke-test` also boots with fresh NVRAM. It queues SDL events to capture
 input, dismiss the boot error, move the pointer, enter the command monitor and

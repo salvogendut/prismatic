@@ -5,9 +5,8 @@ use crate::{
 };
 use iris::{
     block_node::{BlockNode, BlockStatus, ChdCdNode, CowNode, RawNode, open_chd_cow},
-    config::{ScsiDeviceConfig, ScsiKind},
+    config::{MachineProfile, ScsiDeviceConfig, ScsiKind},
     scsi::{ScsiDevice, ScsiIdentity},
-    scsi_monitor::ScsiTargets,
     workstation::Workstation,
 };
 use serde::{Deserialize, Serialize};
@@ -199,9 +198,25 @@ impl Medium {
 }
 
 pub enum Completion {
-    Picked { id: u8, medium: Medium },
-    Validated { settings: Settings, confirmed: bool },
+    Picked {
+        id: u8,
+        medium: Medium,
+    },
+    PromPicked {
+        profile: MachineProfile,
+        path: String,
+    },
+    Validated {
+        settings: Settings,
+        confirmed: bool,
+    },
     Cancelled,
+}
+
+#[derive(Clone, Copy)]
+enum FileChoice {
+    Media { id: u8, kind: MediaKind },
+    Prom(MachineProfile),
 }
 
 #[derive(Default)]
@@ -236,6 +251,7 @@ impl MediaJobs {
         let (sender, receiver) = mpsc::sync_channel(1);
         self.receiver = Some(receiver);
         spawn(sender, move || {
+            settings.machine.validate_prom()?;
             settings.media.validate_files()?;
             Ok(Completion::Validated {
                 settings,
@@ -250,13 +266,39 @@ impl MediaJobs {
         kind: MediaKind,
         current: Option<&str>,
     ) -> Result<(), String> {
+        self.pick_file(window, current, FileChoice::Media { id, kind })
+    }
+
+    pub fn pick_prom(
+        &mut self,
+        window: &sdl3::video::Window,
+        profile: MachineProfile,
+        current: Option<&str>,
+    ) -> Result<(), String> {
+        self.pick_file(window, current, FileChoice::Prom(profile))
+    }
+
+    fn pick_file(
+        &mut self,
+        window: &sdl3::video::Window,
+        current: Option<&str>,
+        choice: FileChoice,
+    ) -> Result<(), String> {
         use sdl3::dialog::{DialogError, DialogFileFilter, show_open_file_dialog};
         let (sender, receiver) = mpsc::sync_channel(1);
         self.receiver = Some(receiver);
         let filters = [
             DialogFileFilter {
-                name: "Disk and CD images",
-                pattern: "chd;img;raw;dsk;hdd;iso;efs;bin;image",
+                name: if matches!(choice, FileChoice::Prom(_)) {
+                    "PROM firmware"
+                } else {
+                    "Disk and CD images"
+                },
+                pattern: if matches!(choice, FileChoice::Prom(_)) {
+                    "bin;rom;prom"
+                } else {
+                    "chd;img;raw;dsk;hdd;iso;efs;bin;image"
+                },
             },
             DialogFileFilter {
                 name: "All files",
@@ -272,9 +314,15 @@ impl MediaJobs {
                 Ok(paths) if paths.len() == 1 => {
                     let path = paths[0].clone();
                     spawn(sender.clone(), move || {
-                        Ok(Completion::Picked {
-                            id,
-                            medium: Medium::inspect(&path, kind)?,
+                        Ok(match choice {
+                            FileChoice::Media { id, kind } => Completion::Picked {
+                                id,
+                                medium: Medium::inspect(&path, kind)?,
+                            },
+                            FileChoice::Prom(profile) => Completion::PromPicked {
+                                profile,
+                                path: crate::settings::inspect_prom(profile, &path)?,
+                            },
                         })
                     });
                 }
@@ -404,13 +452,8 @@ pub fn attach(
 ) -> Result<(), String> {
     let mut validated = settings.clone();
     validated.validate_files()?;
-    let machine = machine
-        .as_any_mut()
-        .downcast_mut::<iris::machine::Machine>()
-        .ok_or("Media requires an Indy or Indigo2")?;
     for (&id, medium) in &validated.devices {
         let node = open_node(medium).map_err(|e| format!("SCSI {id}: {}: {e}", medium.path))?;
-        let size = node.size();
         let error = Arc::new(Mutex::new(None));
         errors.0.push(error.clone());
         let node = MediaNode {
@@ -425,18 +468,9 @@ pub fn attach(
         } else {
             ScsiIdentity::new(b"SGI     ", b"PRISMATIC DISK  ", b"1.0 ")
         };
-        let device = ScsiDevice::new(
-            Box::new(node),
-            size,
-            cd,
-            medium.path.clone(),
-            vec![],
-            identity,
-        );
-        machine
-            .hpc3()
-            .scsi()
-            .with_targets(|targets| targets[id as usize] = Some(device));
+        let device = ScsiDevice::new(Box::new(node), cd, medium.path.clone(), vec![], identity);
+        with_bus(machine, |bus| bus.attach(id, Box::new(device)))?
+            .map_err(|e| format!("SCSI {id}: {e}"))?;
     }
     Ok(())
 }
@@ -463,15 +497,38 @@ fn open_node(medium: &Medium) -> io::Result<Box<dyn BlockNode>> {
 
 /// Called only after the CPU and device threads stop, before machine teardown.
 pub fn detach(machine: &mut dyn Workstation) {
-    if let Some(machine) = machine
-        .as_any_mut()
-        .downcast_mut::<iris::machine::Machine>()
-    {
-        machine.hpc3().scsi().with_targets(|targets| {
+    let _ = with_bus(machine, |bus| {
+        bus.with_targets(|targets| {
             for target in targets {
                 *target = None;
             }
         });
+    });
+}
+
+/// The Media menu manages controller 0 on each workstation. Iris exposes the
+/// same target bus through the WD33C93A, AIC7880 and ISP1040 controllers.
+fn with_bus<R>(
+    machine: &mut dyn Workstation,
+    f: impl FnOnce(&iris::scsi::ScsiBus) -> R,
+) -> Result<R, String> {
+    let machine = machine.as_any_mut();
+    if let Some(machine) = machine.downcast_ref::<iris::machine::Machine>() {
+        Ok(f(machine.hpc3().scsi().bus()))
+    } else if let Some(machine) = machine.downcast_ref::<iris::ip32_machine::O2Machine>() {
+        let controller = machine
+            .bus
+            .scsi
+            .lock()
+            .unwrap()
+            .first()
+            .cloned()
+            .ok_or("Iris did not create the O2 SCSI controller")?;
+        Ok(f(controller.bus()))
+    } else if let Some(machine) = machine.downcast_ref::<iris::ip30_machine::OctaneMachine>() {
+        Ok(f(machine.scsi[0].bus()))
+    } else {
+        Err("Unsupported Iris SCSI controller".into())
     }
 }
 
@@ -748,6 +805,37 @@ mod tests {
                 .unwrap_err()
                 .contains("SCSI 7: could not flush media: disk full")
         );
+    }
+
+    #[test]
+    fn save_validation_rechecks_firmware_and_creates_no_state_or_overlays() {
+        let dir = tempfile::tempdir().unwrap();
+        let prom = dir.path().join("prom.bin");
+        fs::write(&prom, vec![0; 512 * 1024]).unwrap();
+        let disk = raw(dir.path(), "disk.raw");
+        let mut settings = Settings::default();
+        settings.machine.profile = MachineProfile::O2Ip32;
+        settings.machine.cpu = iris::config::CpuModel::R5000;
+        settings.machine.set_prom(Some(
+            crate::settings::inspect_prom(MachineProfile::O2Ip32, &prom).unwrap(),
+        ));
+        settings
+            .media
+            .devices
+            .insert(1, Medium::inspect(&disk, MediaKind::Disk).unwrap());
+        fs::remove_file(prom).unwrap(); // Disappears after picking, before Save.
+        let mut jobs = MediaJobs::default();
+        jobs.validate(settings, false);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let result = loop {
+            if let Some(result) = jobs.poll() {
+                break result;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert!(matches!(result, Err(error) if error.contains("Cannot open PROM")));
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]

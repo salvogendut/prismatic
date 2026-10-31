@@ -38,6 +38,7 @@ pub enum Dialog {
     Quit { confirm: bool },
     Restart { confirm: bool },
     Media { id: u8, choice: usize },
+    Firmware { choice: usize }, // Choose, Clear, Cancel
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -46,6 +47,7 @@ pub enum Effect {
     Save(Settings),
     Restart(Settings),
     Pick { id: u8, kind: MediaKind },
+    PickProm,
     CancelMedia,
     Quit,
 }
@@ -88,17 +90,39 @@ impl Session {
                 ("CRT scanlines", on_off(self.draft.scanlines)),
                 ("Status strip", on_off(self.draft.show_status)),
                 ("Tinker", on_off(self.draft.tinker)),
+                ("PROM firmware", self.draft.machine.prom_label()),
             ],
             Tab::Advanced => vec![
                 (
                     "Guest resolution",
-                    self.draft.advanced.resolution.label().replace('×', "x"),
+                    if self.draft.machine.newport() {
+                        self.draft.advanced.resolution.label().replace('×', "x")
+                    } else {
+                        "Guest controlled".into()
+                    },
                 ),
-                ("CPU cache model", self.draft.advanced.cache_label().into()),
-                ("Guest clock offset", self.draft.advanced.clock_label()),
+                (
+                    "CPU cache model",
+                    if self.draft.machine.newport() {
+                        self.draft.advanced.cache_label()
+                    } else {
+                        "Shadow (fixed)"
+                    }
+                    .into(),
+                ),
+                (
+                    "Guest clock offset",
+                    if self.draft.machine.external_prom() {
+                        "Host time (fixed)".into()
+                    } else {
+                        self.draft.advanced.clock_label()
+                    },
+                ),
                 (
                     "SCSI interrupt timing",
-                    if self.draft.advanced.scsi_deferred_interrupts {
+                    if self.draft.machine.external_prom() {
+                        "Managed by SCSI controller"
+                    } else if self.draft.advanced.scsi_deferred_interrupts {
                         "Deferred (default)"
                     } else {
                         "Immediate"
@@ -147,6 +171,14 @@ impl Overlay {
     pub fn picked(&mut self, id: u8, medium: Medium) {
         if let Some(session) = &mut self.session {
             session.draft.media.devices.insert(id, medium);
+        }
+        self.busy = false;
+    }
+    pub fn prom_picked(&mut self, profile: iris::config::MachineProfile, path: String) {
+        if let Some(session) = &mut self.session
+            && session.draft.machine.profile == profile
+        {
+            session.draft.machine.set_prom(Some(path));
         }
         self.busy = false;
     }
@@ -229,6 +261,21 @@ impl Overlay {
                     self.dialog = None;
                 }
                 (Dialog::Media { .. }, Key::Enter) => self.dialog = None,
+                (Dialog::Firmware { choice }, Key::Left | Key::Right) => {
+                    self.dialog = Some(Dialog::Firmware {
+                        choice: (choice + if key == Key::Left { 2 } else { 1 }) % 3,
+                    });
+                }
+                (Dialog::Firmware { choice: 0 }, Key::Enter) => {
+                    self.dialog = None;
+                    self.busy = true;
+                    return Effect::PickProm;
+                }
+                (Dialog::Firmware { choice: 1 }, Key::Enter) => {
+                    self.session.as_mut().unwrap().draft.machine.set_prom(None);
+                    self.dialog = None;
+                }
+                (Dialog::Firmware { .. }, Key::Enter) => self.dialog = None,
                 _ => {}
             }
             return Effect::None;
@@ -274,10 +321,19 @@ impl Overlay {
                 (Tab::General, 4) => session.draft.scanlines = !session.draft.scanlines,
                 (Tab::General, 5) => session.draft.show_status = !session.draft.show_status,
                 (Tab::General, 6) => session.draft.tinker = !session.draft.tinker,
-                (Tab::Advanced, 0) => session.draft.advanced.cycle_resolution(),
-                (Tab::Advanced, 1) => session.draft.advanced.cycle_cache(),
-                (Tab::Advanced, 2) => session.draft.advanced.cycle_clock_offset(),
-                (Tab::Advanced, 3) => {
+                (Tab::General, 7) if session.draft.machine.external_prom() => {
+                    self.dialog = Some(Dialog::Firmware { choice: 2 });
+                }
+                (Tab::Advanced, 0) if session.draft.machine.newport() => {
+                    session.draft.advanced.cycle_resolution()
+                }
+                (Tab::Advanced, 1) if session.draft.machine.newport() => {
+                    session.draft.advanced.cycle_cache()
+                }
+                (Tab::Advanced, 2) if !session.draft.machine.external_prom() => {
+                    session.draft.advanced.cycle_clock_offset()
+                }
+                (Tab::Advanced, 3) if !session.draft.machine.external_prom() => {
                     session.draft.advanced.scsi_deferred_interrupts =
                         !session.draft.advanced.scsi_deferred_interrupts
                 }
@@ -304,6 +360,58 @@ impl Overlay {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn firmware_selection_is_a_draft_and_survives_cancelled_restart() {
+        let live = Settings::default();
+        let mut overlay = Overlay::default();
+        overlay.key(Key::Options, &live);
+        for _ in 0..3 {
+            overlay.key(Key::Enter, &live);
+        }
+        let profile = iris::config::MachineProfile::O2Ip32;
+        assert_eq!(
+            overlay.session.as_ref().unwrap().draft.machine.profile,
+            profile
+        );
+        overlay.key(Key::Up, &live);
+        overlay.key(Key::Enter, &live);
+        assert_eq!(overlay.dialog, Some(Dialog::Firmware { choice: 2 }));
+        overlay.key(Key::Right, &live);
+        assert_eq!(overlay.key(Key::Enter, &live), Effect::PickProm);
+        overlay.prom_picked(profile, "/tmp/ip32prom.bin".into());
+        let Effect::Save(draft) = overlay.key(Key::Options, &live) else {
+            panic!("Expected Save")
+        };
+        assert_eq!(draft.machine.prom_path(), Some("/tmp/ip32prom.bin"));
+        assert!(draft.machine_differs_from(&live));
+        overlay.confirm_restart();
+        overlay.key(Key::Enter, &live); // Cancel is the default.
+        assert!(overlay.session.as_ref().unwrap().dirty());
+        for key in [Key::Escape, Key::Left, Key::Enter, Key::Options] {
+            overlay.key(key, &live);
+        }
+        assert_eq!(overlay.session.as_ref().unwrap().draft, live);
+    }
+
+    #[test]
+    fn unsupported_advanced_overrides_do_not_change_on_new_models() {
+        let mut live = Settings {
+            tinker: true,
+            ..Default::default()
+        };
+        live.machine.profile = iris::config::MachineProfile::O2Ip32;
+        live.machine.cpu = iris::config::CpuModel::R5000;
+        let mut overlay = Overlay::default();
+        for key in [Key::Options, Key::Right, Key::Right] {
+            overlay.key(key, &live);
+        }
+        for _ in 0..4 {
+            overlay.key(Key::Enter, &live);
+            overlay.key(Key::Down, &live);
+        }
+        assert!(!overlay.session.as_ref().unwrap().dirty());
+    }
 
     #[test]
     fn saved_window_scale_preserves_clean_and_dirty_menu_sessions() {
@@ -418,7 +526,14 @@ mod tests {
     fn advanced_changes_remain_drafts_survive_hiding_and_can_be_discarded() {
         let live = Settings::default();
         let mut overlay = Overlay::default();
-        for key in [Key::Options, Key::Up, Key::Enter, Key::Right, Key::Right] {
+        for key in [
+            Key::Options,
+            Key::Up,
+            Key::Up,
+            Key::Enter,
+            Key::Right,
+            Key::Right,
+        ] {
             overlay.key(key, &live);
         }
         assert_eq!(overlay.session.as_ref().unwrap().tab, Tab::Advanced);
@@ -431,7 +546,7 @@ mod tests {
         let advanced = overlay.session.as_ref().unwrap().draft.advanced.clone();
         assert_ne!(advanced, live.advanced);
         // Return to General and hide Tinker. Core settings must not reset.
-        for key in [Key::Left, Key::Left, Key::Up, Key::Enter] {
+        for key in [Key::Left, Key::Left, Key::Up, Key::Up, Key::Enter] {
             overlay.key(key, &live);
         }
         let session = overlay.session.as_ref().unwrap();
@@ -552,7 +667,14 @@ mod tests {
         assert_eq!(overlay.session.as_ref().unwrap().tab, Tab::Media);
         overlay.key(Key::Right, &live);
         assert_eq!(overlay.session.as_ref().unwrap().tab, Tab::About);
-        for key in [Key::Right, Key::Up, Key::Enter, Key::Right, Key::Right] {
+        for key in [
+            Key::Right,
+            Key::Up,
+            Key::Up,
+            Key::Enter,
+            Key::Right,
+            Key::Right,
+        ] {
             overlay.key(key, &live);
         }
         assert_eq!(overlay.session.as_ref().unwrap().tab, Tab::Advanced);
