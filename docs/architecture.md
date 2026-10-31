@@ -17,11 +17,11 @@ the display area, leaving room for the optional status strip.
 | Module | Responsibility |
 | --- | --- |
 | `src/main.rs` | CLI, SDL lifecycle, events, texture uploads, asynchronous shutdown, smoke runs |
-| `src/emulator.rs` | Diskless Iris configuration, worker ownership, software frame capture, latest-frame slot, machine status |
+| `src/emulator.rs` | Validated diskless Iris configuration, worker ownership, bundled firmware, frame capture, latest-frame slot, machine status |
 | `src/input.rs` | Host/modal key routing, physical scancode mapping, held guest input, PS/2 delivery |
-| `src/smoke.rs` | Scripted SDL input smoke test through the diskless PROM |
+| `src/smoke.rs` | Scripted SDL input and General-menu/restart smoke tests |
 | `src/overlay.rs` | Draft settings, navigation, modal choices and effects |
-| `src/settings.rs` | Desktop preferences, validation and atomic file replacement |
+| `src/settings.rs` | Desktop/hardware settings, compatibility, RAM banks, state paths and atomic persistence |
 | `src/display.rs` | Packed RGBA frame type, startup/UI-preview pixels and aspect-preserving placement |
 | `src/view.rs` | SDL drawing, status strip, options, confirmations and notifications |
 
@@ -30,9 +30,19 @@ the display area, leaving room for the optional status strip.
 The root Cargo manifest depends directly on `../iris`, preserving that fork's
 winit and block patches at the root where Cargo applies them. The nightly
 Rust toolchain matches Iris. No emulator source is copied into this repository.
-The first machine is fixed to Indy IP24, R4400, 64 MB RAM, one Newport head,
-and no SCSI devices. An empty PROM path explicitly selects the embedded Indy
-firmware; no working-directory ROM or Iris configuration is loaded.
+The default is Indy IP24, R4400, 64 MB RAM, one Newport head, and no SCSI
+devices. General also selects Indigo2 IP22, RAM presets, a compatible CPU and
+keyboard type. Indy supports R4400/R5000 and 32–256 MB; Indigo2 exposes R4400
+and 32–512 MB. RAM presets fill up to four MC banks, at most 128 MB per bank.
+Frontend validation restricts model/CPU/RAM choices; `MachineConfig::validate`
+also checks the generated Iris configuration before it is saved or started.
+
+An empty PROM path selects the embedded Indy firmware. Iris's Indigo2 fallback
+also searches the working directory, so the worker writes the public bundled
+`prombini2` bytes to a temporary file and passes that exact path to construction.
+The temporary file lives through machine teardown. No working-directory ROM,
+default SCSI image or Iris configuration file is selected. Other profiles need
+display paths beyond this Newport renderer and are rejected by validation.
 
 Iris's current library still compiles winit/glutin, CPAL, and camera support.
 Prismatic does not call `Ui::run`, so there is only the SDL window. Audio is
@@ -53,7 +63,9 @@ Shared status reports Starting, Running, Halted, Stopping, Stopped or Failed.
 Running follows the core's CPU-running flag. The monitor and serial endpoints
 bind ephemeral loopback ports; the monitor's actual address is printed in the
 terminal. NVRAM lives in Prismatic's machine-state directory, separate from
-frontend preferences and the Iris checkout. Use different `--state-dir` paths
+the Iris checkout. Indy and Indigo2 have distinct state directories; custom
+`--state-dir` preserves the existing Indy path and nests Indigo2 under it.
+Use different `--state-dir` paths
 for simultaneous instances. Iris also writes its shared draw-shape corpus
 under `~/.iris/` unless `IRIS_REX_JIT_PROFILE` overrides that path; the documented
 boot smoke command redirects this cache to `/tmp`.
@@ -119,9 +131,28 @@ scroll, text paste and IME composition remain outside this milestone.
 
 ## Settings and verification
 
-Desktop options are private drafts. The model emits a save request and the
-application closes the session only after persistence succeeds. Discard needs
-no runtime undo operation. These preferences do not alter Iris's hardware.
+Desktop and hardware options are private drafts. `[machine]` in the frontend
+TOML persists profile, CPU, RAM and keyboard alongside the display preferences.
+Serde defaults migrate older preference files without a separate rewrite.
+Model changes retain compatible CPU/RAM selections and normalize incompatible
+choices in the draft. `--keyboard` overrides the loaded value; a later Save
+persists the override along with the other settings.
+
+The model emits a save request; the application validates the proposed Iris
+configuration and compares hardware against the active machine. Changes to
+hardware during Starting/Running/Halted open a Restart/Cancel dialog, initially
+on Cancel. Both direct F9 save and Save from the unsaved-changes dialog follow
+this path. Cancel retains the draft, Discard has no runtime or file side effect,
+and a failed validation/write keeps the editor open. Display-only saves do not
+restart. The session closes only after atomic persistence succeeds.
+
+A confirmed hardware save releases capture and requests normal worker stop.
+SDL keeps pumping events while the worker stops and joins; no second machine
+is constructed concurrently. After a successful stop, the frontend drops old
+input/frame handles, clears the old image and starts the selected configuration
+with its model's NVRAM directory. Status labels describe the active hardware.
+Stop failures/timeouts prevent replacement; construction/startup failures are
+reported with the saved configuration retained for correction in F9.
 
 The UI smoke test never starts a machine. The PROM display smoke test creates
 fresh temporary NVRAM, waits for a nonuniform guest image, captures the SDL
@@ -137,11 +168,17 @@ Its screenshot needs visual inspection to establish the firmware response.
 Unit tests also verify the resulting bytes using a real Iris PS/2 controller,
 including held-state cleanup, modifier restoration and fractional mouse input.
 
+The settings smoke test drives the actual menu through cancel, discard and a
+confirmed hardware save, replacing a 64 MB Indy with a 128 MB Indigo2 in the
+same process. It then runs the input script and checks the saved preferences.
+It has a 240-second total deadline and always uses temporary preferences and
+NVRAM. Visual inspection of `hinv` checks the new memory size and XL graphics.
+
 ## Next milestones
 
 1. Add SDL audio and feature boundaries for Iris's existing host backends.
    Validate Linux, Windows and macOS builds and device behavior.
-2. Add General, Media, Extensions and Tinker-gated Advanced machine controls.
+2. Extend General and add Media, Extensions and Tinker-gated Advanced controls.
    Classify settings as live, next boot or restart-required. Validate before
    applying, confirm disruptive changes and use native media pickers.
 3. Add F4 screenshots, F5 confirmed reset, F6 recording, F7 pause, activity

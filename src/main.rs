@@ -16,7 +16,7 @@ use sdl3::{
     pixels::PixelFormat,
     render::ScaleMode,
 };
-use settings::Settings;
+use settings::{MachineSettings, Settings};
 use std::{
     path::PathBuf,
     sync::Arc,
@@ -29,9 +29,10 @@ struct Options {
     smoke_test: bool,
     boot_smoke_test: bool,
     input_smoke_test: bool,
+    settings_smoke_test: bool,
     state_dir: Option<PathBuf>,
     screenshot: Option<PathBuf>,
-    keyboard: KeyboardLayout,
+    keyboard: Option<KeyboardLayout>,
 }
 
 impl Options {
@@ -42,7 +43,25 @@ impl Options {
             match arg.to_str() {
                 Some("--help" | "-h") => {
                     println!(
-                        "Prismatic - Happy Years interface for Iris\n\nUsage: prismatic [--config PATH] [--state-dir PATH] [--keyboard ansi|iso|jis] [--smoke-test | --boot-smoke-test | --input-smoke-test] [--screenshot PATH.bmp]\n\nClick display: capture input  Ctrl+Enter: release\nF9 Options  F11 Fullscreen  F12 Quit\nShift+F9/F11/F12: send a bare guest function-key tap while captured\n\nBoots a diskless Indy using the embedded PROM. Audio is not connected yet.\n--keyboard selects the physical keyboard type (default: ansi).\n--smoke-test renders the UI without starting Iris.\n--boot-smoke-test waits for guest display output, captures after ten more seconds, and stops Iris.\n--input-smoke-test drives the PROM through SDL events, checks capture, and stops Iris.\n--state-dir overrides the directory for machine NVRAM.\n--config overrides the desktop preferences path."
+                        "Prismatic - Happy Years interface for Iris
+
+Usage: prismatic [--config PATH] [--state-dir PATH] [--keyboard ansi|iso|jis]
+                 [--smoke-test | --boot-smoke-test | --input-smoke-test | --settings-smoke-test]
+                 [--screenshot PATH.bmp]
+
+Click display: capture input  Ctrl+Enter: release
+F9 Options  F11 Fullscreen  F12 Quit
+Shift+F9/F11/F12: send a bare guest function-key tap while captured
+
+General: machine, RAM, CPU and keyboard. Hardware changes require restart.
+Boots diskless with bundled firmware. Audio is not connected yet.
+--keyboard overrides the saved keyboard type for this session.
+--smoke-test renders the UI without starting Iris.
+--boot-smoke-test waits for guest display output, captures ten seconds later, and stops.
+--input-smoke-test drives the PROM through SDL events and checks capture.
+--settings-smoke-test edits General options and tests a confirmed machine restart.
+--state-dir overrides Indy NVRAM storage; Indigo2 uses its indigo2 subdirectory.
+--config overrides the preferences path (desktop and machine settings)."
                     );
                     return Ok(None);
                 }
@@ -56,13 +75,15 @@ impl Options {
                 Some("--smoke-test") => options.smoke_test = true,
                 Some("--boot-smoke-test") => options.boot_smoke_test = true,
                 Some("--input-smoke-test") => options.input_smoke_test = true,
+                Some("--settings-smoke-test") => options.settings_smoke_test = true,
                 Some("--keyboard") => {
-                    options.keyboard = match args.next().as_deref().and_then(|arg| arg.to_str()) {
-                        Some("ansi") => KeyboardLayout::Ansi,
-                        Some("iso") => KeyboardLayout::Iso,
-                        Some("jis") => KeyboardLayout::Jis,
-                        _ => return Err("--keyboard requires ansi, iso or jis".into()),
-                    };
+                    options.keyboard =
+                        Some(match args.next().as_deref().and_then(|arg| arg.to_str()) {
+                            Some("ansi") => KeyboardLayout::Ansi,
+                            Some("iso") => KeyboardLayout::Iso,
+                            Some("jis") => KeyboardLayout::Jis,
+                            _ => return Err("--keyboard requires ansi, iso or jis".into()),
+                        });
                 }
                 Some("--state-dir") => {
                     options.state_dir =
@@ -84,6 +105,7 @@ impl Options {
             options.smoke_test,
             options.boot_smoke_test,
             options.input_smoke_test,
+            options.settings_smoke_test,
         ]
         .into_iter()
         .filter(|&set| set)
@@ -96,14 +118,20 @@ impl Options {
             && !options.smoke_test
             && !options.boot_smoke_test
             && !options.input_smoke_test
+            && !options.settings_smoke_test
         {
             return Err("--screenshot requires a smoke test".into());
         }
-        if (options.boot_smoke_test || options.input_smoke_test) && options.state_dir.is_some() {
+        if (options.boot_smoke_test || options.input_smoke_test || options.settings_smoke_test)
+            && options.state_dir.is_some()
+        {
             return Err(
                 "Boot/input smoke tests always use temporary machine state; omit --state-dir"
                     .into(),
             );
+        }
+        if options.settings_smoke_test && options.config.is_some() {
+            return Err("--settings-smoke-test saves temporary preferences; omit --config".into());
         }
         Ok(Some(options))
     }
@@ -121,7 +149,8 @@ fn release_input(
 fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let sdl = sdl3::init()?;
     let video = sdl.video()?;
-    let machine_smoke = options.boot_smoke_test || options.input_smoke_test;
+    let machine_smoke =
+        options.boot_smoke_test || options.input_smoke_test || options.settings_smoke_test;
     let testing = options.smoke_test || machine_smoke;
     // Keep test preferences and NVRAM away from the normal machine state.
     let temporary = if testing {
@@ -136,10 +165,13 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let path = options
         .config
         .unwrap_or_else(|| preferences.join("prismatic.toml"));
-    let state_dir = options
-        .state_dir
-        .unwrap_or_else(|| preferences.join("indy"));
     let mut settings = Settings::load(&path)?;
+    if let Some(keyboard) = options.keyboard {
+        settings.machine.keyboard = keyboard;
+    }
+    let state_dir =
+        |hardware: &MachineSettings| hardware.state_dir(&preferences, options.state_dir.as_deref());
+    let mut active_machine = settings.machine.clone();
     let mut window = video
         .window("Prismatic - Happy Years", view::WIDTH, view::HEIGHT)
         .position_centered()
@@ -165,7 +197,10 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let mut emulator = if options.smoke_test {
         None
     } else {
-        Some(Emulator::spawn(&state_dir, options.keyboard)?)
+        Some(Emulator::spawn(
+            &state_dir(&active_machine),
+            &active_machine,
+        )?)
     };
     let mouse = sdl.mouse();
     let mut guest = GuestInput::default();
@@ -173,6 +208,8 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let mut events = sdl.event_pump()?;
     let event_sender = sdl.event()?;
     let mut input_smoke = smoke::InputSmoke::default();
+    let mut settings_smoke = smoke::SettingsSmoke::default();
+    let mut generation = 0;
     let mut fullscreen = false;
     let mut title_captured = false;
     let mut toast: Option<(String, Instant)> = None;
@@ -182,6 +219,8 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let mut first_content: Option<Instant> = None;
     let started = Instant::now();
     let mut stopping: Option<Instant> = None;
+    // A new worker is constructed only after the previous worker has joined.
+    let mut restart: Option<(MachineSettings, bool)> = None;
     let mut failure: Option<String> = None;
 
     loop {
@@ -317,21 +356,56 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 if matches!(key, Key::Options | Key::Quit) {
                     release_input(&mut guest, &mouse, canvas.window());
                 }
-                match overlay.key(key, &settings) {
+                let effect = overlay.key(key, &settings);
+                let confirmed_restart = matches!(effect, Effect::Restart(_));
+                match effect {
                     Effect::None => {}
                     Effect::Quit => {
                         stopping = Some(Instant::now());
                         overlay.saved();
                     }
-                    Effect::Save(draft) => {
+                    Effect::Save(draft) | Effect::Restart(draft) => {
+                        let needs_restart = !options.smoke_test && draft.machine != active_machine;
+                        if let Err(error) =
+                            emulator::diskless_config(&state_dir(&draft.machine), &draft.machine)
+                        {
+                            eprintln!("Prismatic: {error}");
+                            toast = Some((error, Instant::now()));
+                            overlay.save_failed();
+                            continue;
+                        }
+                        if needs_restart
+                            && !confirmed_restart
+                            && matches!(
+                                status.phase,
+                                Phase::Starting | Phase::Running | Phase::Halted
+                            )
+                        {
+                            overlay.confirm_restart();
+                            continue;
+                        }
                         match draft.save(&path) {
                             Ok(()) => {
                                 settings = draft;
                                 overlay.saved();
-                                toast = Some(("Options saved".into(), Instant::now()));
+                                if needs_restart {
+                                    release_input(&mut guest, &mouse, canvas.window());
+                                    restart = Some((
+                                        settings.machine.clone(),
+                                        matches!(status.phase, Phase::Failed(_)),
+                                    ));
+                                    stopping = Some(Instant::now());
+                                    toast = Some((
+                                        "Options saved - restarting machine".into(),
+                                        Instant::now(),
+                                    ));
+                                } else {
+                                    toast = Some(("Options saved".into(), Instant::now()));
+                                }
                             }
                             Err(error) => {
                                 eprintln!("{error}");
+                                overlay.save_failed();
                                 toast = Some(("Could not save options. Draft retained; see terminal for details.".into(), Instant::now()));
                             }
                         }
@@ -354,7 +428,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                         "Iris failed. See terminal for details; F12 closes the window.".into(),
                         Instant::now(),
                     ));
-                    if machine_smoke {
+                    if machine_smoke && restart.is_none() {
                         stopping = Some(Instant::now());
                     }
                 }
@@ -385,8 +459,18 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 redraw = true;
             }
         }
-        if machine_smoke && stopping.is_none() && started.elapsed() >= Duration::from_secs(120) {
-            failure = Some("PROM smoke test timed out after 120 seconds".into());
+        let smoke_timeout = if options.settings_smoke_test {
+            240
+        } else {
+            120
+        };
+        if machine_smoke
+            && stopping.is_none()
+            && started.elapsed() >= Duration::from_secs(smoke_timeout)
+        {
+            failure = Some(format!(
+                "PROM smoke test timed out after {smoke_timeout} seconds"
+            ));
             stopping = Some(Instant::now());
             redraw = true;
         }
@@ -412,10 +496,41 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         } else {
             false
         };
+        let settings_done = if options.settings_smoke_test && stopping.is_none() {
+            match settings_smoke.advance(
+                smoke::SettingsSmokeState {
+                    generation,
+                    elapsed: first_content.map(|time| time.elapsed()),
+                    settings: &settings,
+                    overlay: &overlay,
+                    captured: guest.captured,
+                },
+                &event_sender,
+                canvas.window(),
+            ) {
+                Ok(done) => {
+                    if done && Settings::load(&path)? != settings {
+                        failure =
+                            Some("Settings smoke preferences do not match applied settings".into());
+                        stopping = Some(Instant::now());
+                    }
+                    done
+                }
+                Err(error) => {
+                    failure = Some(error);
+                    stopping = Some(Instant::now());
+                    redraw = true;
+                    false
+                }
+            }
+        } else {
+            false
+        };
         let capture_boot = (options.boot_smoke_test
             && stopping.is_none()
             && first_content.is_some_and(|time| time.elapsed() >= Duration::from_secs(10)))
-            || input_done;
+            || input_done
+            || settings_done;
         if guest.captured != title_captured {
             canvas.window_mut().set_title(if guest.captured {
                 "Prismatic - Input captured (Ctrl+Enter releases)"
@@ -438,10 +553,17 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 ScaleMode::Nearest
             });
+            let running_label = active_machine.summary();
             let label = if stopping.is_some() {
-                "Stopping Indy..."
+                if restart.is_some() {
+                    "Restarting machine..."
+                } else {
+                    "Stopping machine..."
+                }
             } else if options.smoke_test {
                 "PRISMATIC / UI PREVIEW"
+            } else if status.phase == Phase::Running {
+                &running_label
             } else {
                 status.phase.label()
             };
@@ -484,19 +606,68 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         }
         if let Some(time) = stopping {
             release_input(&mut guest, &mouse, canvas.window());
-            if let Some(machine) = &mut emulator {
+            let finished = if let Some(machine) = &mut emulator {
                 machine.request_stop();
-                if machine.finished() {
-                    if let Phase::Failed(error) = machine.status().phase {
+                machine.finished()
+            } else {
+                true
+            };
+            if finished {
+                let stop_error =
+                    emulator
+                        .as_ref()
+                        .and_then(|machine| match machine.status().phase {
+                            Phase::Failed(error) => Some(error),
+                            _ => None,
+                        });
+                if let Some((hardware, was_failed)) = restart.take() {
+                    // Drop old handles and pixels before creating the replacement.
+                    guest.attach(None);
+                    emulator = None;
+                    guest_frame_received = false;
+                    first_content = None;
+                    frame = Arc::new(display::Frame::preview());
+                    texture = creator.create_texture_streaming(
+                        PixelFormat::RGBA32,
+                        frame.width,
+                        frame.height,
+                    )?;
+                    texture.update(None, &frame.rgba, frame.width as usize * 4)?;
+                    let result = if let Some(error) = stop_error.filter(|_| !was_failed) {
+                        Err(format!("Restart aborted: {error}"))
+                    } else {
+                        Emulator::spawn(&state_dir(&hardware), &hardware)
+                    };
+                    match result {
+                        Ok(machine) => {
+                            emulator = Some(machine);
+                            active_machine = hardware;
+                            generation += 1;
+                            status = Status::default();
+                            failure = None;
+                            toast = None;
+                        }
+                        Err(error) => {
+                            eprintln!("Prismatic: {error}");
+                            status.phase = Phase::Failed(error.clone());
+                            failure = Some(error);
+                            toast = Some(("Restart failed. Open F9 to revise the settings; see terminal for details.".into(), Instant::now()));
+                        }
+                    }
+                    stopping = if machine_smoke && emulator.is_none() {
+                        Some(Instant::now())
+                    } else {
+                        None
+                    };
+                    redraw = true;
+                } else {
+                    if let Some(error) = stop_error {
                         failure = Some(error);
                     }
                     break;
                 }
-                if time.elapsed() >= Duration::from_secs(10) {
-                    failure = Some("Iris did not finish stopping within ten seconds".into());
-                    break;
-                }
-            } else {
+            } else if time.elapsed() >= Duration::from_secs(10) {
+                failure = Some("Iris did not finish stopping within ten seconds".into());
                 break;
             }
         }

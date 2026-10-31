@@ -1,8 +1,8 @@
 //! Iris owns the machine on a worker; SDL only sees status and the latest frame.
-use crate::display::Frame;
+use crate::{display::Frame, settings::MachineSettings};
 use iris::{
     compositor::SwCompositor,
-    config::{CpuModel, GraphicsBoard, KeyboardLayout, MachineConfig, MachineProfile, banks_from4},
+    config::{GraphicsBoard, MachineConfig, MachineProfile},
     debug_overlay::DebugOverlay,
     dev::ng1::rex3::Renderer,
     dev::ps2::Ps2Controller,
@@ -11,6 +11,7 @@ use iris::{
 };
 use std::{
     any::Any,
+    io::Write,
     net::SocketAddr,
     panic::{AssertUnwindSafe, catch_unwind},
     path::Path,
@@ -32,11 +33,11 @@ pub enum Phase {
 impl Phase {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Starting => "Starting Indy...",
-            Self::Running => "Indy / R4400 / 64 MB",
-            Self::Halted => "Indy halted",
-            Self::Stopping => "Stopping Indy...",
-            Self::Stopped => "Indy stopped",
+            Self::Starting => "Starting machine...",
+            Self::Running => "Running",
+            Self::Halted => "Machine halted",
+            Self::Stopping => "Stopping machine...",
+            Self::Stopped => "Machine stopped",
             Self::Failed(_) => "Machine error - see terminal",
         }
     }
@@ -137,7 +138,10 @@ fn pack_frame(pixels: &[u32], width: usize, height: usize, stride: usize) -> Fra
     }
 }
 
-fn diskless_config(state_dir: &Path, keyboard: KeyboardLayout) -> Result<MachineConfig, String> {
+pub fn diskless_config(
+    state_dir: &Path,
+    hardware: &MachineSettings,
+) -> Result<MachineConfig, String> {
     let path = |name: &str| {
         state_dir
             .join(name)
@@ -146,25 +150,27 @@ fn diskless_config(state_dir: &Path, keyboard: KeyboardLayout) -> Result<Machine
             .map_err(|_| "Iris requires a UTF-8 state directory".to_string())
     };
     let mut config = MachineConfig {
-        // Empty path always selects Iris's embedded Indy PROM, regardless of cwd.
+        // Indy uses the embedded fallback. Indigo2 gets an explicit temporary
+        // copy of Iris's embedded PROM before construction (see spawn).
         prom: String::new(),
         nvram: path("nvram.bin")?,
         nveeprom: path("nveeprom.bin")?,
-        banks: banks_from4([64, 0, 0, 0]),
+        banks: hardware.banks()?,
         scsi: Default::default(),
         no_audio: true,
         headless: false,
-        keyboard,
+        keyboard: hardware.keyboard,
         // Ephemeral loopback ports avoid collisions with another Iris instance.
         monitor_port: Some(0),
         serial_port_a: Some(0),
         serial_port_b: Some(0),
         ..MachineConfig::default()
     };
-    config.machine.profile = MachineProfile::IndyIp24;
-    config.machine.cpu = CpuModel::R4400;
+    config.machine.profile = hardware.profile;
+    config.machine.cpu = hardware.cpu;
     config.graphics.board = Some(GraphicsBoard::Newport);
     config.graphics.heads = 1;
+    config.validate()?;
     Ok(config)
 }
 
@@ -211,8 +217,8 @@ pub struct Emulator {
 }
 
 impl Emulator {
-    pub fn spawn(state_dir: &Path, keyboard: KeyboardLayout) -> Result<Self, String> {
-        let config = diskless_config(state_dir, keyboard)?;
+    pub fn spawn(state_dir: &Path, hardware: &MachineSettings) -> Result<Self, String> {
+        let mut config = diskless_config(state_dir, hardware)?;
         let state_dir = state_dir.to_owned();
         let frames = FrameSlot::default();
         let status = Arc::new(Mutex::new(Status::default()));
@@ -228,6 +234,22 @@ impl Emulator {
                 let result = catch_unwind(AssertUnwindSafe(|| -> Result<(), String> {
                     std::fs::create_dir_all(&state_dir)
                         .map_err(|e| format!("Cannot create machine state directory: {e}"))?;
+                    // Iris's Indigo2 fallback also searches the current directory.
+                    // Give it the bundled image explicitly so a local ROM cannot
+                    // silently change a configured machine's firmware.
+                    let _prom = if config.machine.profile == MachineProfile::Indigo2Ip22 {
+                        let mut file = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
+                        file.write_all(&iris::prombini2::PROM0701367012)
+                            .map_err(|e| e.to_string())?;
+                        config.prom = file
+                            .path()
+                            .to_str()
+                            .ok_or("Iris requires a UTF-8 PROM path")?
+                            .to_owned();
+                        Some(file)
+                    } else {
+                        None
+                    };
                     let mut owned = OwnedMachine::new(iris::workstation::build(config)?);
                     owned.machine.register_system_controller();
                     {
@@ -336,11 +358,16 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iris::config::KeyboardLayout;
 
     #[test]
     fn diskless_profile_never_uses_default_media_or_cwd_state() {
         let directory = tempfile::tempdir().unwrap();
-        let config = diskless_config(directory.path(), KeyboardLayout::Iso).unwrap();
+        let hardware = MachineSettings {
+            keyboard: KeyboardLayout::Iso,
+            ..Default::default()
+        };
+        let config = diskless_config(directory.path(), &hardware).unwrap();
         assert_eq!(config.keyboard, KeyboardLayout::Iso);
         assert!(config.scsi.is_empty());
         assert!(config.prom.is_empty());
@@ -390,12 +417,41 @@ mod tests {
     fn startup_failure_is_reported_without_blocking_the_caller() {
         let file = tempfile::NamedTempFile::new().unwrap();
         let mut emulator =
-            Emulator::spawn(&file.path().join("invalid"), KeyboardLayout::Ansi).unwrap();
+            Emulator::spawn(&file.path().join("invalid"), &MachineSettings::default()).unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while !emulator.finished() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(emulator.finished());
         assert!(matches!(emulator.status().phase, Phase::Failed(_)));
+    }
+
+    #[test]
+    fn every_menu_hardware_combination_builds_a_valid_iris_config() {
+        for profile in [MachineProfile::IndyIp24, MachineProfile::Indigo2Ip22] {
+            let mut hardware = MachineSettings {
+                profile,
+                ..Default::default()
+            };
+            for &cpu in hardware.cpus() {
+                for &ram_mb in hardware.ram_sizes() {
+                    hardware.cpu = cpu;
+                    hardware.ram_mb = ram_mb;
+                    let config =
+                        diskless_config(Path::new("/tmp/prismatic-config-test"), &hardware)
+                            .unwrap();
+                    assert_eq!(config.machine.profile, profile);
+                    assert_eq!(config.machine.cpu, cpu);
+                    assert_eq!(config.banks.iter().sum::<u32>(), ram_mb);
+                    assert!(
+                        config
+                            .banks
+                            .iter()
+                            .all(|&bank| profile.bank_sizes().contains(&bank))
+                    );
+                    config.validate().unwrap();
+                }
+            }
+        }
     }
 }

@@ -6,8 +6,10 @@ Prismatic is the Rust/SDL3 frontend being developed for our [Iris fork](../iris)
 following the desktop conventions of the Happy Years emulators
 ([1984](../1984), [1985](../1985), [1986](../1986), and [1989](../1989)).
 
-Prismatic now embeds Iris and starts a **diskless SGI Indy** with an R4400,
-64 MB RAM, Newport graphics and Iris's built-in PROM. The guest framebuffer
+Prismatic embeds Iris and starts a **diskless SGI Indy** by default, with an
+R4400, 64 MB RAM, Newport graphics and Iris's built-in PROM. **F9 > General**
+now configures the machine model, RAM, CPU and keyboard, including Indigo2 IP22.
+The guest framebuffer
 appears in the SDL3 window, with the Happy Years F9 overlay, fullscreen,
 scanlines, filtering and saved desktop preferences. SDL keyboard and relative
 mouse input now reach the guest through Iris's PS/2 controller.
@@ -50,8 +52,10 @@ No guest disk or external PROM is needed. Prismatic constructs a diskless
 configuration explicitly, without reading `iris.toml`, `prom.bin`, or default
 SCSI image paths from either checkout. Normal machine state is kept under
 SDL's per-user application directory, normally
-`~/.config/prismatic/indy/` on Linux. Use `--state-dir PATH` for a separate
-machine state directory. The Iris monitor binds an ephemeral loopback port,
+`~/.config/prismatic/indy/` on Linux, or `~/.config/prismatic/indigo2/` for Indigo2.
+The models have separate NVRAM and EEPROM files. `--state-dir PATH` keeps the
+existing Indy layout at `PATH`; Indigo2 uses `PATH/indigo2/` when overridden.
+The Iris monitor binds an ephemeral loopback port,
 printed in the terminal; serial ports also use ephemeral loopback ports.
 Iris also maintains its shared draw-shape cache at
 `~/.iris/rex-jit-profile.bin`; `IRIS_REX_JIT_PROFILE` overrides that cache path.
@@ -68,7 +72,7 @@ remaining work.
 | F9 | Open options; save and close an open options session |
 | Left / Right (in options/dialogs) | Change section or confirmation choice |
 | Up / Down (in options) | Select a row |
-| Enter (in options/dialogs) | Toggle an option or accept a confirmation |
+| Enter (in options/dialogs) | Cycle a value, toggle an option or accept a confirmation |
 | Escape (in options/dialogs) | Close; offer Save / Discard / Cancel if changed |
 | F11 | Toggle fullscreen |
 | F12 / window close | Confirm quit |
@@ -82,9 +86,10 @@ input is released. Shift+reserved-function-key sends one unmodified tap, not
 a held key or a Shift combination.
 
 Keyboard input follows **physical key positions**, preserving left/right
-modifiers and the numeric keypad. `--keyboard ansi|iso|jis` selects Iris's
-physical keyboard type (default: ANSI); use `--keyboard iso` for a European
-keyboard. Character layout is determined by the guest. Text paste and IME
+modifiers and the numeric keypad. General > Keyboard selects Iris's physical
+keyboard type (default: ANSI). `--keyboard ansi|iso|jis` overrides the saved
+choice for the session; saving options also persists that choice. Use ISO for
+a European keyboard. Character layout is determined by the guest. Text paste and IME
 input are not implemented. Left, middle and right mouse buttons are forwarded;
 wheel and extra buttons work when the guest enables the corresponding PS/2
 mouse protocol.
@@ -94,10 +99,41 @@ bilinear filtering. Options are edited in a private draft and applied only
 after a successful save. Cancelling or discarding leaves the live display
 unchanged. Confirmation dialogs initially select Cancel.
 
+## Machine settings
+
+In **F9 > General**, select a row with Up/Down and press Enter to cycle its
+value. F9 saves. Hardware changes ask for **Restart / Cancel** before they are
+saved and applied; choose Restart with Left/Right, then Enter. Cancel or Escape
+returns to the draft. Escape from the editor offers Save / Discard / Cancel.
+
+| Setting | Available values |
+| --- | --- |
+| Machine | SGI Indy IP24, SGI Indigo2 IP22 |
+| RAM (Indy) | 32, 64, 128, 256 MB |
+| RAM (Indigo2) | 32, 64, 128, 256, 384, 512 MB |
+| CPU (Indy) | R4400, R5000 |
+| CPU (Indigo2) | R4400 |
+| Keyboard | ANSI, ISO, JIS |
+
+Changing models keeps compatible CPU/RAM choices, selects R4400 when changing
+from an R5000 Indy to Indigo2, and caps RAM at 256 MB when returning to Indy.
+These hardware settings take effect by stopping the old machine and starting a
+fresh one, so the current guest session is lost. The window stays responsive
+during restart. Display options apply on Save without restarting. Startup or
+restart failures remain visible in the window and terminal; F9 lets you revise
+the saved settings. A new worker is never started after a stop timeout.
+
+Both models use Newport graphics and bundled firmware. Prismatic explicitly
+passes a temporary copy of Iris's bundled Indigo2 PROM to avoid Iris's alternate
+ROM search in the working directory. IMPACT, O2 and Octane need other display
+integrations and are not selectable yet. No guest disk is attached.
+
 Preferences use SDL's per-user application directory, normally
 `~/.config/prismatic/prismatic.toml` on Linux. Override the path with
-`--config PATH`. These are frontend preferences, separate from Iris machine
-configuration. Invalid files produce an error instead of being overwritten.
+`--config PATH`. The file contains desktop preferences and a `[machine]`
+table with `profile`, `cpu`, `ram_mb` and `keyboard`. Older preference files
+automatically receive the default Indy hardware settings. Invalid or
+unsupported configurations produce an error instead of being overwritten.
 The machine uses its embedded firmware and separate NVRAM files; no guest disk
 images or Iris configuration files are opened.
 
@@ -110,6 +146,7 @@ cargo test --locked
 SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --smoke-test
 IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --boot-smoke-test --screenshot /tmp/prismatic-prom.bmp
 IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --input-smoke-test --screenshot /tmp/prismatic-input.bmp
+IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --settings-smoke-test --screenshot /tmp/prismatic-settings.bmp
 ```
 
 `--smoke-test` renders three UI frames with the options open and exits without
@@ -127,11 +164,19 @@ hardware listing: the test checks routing and capture state but does not read
 PROM text. Omit `SDL_VIDEODRIVER` and `SDL_RENDER_DRIVER` to exercise the native
 desktop window; leave it focused while the scripted test runs.
 
+`--settings-smoke-test` exercises the actual General menu: change RAM, cancel
+restart, discard the draft, then save and confirm a change from a 64 MB Indy to
+a 128 MB Indigo2. After restart it runs the input smoke script and checks saved
+preferences. Inspect its screenshot for `Memory size: 128 Mbytes` and
+`Graphics: XL`. It has a 240-second overall timeout and rejects `--config`
+because it automatically saves preferences in its temporary directory.
+
 The machine smoke commands redirect Iris's draw-shape cache to `/tmp` as well.
-All tests use temporary preferences unless `--config` is supplied, and none
-automatically saves frontend options. The boot and input tests always use
-temporary machine state and reject `--state-dir`. A screenshot path is accepted
-only with a smoke test. Unit tests cover draft settings, persistence,
-confirmation behavior, framebuffer packing/stride, frame replacement, startup
-failure, physical key mapping, host/modal routing, PS/2 releases, mouse motion
-and scrolling, and pointer conversion for resized/high-DPI windows.
+All tests use temporary preferences unless `--config` is supplied. Only the
+settings test automatically saves options. Machine smoke tests always use
+temporary NVRAM and reject `--state-dir`. A screenshot path is accepted only
+with a smoke test. Unit tests cover draft settings, persistence and failures,
+hardware compatibility/bank mapping, state-directory isolation, confirmation
+behavior, framebuffer packing/stride, frame replacement, startup failure,
+physical keys, host/modal routing, PS/2 releases, mouse input and high-DPI hit
+testing. Linux is validated; other platforms still need integration checks.

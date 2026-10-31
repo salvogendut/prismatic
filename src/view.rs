@@ -124,7 +124,7 @@ pub fn draw(
             Rect::new(0, 0, WIDTH, HEIGHT),
             Color::RGBA(0, 0, 0, 160),
         )?;
-        panel(canvas, Rect::new(16, 16, 928, 290))?;
+        panel(canvas, Rect::new(16, 16, 928, 402))?;
         fill(
             canvas,
             Rect::new(18, 18, 924, 28),
@@ -150,27 +150,31 @@ pub fn draw(
                 Color::RGB(255, 208, 128),
             )?;
         }
-        for (index, (label, enabled)) in session.rows().iter().enumerate() {
+        for (index, (label, value)) in session.rows().iter().enumerate() {
             let row_y = 68 + index as i32 * 28;
             if index == session.row {
                 fill(canvas, Rect::new(24, row_y - 6, 912, 24), SELECTED)?;
             }
             text(canvas, 32, row_y, label, TEXT)?;
-            text(
-                canvas,
-                352,
-                row_y,
-                if *enabled { "On" } else { "Off" },
-                Color::RGB(255, 208, 128),
-            )?;
+            text(canvas, 352, row_y, value, Color::RGB(255, 208, 128))?;
+            if session.tab == Tab::General && index < 4 {
+                text(canvas, 704, row_y, "Requires restart", MUTED)?;
+            }
         }
         match session.tab {
             Tab::General => {
                 text(
                     canvas,
                     32,
-                    192,
-                    "Display preferences apply when saved. Tinker reveals advanced options.",
+                    284,
+                    "Machine changes keep compatible CPU/RAM choices; other values are adjusted.",
+                    MUTED,
+                )?;
+                text(
+                    canvas,
+                    32,
+                    312,
+                    "Hardware changes ask to restart when saved. Display options apply on Save.",
                     MUTED,
                 )?;
             }
@@ -187,7 +191,7 @@ pub fn draw(
                 for (index, line) in [
                     "Prismatic - Happy Years interface for Iris",
                     "Rust / SDL3",
-                    "Iris Indy / R4400 / Newport - diskless embedded PROM boot.",
+                    "Iris Indy / Indigo2 / Newport - diskless embedded PROM boot.",
                     "Click captures input; Ctrl+Enter releases. Shift+F9/F11/F12: guest key.",
                 ]
                 .iter()
@@ -200,11 +204,11 @@ pub fn draw(
         text(
             canvas,
             32,
-            252,
-            "Left/Right Section   Up/Down Select   Enter Toggle",
+            364,
+            "Left/Right Section   Up/Down Select   Enter Change",
             MUTED,
         )?;
-        text(canvas, 32, 280, "F9 Save and close   Esc Close", TEXT)?;
+        text(canvas, 32, 392, "F9 Save and close   Esc Close", TEXT)?;
     }
 
     if let Some(dialog) = overlay.dialog {
@@ -225,6 +229,12 @@ pub fn draw(
                 "Quit Prismatic?",
                 "Stop the machine and discard any unsaved options?",
                 vec!["Quit", "Cancel"],
+                usize::from(!confirm),
+            ),
+            Dialog::Restart { confirm } => (
+                "Save hardware changes and restart?",
+                "The current guest session will be lost. Esc returns to editing.",
+                vec!["Restart", "Cancel"],
                 usize::from(!confirm),
             ),
         };

@@ -1,5 +1,10 @@
 //! A repeatable SDL-event route through the embedded diskless PROM.
 //! The resulting screenshot still needs visual inspection; this is not OCR.
+use crate::{
+    overlay::{Dialog, Overlay},
+    settings::Settings,
+};
+use iris::config::MachineProfile;
 use sdl3::{
     EventSubsystem,
     event::{Event, WindowEvent},
@@ -12,6 +17,123 @@ use std::time::Duration;
 #[derive(Default)]
 pub struct InputSmoke {
     step: usize,
+}
+
+pub struct SettingsSmokeState<'a> {
+    pub generation: u32,
+    pub elapsed: Option<Duration>,
+    pub settings: &'a Settings,
+    pub overlay: &'a Overlay,
+    pub captured: bool,
+}
+
+#[derive(Default)]
+pub struct SettingsSmoke {
+    step: usize,
+    input: InputSmoke,
+}
+
+impl SettingsSmoke {
+    pub fn advance(
+        &mut self,
+        state: SettingsSmokeState<'_>,
+        events: &EventSubsystem,
+        window: &Window,
+    ) -> Result<bool, String> {
+        let Some(elapsed) = state.elapsed else {
+            return Ok(false);
+        };
+        if state.generation == 1 {
+            if self.step != 4
+                || state.settings.machine.profile != MachineProfile::Indigo2Ip22
+                || state.settings.machine.ram_mb != 128
+            {
+                return Err("Settings smoke restarted with unexpected hardware".into());
+            }
+            return self.input.advance(
+                elapsed,
+                events,
+                window,
+                state.captured,
+                state.overlay.session.is_some() || state.overlay.dialog.is_some(),
+            );
+        }
+        if state.generation != 0 {
+            return Err("Settings smoke restarted more than once".into());
+        }
+        if self.step >= 4 || elapsed < Duration::from_secs(10 + self.step as u64) {
+            return Ok(false);
+        }
+        if state.settings.machine.ram_mb != 64
+            || state.settings.machine.profile != MachineProfile::IndyIp24
+        {
+            return Err("Settings smoke changed live hardware before confirmation".into());
+        }
+        use Scancode as S;
+        let keys: &[Scancode] = match self.step {
+            // Try a RAM change, cancel restart, then discard the draft.
+            0 => &[S::F9, S::Down, S::Return, S::F9],
+            1 => {
+                if state.overlay.dialog != Some(Dialog::Restart { confirm: false }) {
+                    return Err(
+                        "Settings smoke expected restart confirmation with Cancel selected".into(),
+                    );
+                }
+                &[S::Return, S::Escape, S::Left, S::Return]
+            }
+            2 => {
+                if state.overlay.session.is_some() || state.overlay.dialog.is_some() {
+                    return Err("Settings smoke did not discard the hardware draft".into());
+                }
+                // Change model and RAM together, then save and confirm restart.
+                &[S::F9, S::Return, S::Down, S::Return, S::F9]
+            }
+            _ => {
+                if state.overlay.dialog != Some(Dialog::Restart { confirm: false }) {
+                    return Err(
+                        "Settings smoke expected hardware confirmation before restart".into(),
+                    );
+                }
+                &[S::Left, S::Return]
+            }
+        };
+        for &scan in keys {
+            tap(events, window, scan)?;
+        }
+        eprintln!("Prismatic: settings smoke step {} complete", self.step);
+        self.step += 1;
+        Ok(false)
+    }
+}
+
+fn tap(events: &EventSubsystem, window: &Window, scan: Scancode) -> Result<(), String> {
+    for down in [true, false] {
+        let event = if down {
+            Event::KeyDown {
+                timestamp: 0,
+                window_id: window.id(),
+                keycode: Keycode::from_scancode(scan, Default::default(), false),
+                scancode: Some(scan),
+                keymod: Mod::NOMOD,
+                repeat: false,
+                which: 0,
+                raw: 0,
+            }
+        } else {
+            Event::KeyUp {
+                timestamp: 0,
+                window_id: window.id(),
+                keycode: Keycode::from_scancode(scan, Default::default(), false),
+                scancode: Some(scan),
+                keymod: Mod::NOMOD,
+                repeat: false,
+                which: 0,
+                raw: 0,
+            }
+        };
+        events.push_event(event).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 impl InputSmoke {
