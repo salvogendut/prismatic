@@ -1,0 +1,18 @@
+[package]
+name = "prismatic"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "A Happy Years desktop frontend for the Iris SGI emulator"
+
+[dependencies]
+sdl3 = "0.20"
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
