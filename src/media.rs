@@ -4,7 +4,7 @@ use crate::{
     settings::Settings,
 };
 use iris::{
-    block_node::{BlockNode, BlockStatus, ChdCdNode, ChdNode, CowNode, RawNode},
+    block_node::{BlockNode, BlockStatus, ChdCdNode, CowNode, RawNode, open_chd_cow},
     config::{ScsiDeviceConfig, ScsiKind},
     scsi::{ScsiDevice, ScsiIdentity},
     scsi_monitor::ScsiTargets,
@@ -445,7 +445,7 @@ fn open_node(medium: &Medium) -> io::Result<Box<dyn BlockNode>> {
     let path = Path::new(&medium.path);
     if is_chd(path)? {
         return match medium.kind {
-            MediaKind::Disk => Ok(Box::new(ChdNode::open(&medium.path, true)?)),
+            MediaKind::Disk => open_chd_cow(&medium.path),
             MediaKind::Cdrom => Ok(Box::new(ChdCdNode::open(&medium.path)?)),
         };
     }
@@ -583,6 +583,89 @@ mod tests {
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
         assert!(Medium::inspect(&path, MediaKind::Cdrom).is_err());
         write_and_reopen(&medium);
+    }
+
+    fn hashless_chd(path: &Path) {
+        let mut chd =
+            libchdman_rs::Chd::create(path.to_str().unwrap(), 65536, 4096, 512, [0; 4]).unwrap();
+        chd.write_metadata(
+            u32::from_be_bytes(*b"GDDD"),
+            0,
+            b"CYLS:1,HEADS:1,SECS:128,BPS:512\0",
+            1,
+        )
+        .unwrap();
+        chd.write_bytes(0, &[0x5a; 65536]).unwrap();
+        assert_eq!(chd.sha1(), [0; 20]);
+    }
+
+    #[test]
+    fn hashless_chd_writes_persist_and_rollback_without_changing_base() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("disk.chd");
+        hashless_chd(&path);
+        let original = fs::read(&path).unwrap();
+        let medium = Medium::inspect(&path, MediaKind::Disk).unwrap();
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        write_and_reopen(&medium);
+        let mut node = open_node(&medium).unwrap();
+        assert!(node.is_cow());
+        assert!(node.pending_sync().is_none());
+        assert_eq!(node.dirty_count(), 1);
+        assert_eq!(
+            node.commit().unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert_eq!(fs::read(&path).unwrap(), original);
+        node.rollback().unwrap();
+        node.flush().unwrap();
+        drop(node);
+        let mut node = open_node(&medium).unwrap();
+        let mut data = [0; 512];
+        node.read(512, &mut data).unwrap();
+        assert_eq!(data, [0x5a; 512]);
+        assert_eq!(node.dirty_count(), 0);
+        assert!(node.read(65536, &mut data).is_err());
+        assert!(node.write(65536, &data).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn hashless_chd_recovers_after_legacy_empty_diff_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("disk.chd");
+        hashless_chd(&path);
+        let diff = iris::chd_disk::diff_path_for(&path);
+        assert!(libchdman_rs::hd::HdImage::open_with_diff(&path, &diff).is_err());
+        let original_diff = fs::read(&diff).unwrap();
+        write_and_reopen(&Medium::inspect(&path, MediaKind::Disk).unwrap());
+        assert_eq!(fs::read(diff).unwrap(), original_diff);
+    }
+
+    #[test]
+    fn hashless_chd_never_bypasses_damaged_or_written_diffs() {
+        for damaged in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("disk.chd");
+            hashless_chd(&path);
+            let diff = iris::chd_disk::diff_path_for(&path);
+            assert!(libchdman_rs::hd::HdImage::open_with_diff(&path, &diff).is_err());
+            if damaged {
+                fs::write(&diff, b"damaged CHD").unwrap();
+            } else {
+                // Allocated zeroes still represent guest data, not an empty diff.
+                let mut child =
+                    libchdman_rs::Chd::open(diff.to_str().unwrap(), true, None).unwrap();
+                child.write_bytes(512, &[0x7f; 512]).unwrap();
+                child.write_bytes(512, &[0; 512]).unwrap();
+            }
+            let before = fs::read(&diff).unwrap();
+            let medium = Medium::inspect(&path, MediaKind::Disk).unwrap();
+            let error = open_node(&medium).err().unwrap();
+            assert!(error.to_string().contains("preserve it for recovery"));
+            assert_eq!(fs::read(diff).unwrap(), before);
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+        }
     }
 
     #[test]

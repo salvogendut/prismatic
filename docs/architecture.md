@@ -109,6 +109,11 @@ Iris requests readback. No SDL renderer or texture crosses threads.
 ## Media and activity
 
 Media maps controller 0 targets 1–7 to an explicit disk/CD type and image path.
+Indy placement conventions use target 1 for the system disk and target 6 for
+installation/recovery CDs; target 0 belongs to the host controller. All Indy
+devices share one bus, including internal and external devices. These placement
+conventions guide the frontend without reserving other targets or implying
+support for historical tape/floptical devices.
 Native SDL file-dialog callbacks hand results to a bounded channel; file probes
 run on a separate worker. Escape abandons the result without changing the draft.
 Save revalidates all images off the SDL thread, canonicalizes paths, rejects
@@ -120,7 +125,12 @@ The Iris CLI constructor exits the process on some media errors. Prismatic
 therefore constructs an empty SCSI configuration, opens the selected block
 nodes fallibly, and attaches `ScsiDevice`s through `ScsiTargets::with_targets`
 before starting any devices or the CPU. Raw disks use `CowNode` over a read-only
-`RawNode`; CHD disks use `ChdNode` with COW enabled. CDs use a read-only raw node
+`RawNode`; CHD disks use Iris's `open_chd_cow`. Hashed bases retain MAME diffs;
+hashless uncompressed bases use a read-only CHD node under a sparse sector
+overlay. This avoids MAME's requirement for a nonzero parent SHA-1 without
+modifying or extracting the base. Only an empty, structurally valid legacy
+diff can be bypassed, and it is left intact. The sparse adapter refuses commit
+so raw sector writes can never reach a CHD container. CDs use a read-only raw node
 or `ChdCdNode`. No filesystem decoding lives in the frontend. Snapshot loading
 and media hot swapping are not exposed; the constructor's empty disk-reference
 provenance must be addressed before adding snapshot support.

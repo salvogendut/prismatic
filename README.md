@@ -232,16 +232,44 @@ Cancel retains the draft; Discard leaves the current devices unchanged.
 | Hard disk | Raw images with 512-byte sectors; hard-disk CHDs with 512-byte sectors |
 | CD-ROM | Cooked raw data images containing ISO9660 or EFS; single-track Mode 1 CD CHDs |
 
+Use the usual Indy SCSI assignments when setting up media:
+
+| ID | Conventional assignment |
+| --- | --- |
+| 0 | Onboard controller; reserved and absent from the Media menu |
+| 1 | Primary system disk; the usual boot target is `dksc(0,1,0)` |
+| 2 | Second hard disk |
+| 3 | Optional floptical drive |
+| 4 | Tape drive |
+| 5 | Available for additional devices |
+| 6 | CD-ROM; use this for installation and recovery media |
+| 7 | Usually unused in the Indy setup; selectable as a target in Prismatic |
+
+These are placement conventions, not enforced device types. Prismatic currently
+supports hard disks and CD-ROMs; the tape and floptical entries describe the
+original hardware. The Indy has one narrow SCSI bus shared by its internal bays
+and external connector, so each attached device needs a unique ID. ID 0 is the
+Indy's controller address; the common host-adapter-at-ID-7 convention on other
+SCSI systems does not apply here.
+
 CDs are read-only. Filesystems are interpreted by the guest; the frontend
 passes their sectors through unchanged. Audio/multitrack CHDs, CUE sheets and
 raw 2352-byte CD sectors need conversion to a supported data image first.
 
 Hard disks always use **persistent copy-on-write**: raw images use adjacent
-`.overlay` and `.overlay.dirty` files; CHDs use `.diff.chd` (or Iris's
-`IRIS_CHD_DIFF_DIR` override). These files hold guest changes across launches;
+`.overlay` and `.overlay.dirty` files; CHDs use `.diff.chd`. Uncompressed CHDs
+without a stored SHA-1 use `.diff.chd.overlay` and `.diff.chd.overlay.dirty`
+instead. Both CHD paths honor Iris's `IRIS_CHD_DIFF_DIR` override.
+These files hold guest changes across launches;
 keep them with their base images. The image directory must allow creation of
 the sidecars. Do not share writable sidecars between simultaneous instances.
 Prismatic does not expose merge/reset controls yet.
+
+Older builds could report `InvalidFile` after creating an empty `.diff.chd`
+beside a CHD without a hash. Prismatic checks that this old diff contains no
+allocated hunks, leaves it untouched, and uses the sparse overlay. A damaged or
+nonempty old diff is reported for recovery instead of being ignored. Sparse
+CHD overlays cannot currently be committed through the Iris monitor.
 
 **Shut down the guest OS before restarting, changing media or quitting.**
 Restart is a fresh boot, and media changes are not hot swaps. After stopping
