@@ -276,3 +276,127 @@ impl InputSmoke {
         Ok(self.step == times.len())
     }
 }
+
+/// Real menu/restart/SCSI integration with disposable sector fixtures. Native
+/// dialogs are replaced with known paths; image inspection still runs normally.
+pub struct MediaSmoke {
+    pub expected: crate::media::MediaSettings,
+    step: usize,
+    input: InputSmoke,
+}
+
+impl MediaSmoke {
+    pub fn new(directory: &std::path::Path) -> Result<Self, Box<dyn std::error::Error>> {
+        use crate::media::{MediaKind, MediaSettings, Medium};
+        let mut expected = MediaSettings::default();
+        for (id, kind, name) in [
+            (1, MediaKind::Disk, "disk.raw"),
+            (4, MediaKind::Cdrom, "iso9660.iso"),
+            (5, MediaKind::Cdrom, "efs.img"),
+        ] {
+            let path = directory.join(name);
+            std::fs::write(&path, vec![0; 65536])?;
+            expected.devices.insert(id, Medium::inspect(&path, kind)?);
+        }
+        let path = directory.join("disk.chd");
+        libchdman_rs::hd::create_from_reader(
+            &[0; 65536][..],
+            &path,
+            libchdman_rs::hd::HdCreateOptions {
+                logical_size: 65536,
+                ..Default::default()
+            },
+            &mut |_| {},
+            &|| false,
+        )
+        .map_err(|e| format!("CHD fixture: {e:?}"))?;
+        expected
+            .devices
+            .insert(2, Medium::inspect(&path, MediaKind::Disk)?);
+        let path = directory.join("cd.chd");
+        libchdman_rs::cd::create_from_iso(
+            &directory.join("iso9660.iso"),
+            &path,
+            Default::default(),
+            &mut |_| {},
+            &|| false,
+        )
+        .map_err(|e| format!("CD fixture: {e:?}"))?;
+        expected
+            .devices
+            .insert(6, Medium::inspect(&path, MediaKind::Cdrom)?);
+        Ok(Self {
+            expected,
+            step: 0,
+            input: InputSmoke::default(),
+        })
+    }
+
+    pub fn advance(
+        &mut self,
+        state: SettingsSmokeState<'_>,
+        events: &EventSubsystem,
+        window: &Window,
+    ) -> Result<bool, String> {
+        let Some(elapsed) = state.elapsed else {
+            return Ok(false);
+        };
+        if state.generation == 1 {
+            if self.step != 7 || state.settings.media != self.expected {
+                return Err("Media smoke restarted with unexpected devices".into());
+            }
+            return self.input.advance(
+                elapsed,
+                events,
+                window,
+                state.captured,
+                state.overlay.session.is_some() || state.overlay.dialog.is_some(),
+            );
+        }
+        if state.generation != 0 {
+            return Err("Media smoke restarted more than once".into());
+        }
+        if state.overlay.busy
+            || self.step >= 7
+            || elapsed < Duration::from_secs(10 + self.step as u64)
+        {
+            return Ok(false);
+        }
+        if !state.settings.media.devices.is_empty() {
+            return Err("Media applied before confirmation".into());
+        }
+        if self.step > 0 && self.step <= 5 {
+            let id = [1, 2, 4, 5, 6][self.step - 1];
+            let draft = &state
+                .overlay
+                .session
+                .as_ref()
+                .ok_or("Media editor closed unexpectedly")?
+                .draft
+                .media;
+            if draft.devices.get(&id) != self.expected.devices.get(&id) {
+                return Err(format!("Media smoke: missing selection for SCSI {id}"));
+            }
+        }
+        use Scancode as S;
+        let keys: &[Scancode] = match self.step {
+            0 => &[S::F9, S::Right, S::Return, S::Right, S::Return],
+            1 => &[S::Down, S::Return, S::Right, S::Return],
+            2 => &[S::Down, S::Down, S::Return, S::Right, S::Right, S::Return],
+            3 | 4 => &[S::Down, S::Return, S::Right, S::Right, S::Return],
+            5 => &[S::F9],
+            _ => {
+                if state.overlay.dialog != Some(Dialog::Restart { confirm: false }) {
+                    return Err("Media save did not ask to restart".into());
+                }
+                &[S::Left, S::Return]
+            }
+        };
+        for &scan in keys {
+            tap(events, window, scan)?;
+        }
+        eprintln!("Prismatic: media smoke step {} complete", self.step);
+        self.step += 1;
+        Ok(false)
+    }
+}

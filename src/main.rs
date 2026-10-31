@@ -1,6 +1,8 @@
+mod activity;
 mod display;
 mod emulator;
 mod input;
+mod media;
 mod overlay;
 mod settings;
 mod smoke;
@@ -9,6 +11,7 @@ mod view;
 use emulator::{Emulator, Phase, Status};
 use input::{GuestInput, KeyRoute};
 use iris::config::KeyboardLayout;
+use media::{Completion, MediaJobs, MediaSettings};
 use overlay::{Effect, Key, Overlay};
 use sdl3::{
     event::{Event, WindowEvent},
@@ -30,6 +33,7 @@ struct Options {
     boot_smoke_test: bool,
     input_smoke_test: bool,
     settings_smoke_test: bool,
+    media_smoke_test: bool,
     state_dir: Option<PathBuf>,
     screenshot: Option<PathBuf>,
     keyboard: Option<KeyboardLayout>,
@@ -46,7 +50,7 @@ impl Options {
                         "Prismatic - Happy Years interface for Iris
 
 Usage: prismatic [--config PATH] [--state-dir PATH] [--keyboard ansi|iso|jis]
-                 [--smoke-test | --boot-smoke-test | --input-smoke-test | --settings-smoke-test]
+                 [--smoke-test | --boot-smoke-test | --input-smoke-test | --settings-smoke-test | --media-smoke-test]
                  [--screenshot PATH.bmp]
 
 Click display: capture input  Ctrl+Enter: release
@@ -54,14 +58,17 @@ F9 Options  F11 Fullscreen  F12 Quit
 Shift+F9/F11/F12: send a bare guest function-key tap while captured
 
 General: machine, RAM, CPU and keyboard. Hardware changes require restart.
-Boots diskless with bundled firmware. Audio is not connected yet.
+Media: raw/CHD hard disks and ISO9660/EFS/CHD CD-ROMs.
+Boots diskless by default with bundled firmware. Audio is not connected yet.
 --keyboard overrides the saved keyboard type for this session.
 --smoke-test renders the UI without starting Iris.
 --boot-smoke-test waits for guest display output, captures ten seconds later, and stops.
 --input-smoke-test drives the PROM through SDL events and checks capture.
 --settings-smoke-test edits General options and tests a confirmed machine restart.
+--media-smoke-test attaches temporary disk/CD fixtures through Media and restarts.
 --state-dir overrides Indy NVRAM storage; Indigo2 uses its indigo2 subdirectory.
---config overrides the preferences path (desktop and machine settings)."
+--config overrides prismatic.cfg in the per-user application directory.
+Menu Save persists General, Media and display settings to this file."
                     );
                     return Ok(None);
                 }
@@ -76,6 +83,7 @@ Boots diskless with bundled firmware. Audio is not connected yet.
                 Some("--boot-smoke-test") => options.boot_smoke_test = true,
                 Some("--input-smoke-test") => options.input_smoke_test = true,
                 Some("--settings-smoke-test") => options.settings_smoke_test = true,
+                Some("--media-smoke-test") => options.media_smoke_test = true,
                 Some("--keyboard") => {
                     options.keyboard =
                         Some(match args.next().as_deref().and_then(|arg| arg.to_str()) {
@@ -106,6 +114,7 @@ Boots diskless with bundled firmware. Audio is not connected yet.
             options.boot_smoke_test,
             options.input_smoke_test,
             options.settings_smoke_test,
+            options.media_smoke_test,
         ]
         .into_iter()
         .filter(|&set| set)
@@ -119,10 +128,14 @@ Boots diskless with bundled firmware. Audio is not connected yet.
             && !options.boot_smoke_test
             && !options.input_smoke_test
             && !options.settings_smoke_test
+            && !options.media_smoke_test
         {
             return Err("--screenshot requires a smoke test".into());
         }
-        if (options.boot_smoke_test || options.input_smoke_test || options.settings_smoke_test)
+        if (options.boot_smoke_test
+            || options.input_smoke_test
+            || options.settings_smoke_test
+            || options.media_smoke_test)
             && options.state_dir.is_some()
         {
             return Err(
@@ -130,8 +143,10 @@ Boots diskless with bundled firmware. Audio is not connected yet.
                     .into(),
             );
         }
-        if options.settings_smoke_test && options.config.is_some() {
-            return Err("--settings-smoke-test saves temporary preferences; omit --config".into());
+        if (options.settings_smoke_test || options.media_smoke_test) && options.config.is_some() {
+            return Err(
+                "Settings/media smoke tests save temporary preferences; omit --config".into(),
+            );
         }
         Ok(Some(options))
     }
@@ -149,8 +164,10 @@ fn release_input(
 fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let sdl = sdl3::init()?;
     let video = sdl.video()?;
-    let machine_smoke =
-        options.boot_smoke_test || options.input_smoke_test || options.settings_smoke_test;
+    let machine_smoke = options.boot_smoke_test
+        || options.input_smoke_test
+        || options.settings_smoke_test
+        || options.media_smoke_test;
     let testing = options.smoke_test || machine_smoke;
     // Keep test preferences and NVRAM away from the normal machine state.
     let temporary = if testing {
@@ -162,16 +179,25 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         Some(directory) => directory.path().to_owned(),
         None => sdl3::filesystem::get_pref_path("", "prismatic")?,
     };
+    let legacy = options
+        .config
+        .is_none()
+        .then(|| preferences.join("prismatic.toml"));
     let path = options
         .config
-        .unwrap_or_else(|| preferences.join("prismatic.toml"));
-    let mut settings = Settings::load(&path)?;
+        .unwrap_or_else(|| preferences.join("prismatic.cfg"));
+    let mut settings = Settings::open(&path, legacy.as_deref())?;
+    eprintln!("Prismatic: configuration {}", path.display());
     if let Some(keyboard) = options.keyboard {
         settings.machine.keyboard = keyboard;
     }
     let state_dir =
         |hardware: &MachineSettings| hardware.state_dir(&preferences, options.state_dir.as_deref());
     let mut active_machine = settings.machine.clone();
+    let mut active_media = settings.media.clone();
+    if machine_smoke && !active_media.devices.is_empty() {
+        return Err("Boot/input/settings smoke tests require disconnected media".into());
+    }
     let mut window = video
         .window("Prismatic - Happy Years", view::WIDTH, view::HEIGHT)
         .position_centered()
@@ -200,15 +226,23 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         Some(Emulator::spawn(
             &state_dir(&active_machine),
             &active_machine,
+            &active_media,
         )?)
     };
     let mouse = sdl.mouse();
     let mut guest = GuestInput::default();
+    let mut media_jobs = MediaJobs::default();
+    let mut leds = activity::Leds::default();
     let mut status = Status::default();
     let mut events = sdl.event_pump()?;
     let event_sender = sdl.event()?;
     let mut input_smoke = smoke::InputSmoke::default();
     let mut settings_smoke = smoke::SettingsSmoke::default();
+    let mut media_smoke = if options.media_smoke_test {
+        Some(smoke::MediaSmoke::new(&preferences)?)
+    } else {
+        None
+    };
     let mut generation = 0;
     let mut fullscreen = false;
     let mut title_captured = false;
@@ -220,10 +254,27 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let started = Instant::now();
     let mut stopping: Option<Instant> = None;
     // A new worker is constructed only after the previous worker has joined.
-    let mut restart: Option<(MachineSettings, bool)> = None;
+    let mut restart: Option<(MachineSettings, MediaSettings, bool)> = None;
     let mut failure: Option<String> = None;
 
     loop {
+        let mut ready_save = None;
+        if let Some(result) = media_jobs.poll() {
+            redraw = true;
+            match result {
+                Ok(Completion::Picked { id, medium }) => overlay.picked(id, medium),
+                Ok(Completion::Validated {
+                    settings,
+                    confirmed,
+                }) => ready_save = Some((settings, confirmed)),
+                Ok(Completion::Cancelled) => overlay.busy = false,
+                Err(error) => {
+                    eprintln!("Prismatic: {error}");
+                    overlay.save_failed();
+                    toast = Some((error, Instant::now()));
+                }
+            }
+        }
         guest.attach(emulator.as_ref().and_then(Emulator::input));
         if !guest.captured && mouse.relative_mouse_mode(canvas.window()) {
             mouse.set_relative_mouse_mode(canvas.window(), false);
@@ -360,59 +411,100 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 let confirmed_restart = matches!(effect, Effect::Restart(_));
                 match effect {
                     Effect::None => {}
+                    Effect::CancelMedia => {
+                        media_jobs.cancel();
+                        ready_save = None;
+                    }
+                    Effect::Pick { id, kind } => {
+                        let current = overlay
+                            .session
+                            .as_ref()
+                            .and_then(|s| s.draft.media.devices.get(&id))
+                            .map(|m| m.path.as_str());
+                        if let Some(smoke) = &media_smoke {
+                            let medium = smoke
+                                .expected
+                                .devices
+                                .get(&id)
+                                .ok_or("Unexpected smoke SCSI target")?;
+                            if medium.kind != kind {
+                                return Err("Unexpected smoke media kind".into());
+                            }
+                            media_jobs.pick_path(id, kind, medium.path.clone().into());
+                        } else if let Err(error) =
+                            media_jobs.pick(canvas.window(), id, kind, current)
+                        {
+                            overlay.save_failed();
+                            toast = Some((error, Instant::now()));
+                        }
+                    }
                     Effect::Quit => {
                         stopping = Some(Instant::now());
                         overlay.saved();
                     }
                     Effect::Save(draft) | Effect::Restart(draft) => {
-                        let needs_restart = !options.smoke_test && draft.machine != active_machine;
-                        if let Err(error) =
-                            emulator::diskless_config(&state_dir(&draft.machine), &draft.machine)
-                        {
-                            eprintln!("Prismatic: {error}");
-                            toast = Some((error, Instant::now()));
-                            overlay.save_failed();
-                            continue;
-                        }
-                        if needs_restart
-                            && !confirmed_restart
-                            && matches!(
-                                status.phase,
-                                Phase::Starting | Phase::Running | Phase::Halted
-                            )
-                        {
-                            overlay.confirm_restart();
-                            continue;
-                        }
-                        match draft.save(&path) {
-                            Ok(()) => {
-                                settings = draft;
-                                overlay.saved();
-                                if needs_restart {
-                                    release_input(&mut guest, &mouse, canvas.window());
-                                    restart = Some((
-                                        settings.machine.clone(),
-                                        matches!(status.phase, Phase::Failed(_)),
-                                    ));
-                                    stopping = Some(Instant::now());
-                                    toast = Some((
-                                        "Options saved - restarting machine".into(),
-                                        Instant::now(),
-                                    ));
-                                } else {
-                                    toast = Some(("Options saved".into(), Instant::now()));
-                                }
-                            }
-                            Err(error) => {
-                                eprintln!("{error}");
-                                overlay.save_failed();
-                                toast = Some(("Could not save options. Draft retained; see terminal for details.".into(), Instant::now()));
-                            }
-                        }
+                        overlay.busy = true;
+                        media_jobs.validate(draft, confirmed_restart);
                     }
                 }
             }
         }
+        if let Some((draft, confirmed)) = ready_save {
+            overlay.busy = false;
+            let needs_restart = !options.smoke_test
+                && (draft.machine != active_machine
+                    || draft.media != active_media
+                    || matches!(status.phase, Phase::Failed(_)));
+            if let Err(error) =
+                emulator::machine_config(&state_dir(&draft.machine), &draft.machine, &draft.media)
+            {
+                eprintln!("Prismatic: {error}");
+                toast = Some((error, Instant::now()));
+                overlay.save_failed();
+            } else if needs_restart
+                && !confirmed
+                && matches!(
+                    status.phase,
+                    Phase::Starting | Phase::Running | Phase::Halted
+                )
+            {
+                overlay.confirm_restart();
+            } else {
+                match draft.save(&path) {
+                    Ok(()) => {
+                        settings = draft;
+                        overlay.saved();
+                        if needs_restart {
+                            release_input(&mut guest, &mouse, canvas.window());
+                            restart = Some((
+                                settings.machine.clone(),
+                                settings.media.clone(),
+                                matches!(status.phase, Phase::Failed(_)),
+                            ));
+                            stopping = Some(Instant::now());
+                            toast =
+                                Some(("Options saved - restarting machine".into(), Instant::now()));
+                        } else {
+                            toast = Some(("Options saved".into(), Instant::now()));
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("Prismatic: {error}");
+                        overlay.save_failed();
+                        toast = Some((
+                            "Could not save options. Draft retained; see terminal for details."
+                                .into(),
+                            Instant::now(),
+                        ));
+                    }
+                }
+            }
+            redraw = true;
+        }
+        let pulses = emulator
+            .as_ref()
+            .map_or(0, |machine| machine.activity.take());
+        redraw |= leds.update(pulses, Instant::now());
         if let Some(machine) = &mut emulator {
             let next = machine.status();
             if next != status {
@@ -459,7 +551,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 redraw = true;
             }
         }
-        let smoke_timeout = if options.settings_smoke_test {
+        let smoke_timeout = if options.settings_smoke_test || options.media_smoke_test {
             240
         } else {
             120
@@ -526,11 +618,42 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         } else {
             false
         };
+        let media_done = if let Some(smoke) = &mut media_smoke
+            && stopping.is_none()
+        {
+            match smoke.advance(
+                smoke::SettingsSmokeState {
+                    generation,
+                    elapsed: first_content.map(|time| time.elapsed()),
+                    settings: &settings,
+                    overlay: &overlay,
+                    captured: guest.captured,
+                },
+                &event_sender,
+                canvas.window(),
+            ) {
+                Ok(done) => {
+                    if done && Settings::load(&path)? != settings {
+                        return Err("Media preferences did not persist".into());
+                    }
+                    done
+                }
+                Err(error) => {
+                    failure = Some(error);
+                    stopping = Some(Instant::now());
+                    redraw = true;
+                    false
+                }
+            }
+        } else {
+            false
+        };
         let capture_boot = (options.boot_smoke_test
             && stopping.is_none()
             && first_content.is_some_and(|time| time.elapsed() >= Duration::from_secs(10)))
             || input_done
-            || settings_done;
+            || settings_done
+            || media_done;
         if guest.captured != title_captured {
             canvas.window_mut().set_title(if guest.captured {
                 "Prismatic - Input captured (Ctrl+Enter releases)"
@@ -585,6 +708,9 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                     status: label,
                     placeholder,
                     captured: guest.captured,
+                    leds: leds.lit,
+                    media: &active_media,
+                    running: status.phase == Phase::Running && stopping.is_none(),
                 },
             )?;
             frames += 1;
@@ -620,12 +746,13 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                             Phase::Failed(error) => Some(error),
                             _ => None,
                         });
-                if let Some((hardware, was_failed)) = restart.take() {
+                if let Some((hardware, media, was_failed)) = restart.take() {
                     // Drop old handles and pixels before creating the replacement.
                     guest.attach(None);
                     emulator = None;
                     guest_frame_received = false;
                     first_content = None;
+                    leds = activity::Leds::default();
                     frame = Arc::new(display::Frame::preview());
                     texture = creator.create_texture_streaming(
                         PixelFormat::RGBA32,
@@ -636,12 +763,13 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                     let result = if let Some(error) = stop_error.filter(|_| !was_failed) {
                         Err(format!("Restart aborted: {error}"))
                     } else {
-                        Emulator::spawn(&state_dir(&hardware), &hardware)
+                        Emulator::spawn(&state_dir(&hardware), &hardware, &media)
                     };
                     match result {
                         Ok(machine) => {
                             emulator = Some(machine);
                             active_machine = hardware;
+                            active_media = media;
                             generation += 1;
                             status = Status::default();
                             failure = None;
@@ -666,7 +794,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                     }
                     break;
                 }
-            } else if time.elapsed() >= Duration::from_secs(10) {
+            } else if active_media.devices.is_empty() && time.elapsed() >= Duration::from_secs(10) {
                 failure = Some("Iris did not finish stopping within ten seconds".into());
                 break;
             }

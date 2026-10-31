@@ -11,19 +11,22 @@ confirms quit. Advanced controls are behind Tinker.
 Rendering, textures, windows and host events belong to SDL on the main thread.
 Settings policy is independent of drawing. The application polls machine
 updates while emulation is active, and redraws only for new frames, UI events,
-status changes and notification expiry. Guest proportions are preserved inside
-the display area, leaving room for the optional status strip.
+status changes, LED pulse expiry and notification expiry. Guest proportions are preserved inside
+the display area, leaving room for the optional status hints and the persistent
+bottom LED strip.
 
 | Module | Responsibility |
 | --- | --- |
 | `src/main.rs` | CLI, SDL lifecycle, events, texture uploads, asynchronous shutdown, smoke runs |
-| `src/emulator.rs` | Validated diskless Iris configuration, worker ownership, bundled firmware, frame capture, latest-frame slot, machine status |
+| `src/emulator.rs` | Validated Iris configuration and media attachment, worker ownership, bundled firmware, frame capture, latest-frame slot, machine status |
 | `src/input.rs` | Host/modal key routing, physical scancode mapping, held guest input, PS/2 delivery |
-| `src/smoke.rs` | Scripted SDL input and General-menu/restart smoke tests |
+| `src/smoke.rs` | Scripted SDL input and General/Media menu and restart smoke tests |
 | `src/overlay.rs` | Draft settings, navigation, modal choices and effects |
-| `src/settings.rs` | Desktop/hardware settings, compatibility, RAM banks, state paths and atomic persistence |
+| `src/settings.rs` | Desktop/hardware/media settings, compatibility, RAM banks, state paths and atomic persistence |
 | `src/display.rs` | Packed RGBA frame type, startup/UI-preview pixels and aspect-preserving placement |
-| `src/view.rs` | SDL drawing, status strip, options, confirmations and notifications |
+| `src/view.rs` | SDL drawing, status strip, LEDs, options, confirmations and notifications |
+| `src/media.rs` | Native file chooser, asynchronous read-only probes, media settings and Iris block-node adapters |
+| `src/activity.rs` | Atomic activity bits and visible LED pulse durations |
 
 ## Core boundary
 
@@ -74,11 +77,12 @@ Confirmed quit sends a stop request through a bounded channel. SDL continues
 pumping events while the worker stops the CPU and devices, saves NVRAM through
 Iris's normal stop path, and drops the machine. Startup/worker panics are
 reported as failures. A guard also attempts stop during worker unwinding.
-Normal shutdown has a ten-second UI deadline; the destructor has a bounded
-five-second fallback for exceptional exits. If the core hangs, the program
-reports failure rather than waiting indefinitely. These policies currently
-apply only to diskless sessions; writable guests need a guest-aware shutdown
-and disk synchronization flow before they are supported.
+Diskless shutdown has a ten-second UI deadline and a five-second destructor
+fallback. With media attached, teardown waits for storage flushing to finish;
+the normal event loop remains responsive. Flush failures surface as Failed and
+prevent a replacement machine. Restart/quit dialogs remind the user to shut
+down the guest OS first. Iris's process-wide `set_exit_on_guest_poweroff(false)`
+keeps guest power-off from terminating the frontend before its cleanup runs.
 
 ## Display handoff
 
@@ -93,6 +97,37 @@ producer replaces an unread frame, so a slow UI never builds a video queue.
 The SDL thread takes the frame, releases the lock, recreates the texture when
 dimensions change, and uploads it. Heartbeat-only frames are skipped unless
 Iris requests readback. No SDL renderer or texture crosses threads.
+
+## Media and activity
+
+Media maps controller 0 targets 1–7 to an explicit disk/CD type and image path.
+Native SDL file-dialog callbacks hand results to a bounded channel; file probes
+run on a separate worker. Escape abandons the result without changing the draft.
+Save revalidates all images off the SDL thread, canonicalizes paths, rejects
+duplicate hard disks and then follows the hardware restart confirmation flow.
+Validation is read-only and never creates overlays. Opening the writable
+backend happens only when constructing the selected machine.
+
+The Iris CLI constructor exits the process on some media errors. Prismatic
+therefore constructs an empty SCSI configuration, opens the selected block
+nodes fallibly, and attaches `ScsiDevice`s through `ScsiTargets::with_targets`
+before starting any devices or the CPU. Raw disks use `CowNode` over a read-only
+`RawNode`; CHD disks use `ChdNode` with COW enabled. CDs use a read-only raw node
+or `ChdCdNode`. No filesystem decoding lives in the frontend. Snapshot loading
+and media hot swapping are not exposed; the constructor's empty disk-reference
+provenance must be addressed before adding snapshot support.
+
+`MediaNode` delegates the block interface while recording actual reads/writes
+and flushing on drop. After CPU/device stop, the worker detaches targets to
+force these flushes, checks retained errors, and only then reports completion.
+Iris retains its persistent COW sidecar behavior. Draft selection/discard never
+opens a writable node. The probe checks format/readability; a later permission
+or device failure is still reported by machine startup or shutdown.
+
+`CaptureRenderer` records CPU cycle changes and core network heartbeat bits.
+Storage adapters publish per-target read/write bits. The main thread consumes
+the atomic bitset and stretches pulses to 150 ms, redrawing when they expire.
+LED timers do not depend on new guest framebuffer output.
 
 ## Input handoff
 
@@ -131,22 +166,26 @@ scroll, text paste and IME composition remain outside this milestone.
 
 ## Settings and verification
 
-Desktop and hardware options are private drafts. `[machine]` in the frontend
-TOML persists profile, CPU, RAM and keyboard alongside the display preferences.
+Desktop, hardware and media options are private drafts. `prismatic.cfg` uses
+TOML and persists `[machine]` plus `[media.devices.ID]` alongside display
+preferences. First launch creates the file in SDL's preference directory;
+`--config` selects another path. An existing default `prismatic.toml` migrates
+only when the new file is absent. Invalid files remain untouched. Relative
+image paths resolve beside the configuration file.
 Serde defaults migrate older preference files without a separate rewrite.
 Model changes retain compatible CPU/RAM selections and normalize incompatible
 choices in the draft. `--keyboard` overrides the loaded value; a later Save
 persists the override along with the other settings.
 
 The model emits a save request; the application validates the proposed Iris
-configuration and compares hardware against the active machine. Changes to
-hardware during Starting/Running/Halted open a Restart/Cancel dialog, initially
+configuration and compares hardware/media against the active machine. Changes to
+hardware/media during Starting/Running/Halted open a Restart/Cancel dialog, initially
 on Cancel. Both direct F9 save and Save from the unsaved-changes dialog follow
 this path. Cancel retains the draft, Discard has no runtime or file side effect,
 and a failed validation/write keeps the editor open. Display-only saves do not
 restart. The session closes only after atomic persistence succeeds.
 
-A confirmed hardware save releases capture and requests normal worker stop.
+A confirmed hardware/media save releases capture and requests normal worker stop.
 SDL keeps pumping events while the worker stops and joins; no second machine
 is constructed concurrently. After a successful stop, the frontend drops old
 input/frame handles, clears the old image and starts the selected configuration
@@ -174,12 +213,20 @@ same process. It then runs the input script and checks the saved preferences.
 It has a 240-second total deadline and always uses temporary preferences and
 NVRAM. Visual inspection of `hinv` checks the new memory size and XL graphics.
 
+The media smoke test supplies temporary image paths in place of the native
+chooser, drives the real Media menu and confirms a restart with two hard disks
+(raw and CHD) and three CDs (raw ISO/EFS sector fixtures and a Mode 1 CHD).
+It verifies saved `prismatic.cfg` and then runs the input script. Its `hinv`
+screenshot verifies SCSI target enumeration; synthetic fixtures do not test
+an operating-system installation or the native dialog UI.
+
 ## Next milestones
 
 1. Add SDL audio and feature boundaries for Iris's existing host backends.
    Validate Linux, Windows and macOS builds and device behavior.
-2. Extend General and add Media, Extensions and Tinker-gated Advanced controls.
+2. Extend General/Media and add Extensions and Tinker-gated Advanced controls.
    Classify settings as live, next boot or restart-required. Validate before
-   applying, confirm disruptive changes and use native media pickers.
-3. Add F4 screenshots, F5 confirmed reset, F6 recording, F7 pause, activity
-   indicators and window persistence as their backend behavior becomes ready.
+   applying and confirm disruptive changes. Add explicit COW management and
+   guest-aware media swapping when their core interfaces are ready.
+3. Add F4 screenshots, F5 confirmed reset, F6 recording, F7 pause
+   controls and window persistence as their backend behavior becomes ready.

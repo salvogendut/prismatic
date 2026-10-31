@@ -1,3 +1,4 @@
+use crate::media::MediaSettings;
 use iris::config::{CpuModel, KeyboardLayout, MAX_BANKS, MachineProfile, banks_from4};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -144,6 +145,7 @@ pub struct Settings {
     pub smoothing: bool,
     pub tinker: bool,
     pub machine: MachineSettings,
+    pub media: MediaSettings,
 }
 
 impl Default for Settings {
@@ -154,17 +156,39 @@ impl Default for Settings {
             smoothing: false,
             tinker: false,
             machine: MachineSettings::default(),
+            media: MediaSettings::default(),
         }
     }
 }
 
 impl Settings {
+    /// Create a complete configuration on first launch, or migrate the previous
+    /// default filename. An existing (even invalid) destination is never replaced.
+    pub fn open(path: &Path, legacy: Option<&Path>) -> Result<Self, String> {
+        if path
+            .try_exists()
+            .map_err(|e| format!("Cannot access {}: {e}", path.display()))?
+        {
+            return Self::load(path);
+        }
+        let settings = match legacy {
+            Some(previous) => Self::load(previous)?,
+            None => Self::default(),
+        };
+        settings.save(path)?;
+        Ok(settings)
+    }
+
     pub fn load(path: &Path) -> Result<Self, String> {
         match fs::read_to_string(path) {
             Ok(text) => {
-                let settings: Self = toml::from_str(&text)
+                let mut settings: Self = toml::from_str(&text)
                     .map_err(|e| format!("Cannot read settings {}: {e}", path.display()))?;
                 settings.machine.validate()?;
+                settings.media.validate()?;
+                settings
+                    .media
+                    .resolve_paths(path.parent().unwrap_or(Path::new(".")))?;
                 Ok(settings)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
@@ -175,6 +199,7 @@ impl Settings {
     // Publish only complete files. A failed write leaves the previous settings intact.
     pub fn save(&self, path: &Path) -> Result<(), String> {
         self.machine.validate()?;
+        self.media.validate()?;
         let parent = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -195,6 +220,41 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cfg_is_created_migrates_old_preferences_and_wins_on_subsequent_launches() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("prismatic.cfg");
+        let legacy = dir.path().join("prismatic.toml");
+        let old = Settings {
+            scanlines: true,
+            ..Default::default()
+        };
+        old.save(&legacy).unwrap();
+        let old_bytes = fs::read(&legacy).unwrap();
+        assert_eq!(Settings::open(&cfg, Some(&legacy)).unwrap(), old);
+        let mut updated = old.clone();
+        updated.machine.ram_mb = 128;
+        updated.media.devices.insert(
+            4,
+            crate::media::Medium {
+                kind: crate::media::MediaKind::Cdrom,
+                path: "/media/install.efs".into(),
+            },
+        );
+        updated.save(&cfg).unwrap();
+        assert_eq!(Settings::open(&cfg, Some(&legacy)).unwrap(), updated);
+        assert_eq!(fs::read(&legacy).unwrap(), old_bytes);
+        fs::write(&cfg, "bad configuration").unwrap();
+        assert!(Settings::open(&cfg, Some(&legacy)).is_err());
+        assert_eq!(fs::read_to_string(&cfg).unwrap(), "bad configuration");
+        fs::remove_file(&cfg).unwrap();
+        fs::write(&legacy, "bad legacy configuration").unwrap();
+        assert!(Settings::open(&cfg, Some(&legacy)).is_err());
+        assert!(!cfg.exists());
+        assert_eq!(Settings::open(&cfg, None).unwrap(), Settings::default());
+        assert!(cfg.is_file());
+    }
 
     #[test]
     fn settings_round_trip_and_missing_file() {

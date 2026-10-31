@@ -14,7 +14,8 @@ appears in the SDL3 window, with the Happy Years F9 overlay, fullscreen,
 scanlines, filtering and saved desktop preferences. SDL keyboard and relative
 mouse input now reach the guest through Iris's PS/2 controller.
 
-**Audio and media configuration are not connected yet.** With fresh NVRAM and
+**F9 > Media** attaches hard disks and CD-ROMs; bottom LEDs show machine, CPU,
+network and disk activity. **Audio is not connected yet.** With fresh NVRAM and
 no disk, the PROM normally displays "Unable to boot; press any key to continue".
 Click the display to capture input, then press Enter to reach the PROM menu.
 Choose **Enter Command Monitor** (5) and try `hinv` to inspect the emulated
@@ -31,7 +32,9 @@ Dev/
   prismatic/
 ```
 
-Prismatic uses the local Iris library directly. Its root Cargo manifest also
+Prismatic uses the local Iris library directly, including the fork's
+`workstation::set_exit_on_guest_poweroff` embedding API. Use Iris branch
+`xiri/netbsd-newport` at commit `53c9fb2` or newer and update both checkouts. Its root Cargo manifest also
 preserves the fork's patched winit and block dependencies. Install Rust through
 rustup; `rust-toolchain.toml` selects nightly, matching Iris's requirement.
 On a Fedora development system, install the native build dependencies:
@@ -48,9 +51,9 @@ SDL is linked dynamically through the [`sdl3` Rust bindings](https://github.com/
 SDL_ttf and a separate widget toolkit are not required. Linux is the first
 validated platform; Windows and macOS integration builds remain to be checked.
 
-No guest disk or external PROM is needed. Prismatic constructs a diskless
-configuration explicitly, without reading `iris.toml`, `prom.bin`, or default
-SCSI image paths from either checkout. Normal machine state is kept under
+No guest disk or external PROM is needed. The default is diskless; only images
+selected in Prismatic are attached. It does not read `iris.toml`, `prom.bin`,
+or default SCSI image paths from either checkout. Normal machine state is kept under
 SDL's per-user application directory, normally
 `~/.config/prismatic/indy/` on Linux, or `~/.config/prismatic/indigo2/` for Indigo2.
 The models have separate NVRAM and EEPROM files. `--state-dir PATH` keeps the
@@ -126,16 +129,89 @@ the saved settings. A new worker is never started after a stop timeout.
 Both models use Newport graphics and bundled firmware. Prismatic explicitly
 passes a temporary copy of Iris's bundled Indigo2 PROM to avoid Iris's alternate
 ROM search in the working directory. IMPACT, O2 and Octane need other display
-integrations and are not selectable yet. No guest disk is attached.
+integrations and are not selectable yet.
 
-Preferences use SDL's per-user application directory, normally
-`~/.config/prismatic/prismatic.toml` on Linux. Override the path with
-`--config PATH`. The file contains desktop preferences and a `[machine]`
-table with `profile`, `cpu`, `ram_mb` and `keyboard`. Older preference files
-automatically receive the default Indy hardware settings. Invalid or
-unsupported configurations produce an error instead of being overwritten.
-The machine uses its embedded firmware and separate NVRAM files; no guest disk
-images or Iris configuration files are opened.
+## Media and activity LEDs
+
+Open **F9 > Media**, select a SCSI target (controller 0, IDs 1–7), and press
+Enter. Choose **Hard disk**, **CD-ROM**, **Disconnect** or **Cancel**. The
+native file chooser accepts CHD and raw images, including `.img`, `.raw`,
+`.dsk`, `.hdd`, `.iso` and `.efs`. Choose the device type explicitly: an EFS
+CD image may have an `.img` extension. Selection edits the draft; **F9 Save**
+validates the images and asks to restart before applying a media change.
+Cancel retains the draft; Discard leaves the current devices unchanged.
+
+| Device | Supported storage |
+| --- | --- |
+| Hard disk | Raw images with 512-byte sectors; hard-disk CHDs with 512-byte sectors |
+| CD-ROM | Cooked raw data images containing ISO9660 or EFS; single-track Mode 1 CD CHDs |
+
+CDs are read-only. Filesystems are interpreted by the guest; the frontend
+passes their sectors through unchanged. Audio/multitrack CHDs, CUE sheets and
+raw 2352-byte CD sectors need conversion to a supported data image first.
+
+Hard disks always use **persistent copy-on-write**: raw images use adjacent
+`.overlay` and `.overlay.dirty` files; CHDs use `.diff.chd` (or Iris's
+`IRIS_CHD_DIFF_DIR` override). These files hold guest changes across launches;
+keep them with their base images. The image directory must allow creation of
+the sidecars. Do not share writable sidecars between simultaneous instances.
+Prismatic does not expose merge/reset controls yet.
+
+**Shut down the guest OS before restarting, changing media or quitting.**
+Restart is a fresh boot, and media changes are not hot swaps. After stopping
+the CPU and devices, the worker flushes attached storage before replacement
+or exit. With media attached it waits for that flush while SDL keeps pumping
+events; flush failures are reported and prevent a replacement machine.
+
+The bottom strip remains visible when the optional status hints are hidden.
+RUN reflects the running CPU; CPU and NET pulse on core activity. Each attached
+HD/CD has a numbered LED: green for reads, amber for writes. Pulses remain
+visible briefly even when no new guest frame is drawn.
+
+## Persistent configuration
+
+**`prismatic.cfg`** contains the current saved General, Media and display
+configuration. It is created on first launch in SDL's per-user application
+directory, normally **`~/.config/prismatic/prismatic.cfg`** on Linux, and loaded
+on subsequent launches. Every successful menu Save atomically updates this
+file. Cancel/Discard do not change it, and restart changes are saved only
+after confirmation. The path is printed at startup.
+
+For a configuration in the current directory, run:
+
+```sh
+cargo run --release --locked -- --config ./prismatic.cfg
+```
+
+The file uses human-readable TOML with a `[machine]` table and one table per
+attached device, for example:
+
+```toml
+scanlines = false
+show_status = true
+smoothing = false
+tinker = false
+
+[machine]
+profile = "indy_ip24"
+cpu = "r4400"
+ram_mb = 64
+keyboard = "ansi"
+
+[media.devices.1]
+kind = "disk"
+path = "/path/to/irix.chd"
+
+[media.devices.4]
+kind = "cdrom"
+path = "/path/to/install.efs"
+```
+
+Relative image paths resolve beside the configuration file; menu selections
+are saved as absolute paths. With the default location, an older
+`prismatic.toml` is migrated if `prismatic.cfg` is absent; the old file is
+retained. Invalid configurations report an error and are never replaced with
+defaults. NVRAM/EEPROM remain separate machine-state files.
 
 ## Checks
 
@@ -147,6 +223,7 @@ SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --smoke-t
 IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --boot-smoke-test --screenshot /tmp/prismatic-prom.bmp
 IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --input-smoke-test --screenshot /tmp/prismatic-input.bmp
 IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --settings-smoke-test --screenshot /tmp/prismatic-settings.bmp
+IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --media-smoke-test --screenshot /tmp/prismatic-media.bmp
 ```
 
 `--smoke-test` renders three UI frames with the options open and exits without
@@ -171,12 +248,21 @@ preferences. Inspect its screenshot for `Memory size: 128 Mbytes` and
 `Graphics: XL`. It has a 240-second overall timeout and rejects `--config`
 because it automatically saves preferences in its temporary directory.
 
+`--media-smoke-test` selects temporary raw/CHD disks and raw/CHD CDs through
+Media, saves `prismatic.cfg`, confirms restart and runs the input script.
+Inspect `hinv` for disks 1/2 and CD-ROMs 4/5/6. It substitutes known temporary
+paths for the OS file chooser, but exercises normal asynchronous validation,
+attachment and shutdown. These are synthetic sector fixtures, not bootable
+IRIX installation media; this does not establish a full OS installation.
+
 The machine smoke commands redirect Iris's draw-shape cache to `/tmp` as well.
-All tests use temporary preferences unless `--config` is supplied. Only the
-settings test automatically saves options. Machine smoke tests always use
-temporary NVRAM and reject `--state-dir`. A screenshot path is accepted only
-with a smoke test. Unit tests cover draft settings, persistence and failures,
+All tests use temporary preferences unless `--config` is supplied. Settings
+and media tests automatically save options and reject `--config`. Missing
+configuration files are initialized on startup. Machine smoke tests always use
+temporary NVRAM and reject `--state-dir`; diskless tests reject configurations
+with attached media. A screenshot path is accepted only with a smoke test. Unit tests cover draft settings, persistence and failures,
 hardware compatibility/bank mapping, state-directory isolation, confirmation
 behavior, framebuffer packing/stride, frame replacement, startup failure,
-physical keys, host/modal routing, PS/2 releases, mouse input and high-DPI hit
-testing. Linux is validated; other platforms still need integration checks.
+physical keys, host/modal routing, PS/2 releases, mouse input, high-DPI hit
+testing, configuration migration, COW persistence, CD read-only access,
+invalid media, flush failures and LED pulses. Linux is validated; other platforms still need integration checks.

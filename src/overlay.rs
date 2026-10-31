@@ -1,3 +1,4 @@
+use crate::media::{MediaKind, Medium};
 use crate::settings::Settings;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,6 +16,7 @@ pub enum Key {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
     General,
+    Media,
     Advanced,
     About,
 }
@@ -23,6 +25,7 @@ impl Tab {
     pub fn label(self) -> &'static str {
         match self {
             Self::General => "General",
+            Self::Media => "Media",
             Self::Advanced => "Advanced",
             Self::About => "About",
         }
@@ -34,6 +37,7 @@ pub enum Dialog {
     Unsaved { choice: usize }, // Save, Discard, Cancel
     Quit { confirm: bool },
     Restart { confirm: bool },
+    Media { id: u8, choice: usize },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -41,6 +45,8 @@ pub enum Effect {
     None,
     Save(Settings),
     Restart(Settings),
+    Pick { id: u8, kind: MediaKind },
+    CancelMedia,
     Quit,
 }
 
@@ -58,9 +64,9 @@ impl Session {
 
     pub fn tabs(&self) -> Vec<Tab> {
         if self.draft.tinker {
-            vec![Tab::General, Tab::Advanced, Tab::About]
+            vec![Tab::General, Tab::Media, Tab::Advanced, Tab::About]
         } else {
-            vec![Tab::General, Tab::About]
+            vec![Tab::General, Tab::Media, Tab::About]
         }
     }
 
@@ -84,6 +90,13 @@ impl Session {
                 ("Tinker", on_off(self.draft.tinker)),
             ],
             Tab::Advanced => vec![("Bilinear filtering", on_off(self.draft.smoothing))],
+            Tab::Media => [
+                "SCSI 0:1", "SCSI 0:2", "SCSI 0:3", "SCSI 0:4", "SCSI 0:5", "SCSI 0:6", "SCSI 0:7",
+            ]
+            .iter()
+            .enumerate()
+            .map(|(index, &label)| (label, self.draft.media.row_value(index as u8 + 1)))
+            .collect(),
             Tab::About => vec![],
         }
     }
@@ -93,23 +106,42 @@ impl Session {
 pub struct Overlay {
     pub session: Option<Session>,
     pub dialog: Option<Dialog>,
+    pub busy: bool,
 }
 
 impl Overlay {
+    pub fn picked(&mut self, id: u8, medium: Medium) {
+        if let Some(session) = &mut self.session {
+            session.draft.media.devices.insert(id, medium);
+        }
+        self.busy = false;
+    }
     pub fn confirm_restart(&mut self) {
         self.dialog = Some(Dialog::Restart { confirm: false });
     }
 
     pub fn save_failed(&mut self) {
         self.dialog = None;
+        self.busy = false;
     }
 
     pub fn saved(&mut self) {
         self.session = None;
         self.dialog = None;
+        self.busy = false;
     }
 
     pub fn key(&mut self, key: Key, live: &Settings) -> Effect {
+        if self.busy {
+            if matches!(key, Key::Escape | Key::Quit) {
+                self.busy = false;
+                if key == Key::Quit {
+                    self.dialog = Some(Dialog::Quit { confirm: false });
+                }
+                return Effect::CancelMedia;
+            }
+            return Effect::None;
+        }
         if let Some(dialog) = self.dialog {
             match (dialog, key) {
                 (_, Key::Escape) => self.dialog = None,
@@ -136,6 +168,33 @@ impl Overlay {
                     return Effect::Restart(self.session.as_ref().unwrap().draft.clone());
                 }
                 (Dialog::Restart { confirm: false }, Key::Enter) => self.dialog = None,
+                (Dialog::Media { id, choice }, Key::Left | Key::Right) => {
+                    self.dialog = Some(Dialog::Media {
+                        id,
+                        choice: (choice + if key == Key::Left { 3 } else { 1 }) % 4,
+                    });
+                }
+                (Dialog::Media { id, choice: 0 | 1 }, Key::Enter) => {
+                    let kind = if matches!(dialog, Dialog::Media { choice: 0, .. }) {
+                        MediaKind::Disk
+                    } else {
+                        MediaKind::Cdrom
+                    };
+                    self.dialog = None;
+                    self.busy = true;
+                    return Effect::Pick { id, kind };
+                }
+                (Dialog::Media { id, choice: 2 }, Key::Enter) => {
+                    self.session
+                        .as_mut()
+                        .unwrap()
+                        .draft
+                        .media
+                        .devices
+                        .remove(&id);
+                    self.dialog = None;
+                }
+                (Dialog::Media { .. }, Key::Enter) => self.dialog = None,
                 _ => {}
             }
             return Effect::None;
@@ -182,6 +241,12 @@ impl Overlay {
                 (Tab::General, 5) => session.draft.show_status = !session.draft.show_status,
                 (Tab::General, 6) => session.draft.tinker = !session.draft.tinker,
                 (Tab::Advanced, 0) => session.draft.smoothing = !session.draft.smoothing,
+                (Tab::Media, row) => {
+                    self.dialog = Some(Dialog::Media {
+                        id: row as u8 + 1,
+                        choice: 3,
+                    })
+                }
                 _ => {}
             },
             _ => {}
@@ -193,6 +258,62 @@ impl Overlay {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn media_choice_cancel_disconnect_and_discard_preserve_live_devices() {
+        let mut live = Settings::default();
+        live.media.devices.insert(
+            1,
+            Medium {
+                kind: MediaKind::Disk,
+                path: "/disk.img".into(),
+            },
+        );
+        let mut overlay = Overlay::default();
+        for key in [Key::Options, Key::Right, Key::Enter] {
+            overlay.key(key, &live);
+        }
+        assert_eq!(overlay.dialog, Some(Dialog::Media { id: 1, choice: 3 }));
+        overlay.key(Key::Enter, &live);
+        assert!(!overlay.session.as_ref().unwrap().dirty());
+        for key in [Key::Enter, Key::Left, Key::Enter] {
+            overlay.key(key, &live);
+        }
+        assert!(
+            overlay
+                .session
+                .as_ref()
+                .unwrap()
+                .draft
+                .media
+                .devices
+                .is_empty()
+        );
+        assert_eq!(live.media.devices.len(), 1);
+        for key in [
+            Key::Escape,
+            Key::Left,
+            Key::Enter,
+            Key::Options,
+            Key::Right,
+            Key::Enter,
+            Key::Right,
+            Key::Right,
+        ] {
+            overlay.key(key, &live);
+        }
+        assert_eq!(
+            overlay.key(Key::Enter, &live),
+            Effect::Pick {
+                id: 1,
+                kind: MediaKind::Cdrom
+            }
+        );
+        assert!(overlay.busy);
+        assert_eq!(overlay.key(Key::Options, &live), Effect::None);
+        assert_eq!(overlay.key(Key::Escape, &live), Effect::CancelMedia);
+        assert!(!overlay.session.as_ref().unwrap().dirty());
+    }
 
     #[test]
     fn discard_does_not_change_live_settings() {
@@ -238,8 +359,10 @@ mod tests {
         let mut overlay = Overlay::default();
         overlay.key(Key::Options, &live);
         overlay.key(Key::Right, &live);
+        assert_eq!(overlay.session.as_ref().unwrap().tab, Tab::Media);
+        overlay.key(Key::Right, &live);
         assert_eq!(overlay.session.as_ref().unwrap().tab, Tab::About);
-        for key in [Key::Left, Key::Up, Key::Enter, Key::Right] {
+        for key in [Key::Right, Key::Up, Key::Enter, Key::Right, Key::Right] {
             overlay.key(key, &live);
         }
         assert_eq!(overlay.session.as_ref().unwrap().tab, Tab::Advanced);

@@ -1,5 +1,10 @@
 //! Iris owns the machine on a worker; SDL only sees status and the latest frame.
-use crate::{display::Frame, settings::MachineSettings};
+use crate::{
+    activity::{self, Activity},
+    display::Frame,
+    media::{self, MediaSettings},
+    settings::MachineSettings,
+};
 use iris::{
     compositor::SwCompositor,
     config::{GraphicsBoard, MachineConfig, MachineProfile},
@@ -76,14 +81,18 @@ struct CaptureRenderer {
     frames: FrameSlot,
     compositor: SwCompositor,
     presented: bool,
+    activity: Activity,
+    cycles: u64,
 }
 
 impl CaptureRenderer {
-    fn new(frames: FrameSlot) -> Self {
+    fn new(frames: FrameSlot, activity: Activity) -> Self {
         Self {
             frames,
             compositor: SwCompositor::new(),
             presented: false,
+            activity,
+            cycles: 0,
         }
     }
 }
@@ -95,11 +104,18 @@ impl Renderer for CaptureRenderer {
         _overlay: &mut DebugOverlay,
         _status: &mut StatusBar,
         _sbtex: &mut StatusBarTexture,
-        _stats: &BarStats,
+        stats: &BarStats,
         need_readback: bool,
         live_fb_rgb: Option<&[u32]>,
         live_fb_aux: Option<&[u32]>,
     ) {
+        if stats.cycles != self.cycles {
+            self.activity.signal(activity::CPU);
+            self.cycles = stats.cycles;
+        }
+        if stats.hb & 3 != 0 {
+            self.activity.signal(activity::NET);
+        }
         let (width, height) = (screen.width, screen.height);
         if width == 0 || height == 0 || width > FB_STRIDE || height > FB_MAX_H {
             return;
@@ -138,10 +154,12 @@ fn pack_frame(pixels: &[u32], width: usize, height: usize, stride: usize) -> Fra
     }
 }
 
-pub fn diskless_config(
+pub fn machine_config(
     state_dir: &Path,
     hardware: &MachineSettings,
+    media: &MediaSettings,
 ) -> Result<MachineConfig, String> {
+    media.validate()?;
     let path = |name: &str| {
         state_dir
             .join(name)
@@ -156,7 +174,7 @@ pub fn diskless_config(
         nvram: path("nvram.bin")?,
         nveeprom: path("nveeprom.bin")?,
         banks: hardware.banks()?,
-        scsi: Default::default(),
+        scsi: media.iris_devices().into_iter().collect(),
         no_audio: true,
         headless: false,
         keyboard: hardware.keyboard,
@@ -180,6 +198,7 @@ struct OwnedMachine {
     machine: Box<dyn Workstation>,
     slot: MachineSlot,
     stopped: bool,
+    media_errors: media::MediaErrors,
 }
 
 impl OwnedMachine {
@@ -189,13 +208,16 @@ impl OwnedMachine {
             machine,
             slot,
             stopped: false,
+            media_errors: media::MediaErrors::default(),
         }
     }
 
-    fn stop(&mut self) {
+    fn stop(&mut self) -> Result<(), String> {
         self.stopped = true;
         let _guard = self.slot.lock();
         self.machine.stop();
+        media::detach(self.machine.as_mut());
+        self.media_errors.check()
     }
 }
 
@@ -214,11 +236,23 @@ pub struct Emulator {
     stop: mpsc::SyncSender<()>,
     thread: Option<JoinHandle<()>>,
     input: Arc<Mutex<Option<Arc<Ps2Controller>>>>,
+    pub activity: Activity,
+    has_media: bool,
 }
 
 impl Emulator {
-    pub fn spawn(state_dir: &Path, hardware: &MachineSettings) -> Result<Self, String> {
-        let mut config = diskless_config(state_dir, hardware)?;
+    pub fn spawn(
+        state_dir: &Path,
+        hardware: &MachineSettings,
+        media: &MediaSettings,
+    ) -> Result<Self, String> {
+        let mut config = machine_config(state_dir, hardware, media)?;
+        // Attach explicitly before CPU start: Iris's CLI constructor exits the
+        // process on media errors. The frontend must report them in the window.
+        config.scsi.clear();
+        let media = media.clone();
+        let has_media = !media.devices.is_empty();
+        iris::workstation::set_exit_on_guest_poweroff(false);
         let state_dir = state_dir.to_owned();
         let frames = FrameSlot::default();
         let status = Arc::new(Mutex::new(Status::default()));
@@ -227,6 +261,8 @@ impl Emulator {
         let worker_status = status.clone();
         let input = Arc::new(Mutex::new(None));
         let worker_input = input.clone();
+        let activity = Activity::default();
+        let worker_activity = activity.clone();
         let thread = thread::Builder::new()
             .name("prismatic-iris".into())
             .stack_size(64 * 1024 * 1024)
@@ -251,6 +287,12 @@ impl Emulator {
                         None
                     };
                     let mut owned = OwnedMachine::new(iris::workstation::build(config)?);
+                    media::attach(
+                        owned.machine.as_mut(),
+                        &media,
+                        &worker_activity,
+                        &mut owned.media_errors,
+                    )?;
                     owned.machine.register_system_controller();
                     {
                         let _guard = owned.slot.lock();
@@ -258,8 +300,10 @@ impl Emulator {
                             .machine
                             .get_display()
                             .ok_or("Iris did not create a display")?;
-                        *display.renderer_slot().lock() =
-                            Some(Box::new(CaptureRenderer::new(worker_frames)));
+                        *display.renderer_slot().lock() = Some(Box::new(CaptureRenderer::new(
+                            worker_frames,
+                            worker_activity,
+                        )));
                         if matches!(receiver.try_recv(), Err(mpsc::TryRecvError::Empty)) {
                             owned.machine.start();
                             // Iris debug builds deliberately leave the CPU parked.
@@ -268,7 +312,8 @@ impl Emulator {
                             }
                             *worker_input.lock().unwrap() = Some(owned.machine.get_ps2());
                         } else {
-                            return Ok(());
+                            drop(_guard);
+                            return owned.stop();
                         }
                     }
                     loop {
@@ -291,7 +336,7 @@ impl Emulator {
                     }
                     worker_status.lock().unwrap().phase = Phase::Stopping;
                     *worker_input.lock().unwrap() = None;
-                    owned.stop();
+                    owned.stop()?;
                     Ok(())
                 }));
                 *worker_input.lock().unwrap() = None;
@@ -309,6 +354,8 @@ impl Emulator {
             stop,
             thread: Some(thread),
             input,
+            activity,
+            has_media,
         })
     }
 
@@ -336,9 +383,9 @@ impl Drop for Emulator {
     fn drop(&mut self) {
         self.request_stop();
         // Error/unwind fallback. The normal path keeps SDL responsive while
-        // polling finished(). A wedged core must not hang process teardown.
+        // polling finished(). Attached disks must finish flushing before exit.
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !self.finished() && Instant::now() < deadline {
+        while !self.finished() && (self.has_media || Instant::now() < deadline) {
             thread::sleep(Duration::from_millis(10));
         }
         if self.thread.is_some() {
@@ -367,7 +414,8 @@ mod tests {
             keyboard: KeyboardLayout::Iso,
             ..Default::default()
         };
-        let config = diskless_config(directory.path(), &hardware).unwrap();
+        let config =
+            machine_config(directory.path(), &hardware, &MediaSettings::default()).unwrap();
         assert_eq!(config.keyboard, KeyboardLayout::Iso);
         assert!(config.scsi.is_empty());
         assert!(config.prom.is_empty());
@@ -416,8 +464,12 @@ mod tests {
     #[test]
     fn startup_failure_is_reported_without_blocking_the_caller() {
         let file = tempfile::NamedTempFile::new().unwrap();
-        let mut emulator =
-            Emulator::spawn(&file.path().join("invalid"), &MachineSettings::default()).unwrap();
+        let mut emulator = Emulator::spawn(
+            &file.path().join("invalid"),
+            &MachineSettings::default(),
+            &MediaSettings::default(),
+        )
+        .unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while !emulator.finished() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));
@@ -437,9 +489,12 @@ mod tests {
                 for &ram_mb in hardware.ram_sizes() {
                     hardware.cpu = cpu;
                     hardware.ram_mb = ram_mb;
-                    let config =
-                        diskless_config(Path::new("/tmp/prismatic-config-test"), &hardware)
-                            .unwrap();
+                    let config = machine_config(
+                        Path::new("/tmp/prismatic-config-test"),
+                        &hardware,
+                        &MediaSettings::default(),
+                    )
+                    .unwrap();
                     assert_eq!(config.machine.profile, profile);
                     assert_eq!(config.machine.cpu, cpu);
                     assert_eq!(config.banks.iter().sum::<u32>(), ram_mb);
