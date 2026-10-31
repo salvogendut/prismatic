@@ -199,10 +199,24 @@ the CPU and devices, the worker flushes attached storage before replacement
 or exit. With media attached it waits for that flush while SDL keeps pumping
 events; flush failures are reported and prevent a replacement machine.
 
-The bottom strip remains visible when the optional status hints are hidden.
-RUN reflects the running CPU; CPU and NET pulse on core activity. Each attached
-HD/CD has a numbered LED: green for reads, amber for writes. Pulses remain
-visible briefly even when no new guest frame is drawn.
+The bottom layout follows 1989: a centered machine description in red followed
+by grey shortcut hints on a compact 16-pixel band, above a 22-pixel LED bar.
+These are logical dimensions and scale with the window. The LED bar remains
+visible when the optional status hints are hidden. F9 uses the siblings'
+compact top-left panel, sized to the current section; confirmations are centered.
+
+| LED | Function | Active color |
+| --- | --- | --- |
+| RUN | Machine CPU running | Blue |
+| CPU | CPU activity | White |
+| NET | Network activity | Yellow |
+| HD1–HD7 | Hard-disk reads | Green |
+| CD1–CD7 | CD-ROM reads | Cyan |
+| HD write activity | Writes on the corresponding disk LED | Amber |
+
+Idle lamps retain a dim version of their function's color. Disk/CD lamps appear
+only for attached targets. Pulses remain visible briefly even when no new guest
+frame is drawn. Opening an overlay dims both bottom bands consistently.
 
 ## Persistent configuration
 

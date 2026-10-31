@@ -13,7 +13,9 @@ use sdl3::{
 
 pub const WIDTH: u32 = 960;
 pub const HEIGHT: u32 = 720;
-const LED_HEIGHT: u32 = 24;
+// Match 1989/1986: compact shortcut band above the activity lamps.
+const LED_HEIGHT: u32 = 22;
+const HINT_HEIGHT: u32 = 16;
 const PANEL: Color = Color::RGB(0x19, 0x20, 0x34);
 const BORDER: Color = Color::RGB(0x89, 0xa3, 0xcb);
 const SELECTED: Color = Color::RGB(0x80, 0x60, 0x20);
@@ -37,7 +39,7 @@ pub fn guest_rect(frame: &Frame, settings: &Settings) -> Rect {
             0,
             0,
             WIDTH,
-            HEIGHT - LED_HEIGHT - if settings.show_status { 36 } else { 0 },
+            HEIGHT - LED_HEIGHT - if settings.show_status { HINT_HEIGHT } else { 0 },
         ),
     )
 }
@@ -79,7 +81,7 @@ pub fn draw(
         0,
         0,
         WIDTH,
-        HEIGHT - LED_HEIGHT - if settings.show_status { 36 } else { 0 },
+        HEIGHT - LED_HEIGHT - if settings.show_status { HINT_HEIGHT } else { 0 },
     );
     let destination = guest_rect(frame, settings);
     canvas.copy(texture, None, destination)?;
@@ -108,248 +110,14 @@ pub fn draw(
         )?;
     }
 
-    if settings.show_status {
-        fill(
-            canvas,
-            Rect::new(0, (HEIGHT - LED_HEIGHT - 36) as i32, WIDTH, 36),
-            PANEL,
-        )?;
-        text(
-            canvas,
-            16,
-            (HEIGHT - LED_HEIGHT) as i32 - 22,
-            if presentation.captured {
-                "Ctrl+Enter Release | F9 Options | F11 Full | F12 Quit"
-            } else {
-                "Click display to capture | F9 Options | F11 Full | F12 Quit"
-            },
-            TEXT,
-        )?;
-        text(
-            canvas,
-            704,
-            (HEIGHT - LED_HEIGHT) as i32 - 22,
-            presentation.status,
-            MUTED,
-        )?;
-    }
+    draw_status(canvas, settings, &presentation)?;
+    draw_leds(canvas, &presentation)?;
 
     if let Some(session) = &overlay.session {
-        fill(
-            canvas,
-            Rect::new(0, 0, WIDTH, HEIGHT),
-            Color::RGBA(0, 0, 0, 160),
-        )?;
-        let media_tab = session.tab == Tab::Media;
-        panel(
-            canvas,
-            Rect::new(16, 16, 928, if media_tab { 466 } else { 402 }),
-        )?;
-        fill(
-            canvas,
-            Rect::new(18, 18, 924, 28),
-            Color::RGB(0x30, 0x40, 0x60),
-        )?;
-        let mut tab_x = 32;
-        for tab in session.tabs() {
-            text(
-                canvas,
-                tab_x,
-                28,
-                tab.label(),
-                if tab == session.tab { TEXT } else { MUTED },
-            )?;
-            tab_x += tab.label().len() as i32 * 8 + 32;
-        }
-        if session.dirty() {
-            text(
-                canvas,
-                792,
-                28,
-                "Unsaved changes",
-                Color::RGB(255, 208, 128),
-            )?;
-        }
-        for (index, (label, value)) in session.rows().iter().enumerate() {
-            let row_y = 68 + index as i32 * 28;
-            if index == session.row {
-                fill(canvas, Rect::new(24, row_y - 6, 912, 24), SELECTED)?;
-            }
-            text(canvas, 32, row_y, label, TEXT)?;
-            text(
-                canvas,
-                352,
-                row_y,
-                &short_ascii(value, 70),
-                Color::RGB(255, 208, 128),
-            )?;
-            if (session.tab == Tab::General && index < 4)
-                || (session.tab == Tab::Advanced && index < 5)
-            {
-                text(canvas, 704, row_y, "Requires restart", MUTED)?;
-            }
-        }
-        match session.tab {
-            Tab::General => {
-                text(
-                    canvas,
-                    32,
-                    284,
-                    "Machine changes keep compatible CPU/RAM choices; other values are adjusted.",
-                    MUTED,
-                )?;
-                text(
-                    canvas,
-                    32,
-                    312,
-                    "Hardware changes ask to restart when saved. Display options apply on Save.",
-                    MUTED,
-                )?;
-            }
-            Tab::Media => {
-                text(
-                    canvas,
-                    32,
-                    284,
-                    "Hard disks: persistent copy-on-write. CD-ROMs: read-only (ISO9660 or EFS).",
-                    MUTED,
-                )?;
-                if let Some(medium) = session.draft.media.devices.get(&(session.row as u8 + 1)) {
-                    let path = short_ascii(&medium.path, 220);
-                    for (i, chunk) in path.as_bytes().chunks(110).enumerate() {
-                        text(
-                            canvas,
-                            32,
-                            312 + i as i32 * 24,
-                            std::str::from_utf8(chunk).unwrap(),
-                            TEXT,
-                        )?;
-                    }
-                }
-                text(
-                    canvas,
-                    32,
-                    372,
-                    "Media changes require restart. Shut down the guest OS before saving.",
-                    MUTED,
-                )?;
-            }
-            Tab::Advanced => {
-                text(
-                    canvas,
-                    32,
-                    284,
-                    match session.row {
-                        0 => "Sets the initial Newport video mode; the guest may change it later.",
-                        1 => {
-                            "Auto selects the cache model for this build. Full/Shadow are expert overrides."
-                        }
-                        2 => {
-                            "Shifts the guest clock relative to host time at boot; it then runs normally."
-                        }
-                        3 => {
-                            "Deferred is Iris's BSD-compatible default. Immediate changes SCSI timing."
-                        }
-                        4 => {
-                            "Appends to serial.log in this machine's state directory. Timestamps use host UTC."
-                        }
-                        _ => {
-                            "Bilinear filtering smooths the display when scaled; applies without restart."
-                        }
-                    },
-                    MUTED,
-                )?;
-                text(
-                    canvas,
-                    32,
-                    312,
-                    "Core options require restart. Turning Tinker off keeps the saved values active.",
-                    MUTED,
-                )?;
-            }
-            Tab::About => {
-                for (index, line) in [
-                    "Prismatic - Happy Years interface for Iris",
-                    "Rust / SDL3",
-                    "Iris Indy / Indigo2 / Newport - SCSI disk and CD-ROM support.",
-                    "Click captures input; Ctrl+Enter releases. Shift+F9/F11/F12: guest key.",
-                ]
-                .iter()
-                .enumerate()
-                {
-                    text(canvas, 32, 68 + index as i32 * 28, line, TEXT)?;
-                }
-            }
-        }
-        text(
-            canvas,
-            32,
-            if media_tab { 428 } else { 364 },
-            "Left/Right Section   Up/Down Select   Enter Change",
-            MUTED,
-        )?;
-        text(
-            canvas,
-            32,
-            if media_tab { 456 } else { 392 },
-            if overlay.busy {
-                "Choosing/validating image...   Esc Cancel"
-            } else {
-                "F9 Save and close   Esc Close"
-            },
-            TEXT,
-        )?;
+        draw_overlay(canvas, session, overlay.busy)?;
     }
-
     if let Some(dialog) = overlay.dialog {
-        fill(
-            canvas,
-            Rect::new(0, 0, WIDTH, HEIGHT),
-            Color::RGBA(0, 0, 0, 150),
-        )?;
-        panel(canvas, Rect::new(176, 260, 608, 180))?;
-        let (title, detail, buttons, selected) = match dialog {
-            Dialog::Media { choice, .. } => (
-                "Choose media for this SCSI target",
-                "Select a raw/CHD disk, or ISO9660/EFS/CHD CD-ROM.",
-                vec!["Hard disk", "CD-ROM", "Disconnect", "Cancel"],
-                choice,
-            ),
-            Dialog::Unsaved { choice } => (
-                "Save changes?",
-                "Options have changed. Choose what to do before closing.",
-                vec!["Save", "Discard", "Cancel"],
-                choice,
-            ),
-            Dialog::Quit { confirm } => (
-                "Quit Prismatic?",
-                "Shut down the guest OS first. Stop and discard unsaved options?",
-                vec!["Quit", "Cancel"],
-                usize::from(!confirm),
-            ),
-            Dialog::Restart { confirm } => (
-                "Save machine options and restart?",
-                "Shut down the guest OS first. The current session will be lost.",
-                vec!["Restart", "Cancel"],
-                usize::from(!confirm),
-            ),
-        };
-        text(canvas, 200, 284, title, TEXT)?;
-        text(canvas, 200, 316, detail, MUTED)?;
-        for (index, label) in buttons.iter().enumerate() {
-            let button_x = 200 + index as i32 * 144;
-            if index == selected {
-                fill(canvas, Rect::new(button_x, 352, 136, 30), SELECTED)?;
-            }
-            text(canvas, button_x + 12, 364, label, TEXT)?;
-        }
-        text(
-            canvas,
-            200,
-            412,
-            "Left/Right Select   Enter Confirm   Esc Cancel",
-            MUTED,
-        )?;
+        draw_dialog(canvas, dialog)?;
     }
 
     if let Some(message) = notification {
@@ -365,10 +133,10 @@ pub fn draw(
                 }
             })
             .collect();
-        panel(canvas, Rect::new(24, 620, 912, 36))?;
-        text(canvas, 40, 634, &shown, TEXT)?;
+        let y = area.bottom() - 44;
+        panel(canvas, Rect::new(24, y, 912, 36))?;
+        text(canvas, 40, y + 14, &shown, TEXT)?;
     }
-    draw_leds(canvas, &presentation)?;
     Ok(())
 }
 
@@ -391,6 +159,273 @@ fn short_ascii(value: &str, max: usize) -> String {
     text
 }
 
+// The 1989 view uses an 8px inset, 20px rows and a content-sized panel.
+// Scale inside the existing logical window so fullscreen letterboxing and
+// guest hit testing keep using the same coordinate system.
+fn draw_overlay(
+    canvas: &mut WindowCanvas,
+    session: &crate::overlay::Session,
+    busy: bool,
+) -> Result<(), sdl3::Error> {
+    const PANEL_WIDTH: u32 = 840;
+    const LINE_HEIGHT: i32 = 20;
+    let rows = session.rows();
+    let hints: Vec<String> = match session.tab {
+        Tab::General => vec![
+            "Machine changes keep compatible CPU/RAM choices; other values are adjusted.".into(),
+            "Hardware changes ask to restart when saved. Display options apply on Save.".into(),
+        ],
+        Tab::Media => {
+            let mut hints = vec!["Hard disks: persistent copy-on-write. CD-ROMs: read-only (ISO9660 or EFS).".into()];
+            if let Some(medium) = session.draft.media.devices.get(&(session.row as u8 + 1)) {
+                let path = short_ascii(&medium.path, 200);
+                hints.extend(path.as_bytes().chunks(100).map(|chunk| std::str::from_utf8(chunk).unwrap().to_owned()));
+            }
+            hints.push("Media changes require restart. Shut down the guest OS before saving.".into());
+            hints
+        }
+        Tab::Advanced => vec![match session.row {
+            0 => "Sets the initial Newport video mode; the guest may change it later.",
+            1 => "Auto selects the cache model for this build. Full/Shadow are expert overrides.",
+            2 => "Shifts the guest clock relative to host time at boot; it then runs normally.",
+            3 => "Deferred is Iris's BSD-compatible default. Immediate changes SCSI timing.",
+            4 => "Appends to serial.log in this machine's state directory. Timestamps use host UTC.",
+            _ => "Bilinear filtering smooths the display when scaled; applies without restart.",
+        }.into(), "Core options require restart. Turning Tinker off keeps the saved values active.".into()],
+        Tab::About => vec![],
+    };
+    let row_count = if session.tab == Tab::About {
+        4
+    } else {
+        rows.len()
+    };
+    let hint_y = 48 + row_count as i32 * LINE_HEIGHT + 8;
+    let footer_y = hint_y + hints.len() as i32 * 16 + 12;
+    let panel_height = (footer_y + 12) as u32;
+    let scale = (WIDTH as f32 / 860.0)
+        .min(HEIGHT as f32 / (panel_height + 8).max(510) as f32)
+        .min(1.25);
+    shade(canvas, 160)?;
+    canvas.set_scale(scale, scale)?;
+    panel(canvas, Rect::new(8, 8, PANEL_WIDTH, panel_height))?;
+    fill(
+        canvas,
+        Rect::new(10, 10, PANEL_WIDTH - 4, 22),
+        Color::RGB(0x30, 0x40, 0x60),
+    )?;
+    let mut tab_x = 20;
+    for tab in session.tabs() {
+        text(
+            canvas,
+            tab_x,
+            14,
+            tab.label(),
+            if tab == session.tab { TEXT } else { MUTED },
+        )?;
+        tab_x += tab.label().len() as i32 * 8 + 20;
+    }
+    if session.dirty() {
+        text(
+            canvas,
+            PANEL_WIDTH as i32 - 132,
+            14,
+            "Unsaved changes",
+            Color::RGB(255, 208, 128),
+        )?;
+    }
+    for (index, (label, value)) in rows.iter().enumerate() {
+        let y = 48 + index as i32 * LINE_HEIGHT;
+        if index == session.row {
+            fill(canvas, Rect::new(10, y, PANEL_WIDTH - 4, 16), SELECTED)?;
+        }
+        let restart = (session.tab == Tab::General && index < 4)
+            || (session.tab == Tab::Advanced && index < 5);
+        text(canvas, 20, y, label, TEXT)?;
+        text(
+            canvas,
+            250,
+            y,
+            &short_ascii(value, if restart { 44 } else { 72 }),
+            Color::RGB(255, 208, 128),
+        )?;
+        if restart {
+            text(canvas, 620, y, "Requires restart", MUTED)?;
+        }
+    }
+    if session.tab == Tab::About {
+        for (index, line) in [
+            "Prismatic - Happy Years interface for Iris",
+            "Rust / SDL3",
+            "Iris Indy / Indigo2 / Newport - SCSI disk and CD-ROM support.",
+            "Click captures input; Ctrl+Enter releases. Shift+F9/F11/F12: guest key.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            text(canvas, 20, 48 + index as i32 * LINE_HEIGHT, line, TEXT)?;
+        }
+    }
+    for (index, hint) in hints.iter().enumerate() {
+        text(canvas, 20, hint_y + index as i32 * 16, hint, MUTED)?;
+    }
+    text(
+        canvas,
+        20,
+        footer_y,
+        if busy {
+            "Choosing media / validating options...   Esc Cancel"
+        } else {
+            "Left/Right Section  Up/Down Select  Enter Change  F9 Save  Esc Close"
+        },
+        MUTED,
+    )?;
+    canvas.set_scale(1.0, 1.0)?;
+    Ok(())
+}
+
+fn shade(canvas: &mut WindowCanvas, alpha: u8) -> Result<(), sdl3::Error> {
+    fill(
+        canvas,
+        Rect::new(0, 0, WIDTH, HEIGHT),
+        Color::RGBA(0, 0, 0, alpha),
+    )
+}
+
+fn draw_dialog(canvas: &mut WindowCanvas, dialog: Dialog) -> Result<(), sdl3::Error> {
+    let (title, detail, buttons, selected) = match dialog {
+        Dialog::Media { choice, .. } => (
+            "Choose media for this SCSI target",
+            "Select a raw/CHD disk, or ISO9660/EFS/CHD CD-ROM.",
+            vec!["Hard disk", "CD-ROM", "Disconnect", "Cancel"],
+            choice,
+        ),
+        Dialog::Unsaved { choice } => (
+            "Save changes?",
+            "Options have changed. Choose what to do before closing.",
+            vec!["Save", "Discard", "Cancel"],
+            choice,
+        ),
+        Dialog::Quit { confirm } => (
+            "Quit Prismatic?",
+            "Shut down the guest OS first. Stop and discard unsaved options?",
+            vec!["Quit", "Cancel"],
+            usize::from(!confirm),
+        ),
+        Dialog::Restart { confirm } => (
+            "Save machine options and restart?",
+            "Shut down the guest OS first. The current session will be lost.",
+            vec!["Restart", "Cancel"],
+            usize::from(!confirm),
+        ),
+    };
+    let buttons_width = buttons.len() as i32 * 136 + (buttons.len() as i32 - 1) * 8;
+    let width = (title.len().max(detail.len()) as i32 * 8).max(buttons_width) + 48;
+    let height = 156;
+    let scale = (WIDTH as f32 / (width + 16) as f32)
+        .min(HEIGHT as f32 / (height + 16) as f32)
+        .min(1.25);
+    shade(canvas, 150)?;
+    canvas.set_scale(scale, scale)?;
+    let x = ((WIDTH as f32 / scale - width as f32) / 2.0) as i32;
+    let y = ((HEIGHT as f32 / scale - height as f32) / 2.0) as i32;
+    panel(canvas, Rect::new(x, y, width as u32, height as u32))?;
+    text(canvas, x + 24, y + 20, title, TEXT)?;
+    text(canvas, x + 24, y + 48, detail, MUTED)?;
+    let start = x + (width - buttons_width) / 2;
+    for (index, label) in buttons.iter().enumerate() {
+        let button_x = start + index as i32 * 144;
+        if index == selected {
+            fill(canvas, Rect::new(button_x, y + 80, 136, 24), SELECTED)?;
+        }
+        canvas.set_draw_color(BORDER);
+        canvas.draw_rect(Rect::new(button_x, y + 80, 136, 24))?;
+        text(
+            canvas,
+            button_x + (136 - label.len() as i32 * 8) / 2,
+            y + 88,
+            label,
+            TEXT,
+        )?;
+    }
+    text(
+        canvas,
+        x + 24,
+        y + 128,
+        "Left/Right Select   Enter Confirm   Esc Cancel",
+        MUTED,
+    )?;
+    canvas.set_scale(1.0, 1.0)?;
+    Ok(())
+}
+
+fn draw_status(
+    canvas: &mut WindowCanvas,
+    settings: &Settings,
+    presentation: &Presentation<'_>,
+) -> Result<(), sdl3::Error> {
+    if !settings.show_status {
+        return Ok(());
+    }
+    let y = (HEIGHT - LED_HEIGHT - HINT_HEIGHT) as i32;
+    fill(
+        canvas,
+        Rect::new(0, y, WIDTH, HINT_HEIGHT),
+        Color::RGB(0x10, 0x10, 0x14),
+    )?;
+    let status = short_ascii(presentation.status, 48);
+    let keys = if presentation.captured {
+        "  Ctrl+Enter=release  F9=options  F11=fullscreen  F12=quit"
+    } else {
+        "  Click=capture  F9=options  F11=fullscreen  F12=quit"
+    };
+    let text_width = (status.len() + keys.len()) as f32 * 8.0;
+    let scale = ((WIDTH - 16) as f32 / text_width).min(1.0);
+    let x = ((WIDTH as f32 - text_width * scale) / 2.0 / scale) as i32;
+    let text_y = (y as f32 + (HINT_HEIGHT as f32 - 8.0 * scale) / 2.0) / scale;
+    canvas.set_scale(scale, scale)?;
+    let red = Color::RGB(255, 64, 64);
+    text(canvas, x, text_y as i32, &status, red)?;
+    text(canvas, x + 1, text_y as i32, &status, red)?;
+    text(
+        canvas,
+        x + status.len() as i32 * 8,
+        text_y as i32,
+        keys,
+        Color::RGB(224, 224, 224),
+    )?;
+    canvas.set_scale(1.0, 1.0)?;
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct LedPalette {
+    idle: Color,
+    active: Color,
+}
+// CPU, storage and network follow 1989; RUN uses the siblings' blue power
+// indicator, and CD uses the cyan optical-drive palette. Writes flash amber.
+const RUN_LED: LedPalette = LedPalette {
+    idle: Color::RGB(25, 50, 110),
+    active: Color::RGB(90, 160, 255),
+};
+const CPU_LED: LedPalette = LedPalette {
+    idle: Color::RGB(55, 55, 55),
+    active: Color::RGB(255, 255, 255),
+};
+const NET_LED: LedPalette = LedPalette {
+    idle: Color::RGB(80, 70, 18),
+    active: Color::RGB(255, 224, 32),
+};
+const DISK_LED: LedPalette = LedPalette {
+    idle: Color::RGB(18, 70, 18),
+    active: Color::RGB(80, 255, 80),
+};
+const CD_LED: LedPalette = LedPalette {
+    idle: Color::RGB(15, 60, 60),
+    active: Color::RGB(80, 220, 220),
+};
+const WRITE_LED: Color = Color::RGB(255, 200, 90);
+
 fn draw_leds(
     canvas: &mut WindowCanvas,
     presentation: &Presentation<'_>,
@@ -399,39 +434,60 @@ fn draw_leds(
     fill(
         canvas,
         Rect::new(0, y, WIDTH, LED_HEIGHT),
-        Color::RGB(8, 10, 12),
+        Color::RGB(18, 18, 18),
     )?;
+    fill(canvas, Rect::new(0, y, WIDTH, 1), Color::RGB(50, 50, 50))?;
     let mut lamps = vec![
-        ("RUN".to_owned(), presentation.running, false),
-        ("CPU".into(), presentation.leds & activity::CPU != 0, false),
-        ("NET".into(), presentation.leds & activity::NET != 0, false),
+        ("RUN".to_owned(), presentation.running, false, RUN_LED),
+        (
+            "CPU".into(),
+            presentation.leds & activity::CPU != 0,
+            false,
+            CPU_LED,
+        ),
+        (
+            "NET".into(),
+            presentation.leds & activity::NET != 0,
+            false,
+            NET_LED,
+        ),
     ];
     for (&id, medium) in &presentation.media.devices {
+        let disk = medium.kind == MediaKind::Disk;
         lamps.push((
-            format!(
-                "{}{id}",
-                if medium.kind == MediaKind::Disk {
-                    "HD"
-                } else {
-                    "CD"
-                }
-            ),
+            format!("{}{id}", if disk { "HD" } else { "CD" }),
             presentation.leds & (activity::disk_read(id) | activity::disk_write(id)) != 0,
             presentation.leds & activity::disk_write(id) != 0,
+            if disk { DISK_LED } else { CD_LED },
         ));
     }
-    let start = (WIDTH as i32 - lamps.len() as i32 * 72) / 2;
-    for (index, (label, lit, write)) in lamps.iter().enumerate() {
-        let x = start + index as i32 * 72;
+    let width: i32 = lamps
+        .iter()
+        .map(|(label, ..)| 20 + label.len() as i32 * 8)
+        .sum::<i32>()
+        + (lamps.len() as i32 - 1) * 8;
+    let mut x = (WIDTH as i32 - width) / 2;
+    let lamp_y = y + (LED_HEIGHT as i32 - 10) / 2;
+    for (label, lit, write, palette) in lamps {
         let color = if !lit {
-            Color::RGB(25, 45, 30)
-        } else if *write {
-            Color::RGB(255, 180, 55)
+            palette.idle
+        } else if write {
+            WRITE_LED
         } else {
-            Color::RGB(70, 230, 100)
+            palette.active
         };
-        fill(canvas, Rect::new(x, y + 7, 14, 10), color)?;
-        text(canvas, x + 20, y + 8, label, MUTED)?;
+        let rect = Rect::new(x, lamp_y, 14, 10);
+        fill(canvas, rect, color)?;
+        canvas.set_draw_color(Color::RGB(0, 0, 0));
+        canvas.draw_rect(rect)?;
+        text(
+            canvas,
+            x + 20,
+            lamp_y + 1,
+            &label,
+            Color::RGB(205, 205, 205),
+        )?;
+        x += 20 + label.len() as i32 * 8 + 8;
     }
     Ok(())
 }

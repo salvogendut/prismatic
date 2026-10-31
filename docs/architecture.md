@@ -5,15 +5,20 @@
 Prismatic uses Rust and SDL3, following the native Happy Years desktop UI,
 particularly 1989's draft settings and confirmation flow. The guest display
 occupies the window; F9 opens the dark blue options panel with amber selection,
-compact bitmap text and keyboard navigation. F11 toggles fullscreen; F12
-confirms quit. Advanced controls are behind Tinker.
+compact bitmap text and keyboard navigation. The view follows 1989's 8-pixel
+panel inset, 20-pixel rows and content-dependent height, with a capped UI scale
+inside the letterboxed logical window. Dialogs and their button groups are centered.
+F11 toggles fullscreen; F12 confirms quit. Advanced controls are behind Tinker.
 
 Rendering, textures, windows and host events belong to SDL on the main thread.
 Settings policy is independent of drawing. The application polls machine
 updates while emulation is active, and redraws only for new frames, UI events,
-status changes, LED pulse expiry and notification expiry. Guest proportions are preserved inside
-the display area, leaving room for the optional status hints and the persistent
-bottom LED strip.
+status changes, LED pulse expiry and notification expiry. Guest proportions are
+preserved inside the display area, leaving room for the optional 16-pixel hint
+band and persistent 22-pixel LED strip. Guest hit testing uses that same area.
+The centered hint line puts the red machine description before grey shortcuts.
+Both bars render before modal shading. Toasts anchor above the reserved bars,
+including when the hints are hidden.
 
 | Module | Responsibility |
 | --- | --- |
@@ -127,7 +132,11 @@ or device failure is still reported by machine startup or shutdown.
 `CaptureRenderer` records CPU cycle changes and core network heartbeat bits.
 Storage adapters publish per-target read/write bits. The main thread consumes
 the atomic bitset and stretches pulses to 150 ms, redrawing when they expire.
-LED timers do not depend on new guest framebuffer output.
+LED timers do not depend on new guest framebuffer output. Function palettes
+follow the siblings: CPU white, network yellow, hard disks green and optical
+media cyan; RUN uses blue, and writes flash amber. Idle colors preserve each
+function's hue. Lamps have black borders, a shared top separator and spacing
+computed from the actual labels so the entire group is centered.
 
 ## Input handoff
 
