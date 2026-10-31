@@ -24,6 +24,14 @@ Choose **Enter Command Monitor** (5) and try `hinv` to inspect the emulated
 hardware. Startup errors appear in the window
 and terminal; confirmed quit stops the worker and saves the machine's NVRAM before closing.
 
+## Screenshots
+
+IRIX 6.5 running in Prismatic, captured at the guest's native 1282×1024 resolution.
+
+![IRIX 6.5 desktop with the console and Icon Catalog](images/irix65-desktop.png)
+
+![Xmahjongg running on the IRIX 6.5 desktop](images/irix65-xmahjongg.png)
+
 ## Build and run
 
 Keep the checkouts alongside one another:
