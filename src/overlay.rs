@@ -3,6 +3,9 @@ use crate::settings::{Settings, WindowScale};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
+    NextMachine,
+    Reset,
+    Backspace,
     Options,
     Escape,
     Enter,
@@ -39,6 +42,7 @@ pub enum Dialog {
     Restart { confirm: bool },
     Media { id: u8, choice: usize },
     Firmware { choice: usize }, // Choose, Clear, Cancel
+    Reset { confirm: bool },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -50,6 +54,7 @@ pub enum Effect {
     PickProm,
     CancelMedia,
     Quit,
+    Reset,
 }
 
 pub struct Session {
@@ -91,6 +96,14 @@ impl Session {
                 ("Status strip", on_off(self.draft.show_status)),
                 ("Tinker", on_off(self.draft.tinker)),
                 ("PROM firmware", self.draft.machine.prom_label()),
+                (
+                    "Machine label",
+                    self.draft
+                        .machine_label
+                        .clone()
+                        .unwrap_or_else(|| "Unnamed - use Save machine as".into()),
+                ),
+                ("Save machine as...", "Enter a new label".into()),
             ],
             Tab::Advanced => vec![
                 (
@@ -156,6 +169,12 @@ pub struct Overlay {
     pub session: Option<Session>,
     pub dialog: Option<Dialog>,
     pub busy: bool,
+    pub label_edit: Option<LabelEdit>,
+}
+
+pub struct LabelEdit {
+    pub text: String,
+    pub error: Option<String>,
 }
 
 impl Overlay {
@@ -195,9 +214,43 @@ impl Overlay {
         self.session = None;
         self.dialog = None;
         self.busy = false;
+        self.label_edit = None;
+    }
+
+    pub fn text_input(&mut self, text: &str) {
+        if let Some(edit) = &mut self.label_edit {
+            for ch in text.chars() {
+                if edit.text.len() < 32 && (ch.is_ascii_graphic() || ch == ' ') {
+                    edit.text.push(ch);
+                }
+            }
+            edit.error = None;
+        }
     }
 
     pub fn key(&mut self, key: Key, live: &Settings) -> Effect {
+        if let Some(edit) = &mut self.label_edit {
+            match key {
+                Key::Escape => self.label_edit = None,
+                Key::Backspace => {
+                    edit.text.pop();
+                    edit.error = None;
+                }
+                Key::Enter => {
+                    let label = edit.text.trim();
+                    match self.session.as_mut().unwrap().draft.save_as_machine(label) {
+                        Ok(()) => self.label_edit = None,
+                        Err(error) => edit.error = Some(error),
+                    }
+                }
+                Key::Quit => {
+                    self.label_edit = None;
+                    self.dialog = Some(Dialog::Quit { confirm: false });
+                }
+                _ => {}
+            }
+            return Effect::None;
+        }
         if self.busy {
             if matches!(key, Key::Escape | Key::Quit) {
                 self.busy = false;
@@ -234,6 +287,14 @@ impl Overlay {
                     return Effect::Restart(self.session.as_ref().unwrap().draft.clone());
                 }
                 (Dialog::Restart { confirm: false }, Key::Enter) => self.dialog = None,
+                (Dialog::Reset { confirm }, Key::Left | Key::Right) => {
+                    self.dialog = Some(Dialog::Reset { confirm: !confirm });
+                }
+                (Dialog::Reset { confirm: true }, Key::Enter) => {
+                    self.dialog = None;
+                    return Effect::Reset;
+                }
+                (Dialog::Reset { confirm: false }, Key::Enter) => self.dialog = None,
                 (Dialog::Media { id, choice }, Key::Left | Key::Right) => {
                     self.dialog = Some(Dialog::Media {
                         id,
@@ -284,18 +345,33 @@ impl Overlay {
             self.dialog = Some(Dialog::Quit { confirm: false });
             return Effect::None;
         }
+        if key == Key::Reset && self.session.is_none() {
+            self.dialog = Some(Dialog::Reset { confirm: false });
+            return Effect::None;
+        }
         let Some(session) = &mut self.session else {
-            if key == Key::Options {
+            if matches!(key, Key::Options | Key::NextMachine) {
                 self.session = Some(Session {
                     draft: live.clone(),
                     original: live.clone(),
                     tab: Tab::General,
                     row: 0,
                 });
+                if key == Key::NextMachine {
+                    let session = self.session.as_mut().unwrap();
+                    session.row = 8;
+                    if session.draft.next_machine() {
+                        return Effect::Save(session.draft.clone());
+                    }
+                    session.row = 9;
+                }
             }
             return Effect::None;
         };
         match key {
+            Key::NextMachine => {
+                session.draft.next_machine();
+            }
             Key::Options => return Effect::Save(session.draft.clone()),
             Key::Escape if session.dirty() => self.dialog = Some(Dialog::Unsaved { choice: 2 }),
             Key::Escape => self.session = None,
@@ -314,6 +390,15 @@ impl Overlay {
                 }
             }
             Key::Enter => match (session.tab, session.row) {
+                (Tab::General, 8) => {
+                    session.draft.next_machine();
+                }
+                (Tab::General, 9) => {
+                    self.label_edit = Some(LabelEdit {
+                        text: String::new(),
+                        error: None,
+                    })
+                }
                 (Tab::General, 0) => session.draft.machine.cycle_profile(),
                 (Tab::General, 1) => session.draft.machine.cycle_ram(),
                 (Tab::General, 2) => session.draft.machine.cycle_cpu(),
@@ -362,6 +447,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn naming_and_selecting_machines_are_drafts_until_save() {
+        let mut live = Settings::default();
+        live.save_as_machine("Original").unwrap();
+        let mut overlay = Overlay::default();
+        overlay.key(Key::Options, &live);
+        overlay.session.as_mut().unwrap().row = 9;
+        overlay.key(Key::Enter, &live);
+        overlay.text_input("Original");
+        overlay.key(Key::Enter, &live);
+        assert!(overlay.label_edit.as_ref().unwrap().error.is_some());
+        overlay.key(Key::Escape, &live);
+        overlay.key(Key::Enter, &live);
+        overlay.text_input("Second");
+        overlay.key(Key::Enter, &live);
+        assert!(
+            overlay
+                .session
+                .as_ref()
+                .unwrap()
+                .draft
+                .machines
+                .contains_key("Second")
+        );
+        assert!(!live.machines.contains_key("Second"));
+        for key in [Key::Escape, Key::Left, Key::Enter, Key::Options] {
+            overlay.key(key, &live);
+        }
+        assert_eq!(overlay.session.as_ref().unwrap().draft, live);
+    }
+
+    #[test]
+    fn reset_requires_confirmation_and_does_not_save_or_discard_a_draft() {
+        let live = Settings::default();
+        let mut overlay = Overlay::default();
+        assert_eq!(overlay.key(Key::Reset, &live), Effect::None);
+        assert_eq!(overlay.dialog, Some(Dialog::Reset { confirm: false }));
+        assert_eq!(overlay.key(Key::Enter, &live), Effect::None);
+        overlay.key(Key::Reset, &live);
+        overlay.key(Key::Left, &live);
+        assert_eq!(overlay.key(Key::Enter, &live), Effect::Reset);
+        overlay.key(Key::Options, &live);
+        overlay.key(Key::Enter, &live);
+        assert_eq!(overlay.key(Key::Reset, &live), Effect::None);
+        assert!(overlay.session.as_ref().unwrap().dirty());
+        assert!(overlay.dialog.is_none());
+    }
+
+    #[test]
     fn firmware_selection_is_a_draft_and_survives_cancelled_restart() {
         let live = Settings::default();
         let mut overlay = Overlay::default();
@@ -374,7 +507,9 @@ mod tests {
             overlay.session.as_ref().unwrap().draft.machine.profile,
             profile
         );
-        overlay.key(Key::Up, &live);
+        for _ in 0..7 {
+            overlay.key(Key::Down, &live);
+        }
         overlay.key(Key::Enter, &live);
         assert_eq!(overlay.dialog, Some(Dialog::Firmware { choice: 2 }));
         overlay.key(Key::Right, &live);
@@ -530,6 +665,8 @@ mod tests {
             Key::Options,
             Key::Up,
             Key::Up,
+            Key::Up,
+            Key::Up,
             Key::Enter,
             Key::Right,
             Key::Right,
@@ -546,7 +683,15 @@ mod tests {
         let advanced = overlay.session.as_ref().unwrap().draft.advanced.clone();
         assert_ne!(advanced, live.advanced);
         // Return to General and hide Tinker. Core settings must not reset.
-        for key in [Key::Left, Key::Left, Key::Up, Key::Up, Key::Enter] {
+        for key in [
+            Key::Left,
+            Key::Left,
+            Key::Up,
+            Key::Up,
+            Key::Up,
+            Key::Up,
+            Key::Enter,
+        ] {
             overlay.key(key, &live);
         }
         let session = overlay.session.as_ref().unwrap();
@@ -669,6 +814,8 @@ mod tests {
         assert_eq!(overlay.session.as_ref().unwrap().tab, Tab::About);
         for key in [
             Key::Right,
+            Key::Up,
+            Key::Up,
             Key::Up,
             Key::Up,
             Key::Enter,

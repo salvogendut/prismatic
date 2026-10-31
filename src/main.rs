@@ -4,8 +4,10 @@ mod diagnostics;
 mod display;
 mod emulator;
 mod input;
+mod instance;
 mod media;
 mod overlay;
+mod profiles;
 mod settings;
 mod smoke;
 mod sound;
@@ -22,7 +24,7 @@ use sdl3::{
     pixels::PixelFormat,
     render::ScaleMode,
 };
-use settings::{MachineSettings, Settings};
+use settings::Settings;
 use std::{
     path::PathBuf,
     sync::Arc,
@@ -41,6 +43,13 @@ struct Options {
     state_dir: Option<PathBuf>,
     screenshot: Option<PathBuf>,
     keyboard: Option<KeyboardLayout>,
+    machine_label: Option<String>,
+}
+
+struct RestartRequest {
+    settings: Settings,
+    was_failed: bool,
+    boot: bool,
 }
 
 impl Options {
@@ -53,22 +62,25 @@ impl Options {
                     println!(
                         "Prismatic - Happy Years interface for Iris
 
-Usage: prismatic [--config PATH] [--state-dir PATH] [--keyboard ansi|iso|jis]
+Usage: prismatic [--config PATH] [--machine-label LABEL] [--state-dir PATH]
+                 [--keyboard ansi|iso|jis]
                  [--smoke-test | --boot-smoke-test | --input-smoke-test |
                   --settings-smoke-test | --media-smoke-test | --advanced-smoke-test]
                  [--screenshot PATH.bmp]
 
 Click display: capture input  Ctrl+Enter: release
-F4 Screenshot  F6 Start/stop GIF  F9 Options  F11 Fullscreen  F12 Quit
-Shift+F4/F6/F9/F11/F12: send a bare guest function-key tap while captured
+Ctrl+P Boot/pause/resume  F2 Next machine  F4 Screenshot  F5 Reset
+F6 Start/stop GIF  F9 Options  F11 Fullscreen  F12 Quit
+Shift+F2/F4/F5/F6/F9/F11/F12: send a bare guest function-key tap while captured
 Ctrl+Plus/Minus (also Ctrl+= and keypad +/-): scale window by 25% and save
 
-General: machine, RAM, CPU and keyboard. Core changes require restart.
+General: machine, RAM, CPU, keyboard and named machine labels. Core changes require restart.
 Tinker > Advanced: resolution, cache, clock offset, SCSI timing, serial and debug output.
 Advanced sets GIF resolution (Native/320/480/640), frame rate (10/20/25) and encoder.
 Captures save the guest display as timestamped PPM/GIF files in the working directory.
 Media: raw/CHD hard disks and ISO9660/EFS/CHD CD-ROMs.
-Boots diskless by default with bundled firmware. Guest audio is not connected yet.
+Starts PAUSED; Ctrl+P boots the selected machine. Default media is disconnected.
+Guest audio is not connected yet.
 --keyboard overrides the saved keyboard type for this session.
 --smoke-test renders the UI without starting Iris.
 --boot-smoke-test waits for guest display output, captures ten seconds later, and stops.
@@ -78,6 +90,7 @@ Boots diskless by default with bundled firmware. Guest audio is not connected ye
 --advanced-smoke-test tests Tinker, Advanced options and confirmed restart.
 --state-dir overrides Indy NVRAM storage; Indigo2 uses its indigo2 subdirectory.
 --config overrides prismatic.cfg in the per-user application directory.
+--machine-label selects a saved label for this launch; it still starts PAUSED.
 Menu Save persists General, Media, Advanced and display settings to this file."
                     );
                     return Ok(None);
@@ -88,6 +101,14 @@ Menu Save persists General, Media, Advanced and display settings to this file."
                 }
                 Some("--config") => {
                     options.config = Some(args.next().ok_or("--config requires a path")?.into())
+                }
+                Some("--machine-label") => {
+                    options.machine_label = Some(
+                        args.next()
+                            .ok_or("--machine-label requires a label")?
+                            .into_string()
+                            .map_err(|_| "Machine label must be UTF-8")?,
+                    );
                 }
                 Some("--smoke-test") => options.smoke_test = true,
                 Some("--boot-smoke-test") => options.boot_smoke_test = true,
@@ -201,6 +222,9 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         .config
         .unwrap_or_else(|| preferences.join("prismatic.cfg"));
     let mut settings = Settings::open(&path, legacy.as_deref())?;
+    if let Some(label) = &options.machine_label {
+        settings.select_machine(label)?;
+    }
     let debug_log = Arc::new(diagnostics::DebugLog::new(settings.debug_output));
     iris::diagnostics::set_sink(Some(debug_log.clone()));
     let mut debug_lines = Vec::new();
@@ -208,8 +232,9 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(keyboard) = options.keyboard {
         settings.machine.keyboard = keyboard;
     }
-    let state_dir =
-        |hardware: &MachineSettings| hardware.state_dir(&preferences, options.state_dir.as_deref());
+    let state_dir = |settings: &Settings| {
+        settings.machine_state_dir(&preferences, options.state_dir.as_deref())
+    };
     let mut active = settings.clone();
     if machine_smoke && !active.media.devices.is_empty() {
         return Err("Machine smoke tests start with disconnected media".into());
@@ -237,11 +262,11 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     if options.smoke_test {
         overlay.key(Key::Options, &settings);
     }
-    let mut emulator = if options.smoke_test {
+    let mut emulator = if !machine_smoke {
         None
     } else {
         Some(Emulator::spawn(
-            &state_dir(&active.machine),
+            &state_dir(&active),
             &active.machine,
             &active.media,
             &active.advanced,
@@ -252,6 +277,9 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let mut media_jobs = MediaJobs::default();
     let mut leds = activity::Leds::default();
     let mut status = Status::default();
+    if !machine_smoke {
+        status.phase = Phase::Paused;
+    }
     let mut events = sdl.event_pump()?;
     let event_sender = sdl.event()?;
     let mut input_smoke = smoke::InputSmoke::default();
@@ -276,7 +304,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let started = Instant::now();
     let mut stopping: Option<Instant> = None;
     // A new worker is constructed only after the previous worker has joined.
-    let mut restart: Option<(Settings, bool)> = None;
+    let mut restart: Option<RestartRequest> = None;
     let mut failure: Option<String> = None;
 
     loop {
@@ -299,6 +327,14 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             redraw = true;
         }
         let mut ready_save = None;
+        let text_input = video.text_input();
+        if overlay.label_edit.is_some() != text_input.is_active(canvas.window()) {
+            if overlay.label_edit.is_some() {
+                text_input.start(canvas.window());
+            } else {
+                text_input.stop(canvas.window());
+            }
+        }
         if let Some(result) = media_jobs.poll() {
             redraw = true;
             match result {
@@ -338,6 +374,11 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
             let key = match event {
+                Event::TextInput { text, .. } => {
+                    overlay.text_input(&text);
+                    redraw = true;
+                    None
+                }
                 Event::Quit { .. }
                 | Event::Window {
                     win_event: WindowEvent::CloseRequested,
@@ -446,6 +487,42 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                             }
                             None
                         }
+                        KeyRoute::Pause => {
+                            release_input(&mut guest, &mouse, canvas.window());
+                            if stopping.is_none() && !options.smoke_test {
+                                let result = if matches!(
+                                    status.phase,
+                                    Phase::Running | Phase::Paused | Phase::Halted
+                                ) && let Some(machine) = &emulator
+                                {
+                                    machine.request_pause(status.phase == Phase::Running)
+                                } else if emulator.is_none() || status.phase == Phase::PoweredOff {
+                                    match Emulator::spawn(
+                                        &state_dir(&active),
+                                        &active.machine,
+                                        &active.media,
+                                        &active.advanced,
+                                    ) {
+                                        Ok(machine) => {
+                                            emulator = Some(machine);
+                                            status = Status::default();
+                                            guest_frame_received = false;
+                                            failure = None;
+                                            Ok(())
+                                        }
+                                        Err(error) => Err(error),
+                                    }
+                                } else {
+                                    Err("Wait for the machine transition or revise its options"
+                                        .into())
+                                };
+                                if let Err(error) = result {
+                                    toast = Some((error, Instant::now()));
+                                }
+                            }
+                            redraw = true;
+                            None
+                        }
                     }
                 }
                 Event::KeyUp {
@@ -514,13 +591,29 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 _ => None,
             };
             if let Some(key) = key {
-                if matches!(key, Key::Options | Key::Quit) {
+                if matches!(
+                    key,
+                    Key::Options | Key::Quit | Key::NextMachine | Key::Reset
+                ) {
                     release_input(&mut guest, &mouse, canvas.window());
                 }
                 let effect = overlay.key(key, &settings);
                 let confirmed_restart = matches!(effect, Effect::Restart(_));
                 match effect {
                     Effect::None => {}
+                    Effect::Reset => {
+                        if emulator.is_some() {
+                            restart = Some(RestartRequest {
+                                settings: active.clone(),
+                                was_failed: matches!(status.phase, Phase::Failed(_)),
+                                boot: matches!(status.phase, Phase::Starting | Phase::Running),
+                            });
+                            stopping = Some(Instant::now());
+                        } else {
+                            toast =
+                                Some(("Machine is PAUSED - Ctrl+P to boot".into(), Instant::now()));
+                        }
+                    }
                     Effect::PickProm => {
                         let hardware = &overlay.session.as_ref().unwrap().draft.machine;
                         if let Err(error) = media_jobs.pick_prom(
@@ -605,12 +698,14 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             // File validation runs off-thread and may return a snapshot from
             // before a scaling shortcut. Retain the separately saved scale.
             draft.window_scale = settings.window_scale;
+            draft.remember_machine();
             overlay.busy = false;
             let needs_restart = !options.smoke_test
+                && !(emulator.is_none() && status.phase == Phase::Paused)
                 && (draft.machine_differs_from(&active)
                     || matches!(status.phase, Phase::Failed(_) | Phase::PoweredOff));
             if let Err(error) = emulator::machine_config(
-                &state_dir(&draft.machine),
+                &state_dir(&draft),
                 &draft.machine,
                 &draft.media,
                 &draft.advanced,
@@ -622,7 +717,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 && !confirmed
                 && matches!(
                     status.phase,
-                    Phase::Starting | Phase::Running | Phase::Halted
+                    Phase::Starting | Phase::Running | Phase::Halted | Phase::Paused
                 )
             {
                 overlay.confirm_restart();
@@ -634,12 +729,21 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                         overlay.saved();
                         if needs_restart {
                             release_input(&mut guest, &mouse, canvas.window());
-                            restart =
-                                Some((settings.clone(), matches!(status.phase, Phase::Failed(_))));
+                            restart = Some(RestartRequest {
+                                settings: settings.clone(),
+                                was_failed: matches!(status.phase, Phase::Failed(_)),
+                                boot: false,
+                            });
                             stopping = Some(Instant::now());
                             toast =
-                                Some(("Options saved - restarting machine".into(), Instant::now()));
+                                Some(("Options saved - preparing machine".into(), Instant::now()));
                         } else {
+                            if emulator.is_none() {
+                                active = settings.clone();
+                            } else {
+                                active.machine_label = settings.machine_label.clone();
+                                active.machines = settings.machines.clone();
+                            }
                             toast = Some(("Options saved".into(), Instant::now()));
                         }
                     }
@@ -835,7 +939,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 Ok(done) => {
                     if done
                         && (Settings::load(&path)? != settings
-                            || !state_dir(&settings.machine).join("serial.log").is_file())
+                            || !state_dir(&settings).join("serial.log").is_file())
                     {
                         failure =
                             Some("Advanced configuration or serial log was not persisted".into());
@@ -900,11 +1004,18 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 status.phase.label()
             };
+            let named_label = active
+                .machine_label
+                .as_ref()
+                .map(|name| format!("{name}: {label}"));
+            let label = named_label.as_deref().unwrap_or(label);
             let placeholder = if options.smoke_test {
                 Some("Display preview - no machine connected")
             } else if status.phase == Phase::PoweredOff {
-                Some("Machine powered off - F9 then Save to start")
-            } else if !guest_frame_received || matches!(status.phase, Phase::Failed(_)) {
+                Some("Machine powered off - Ctrl+P to boot, F9 Options")
+            } else if !guest_frame_received
+                || matches!(status.phase, Phase::Failed(_) | Phase::Paused)
+            {
                 Some(label)
             } else {
                 None
@@ -961,7 +1072,12 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                             Phase::Failed(error) => Some(error),
                             _ => None,
                         });
-                if let Some((next_settings, was_failed)) = restart.take() {
+                if let Some(RestartRequest {
+                    settings: next_settings,
+                    was_failed,
+                    boot,
+                }) = restart.take()
+                {
                     // Drop old handles and pixels before creating the replacement.
                     guest.attach(None);
                     emulator = None;
@@ -977,20 +1093,26 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                     texture.update(None, &frame.rgba, frame.width as usize * 4)?;
                     let result = if let Some(error) = stop_error.filter(|_| !was_failed) {
                         Err(format!("Restart aborted: {error}"))
-                    } else {
+                    } else if machine_smoke || boot {
                         Emulator::spawn(
-                            &state_dir(&next_settings.machine),
+                            &state_dir(&next_settings),
                             &next_settings.machine,
                             &next_settings.media,
                             &next_settings.advanced,
                         )
+                        .map(Some)
+                    } else {
+                        Ok(None)
                     };
                     match result {
                         Ok(machine) => {
-                            emulator = Some(machine);
+                            emulator = machine;
                             active = next_settings;
                             generation += 1;
                             status = Status::default();
+                            if emulator.is_none() {
+                                status.phase = Phase::Paused;
+                            }
                             failure = None;
                             toast = None;
                         }

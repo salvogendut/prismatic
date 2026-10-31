@@ -16,6 +16,7 @@ pub enum KeyRoute {
     Fullscreen,
     Screenshot,
     Gif,
+    Pause,
     WindowScale(bool),
     Release,
     Ignore,
@@ -59,7 +60,20 @@ pub fn route_key(
     modal: bool,
 ) -> KeyRoute {
     use Scancode as S;
-    let reserved = matches!(scan, S::F4 | S::F6 | S::F9 | S::F11 | S::F12);
+    if scan == S::P
+        && modifiers.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD)
+        && !modifiers.intersects(Mod::LALTMOD | Mod::RALTMOD | Mod::LGUIMOD | Mod::RGUIMOD)
+    {
+        return if repeat || modal {
+            KeyRoute::Ignore
+        } else {
+            KeyRoute::Pause
+        };
+    }
+    let reserved = matches!(
+        scan,
+        S::F2 | S::F4 | S::F5 | S::F6 | S::F9 | S::F11 | S::F12
+    );
     if captured
         && !modal
         && modifiers.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD)
@@ -83,7 +97,9 @@ pub fn route_key(
             KeyRoute::Ignore
         } else {
             match scan {
+                S::F2 => KeyRoute::Host(Key::NextMachine),
                 S::F4 => KeyRoute::Screenshot,
+                S::F5 => KeyRoute::Host(Key::Reset),
                 S::F6 => KeyRoute::Gif,
                 S::F9 => KeyRoute::Host(Key::Options),
                 S::F12 => KeyRoute::Host(Key::Quit),
@@ -97,6 +113,7 @@ pub fn route_key(
         }
         return match scan {
             S::Escape => KeyRoute::Host(Key::Escape),
+            S::Backspace => KeyRoute::Host(Key::Backspace),
             S::Return | S::KpEnter => KeyRoute::Host(Key::Enter),
             S::Left => KeyRoute::Host(Key::Left),
             S::Right => KeyRoute::Host(Key::Right),
@@ -525,6 +542,8 @@ mod tests {
     #[test]
     fn capture_keys_work_in_menus_ignore_repeats_and_allow_shift_guest_taps() {
         for (scan, expected) in [
+            (Scancode::F2, KeyRoute::Host(Key::NextMachine)),
+            (Scancode::F5, KeyRoute::Host(Key::Reset)),
             (Scancode::F4, KeyRoute::Screenshot),
             (Scancode::F6, KeyRoute::Gif),
         ] {
@@ -549,6 +568,28 @@ mod tests {
                 KeyRoute::Ignore
             );
         }
+    }
+
+    #[test]
+    fn control_p_is_a_host_toggle_but_never_boots_from_an_open_draft() {
+        for captured in [false, true] {
+            assert_eq!(
+                route_key(Scancode::P, Mod::LCTRLMOD, false, captured, false),
+                KeyRoute::Pause
+            );
+            assert_eq!(
+                route_key(Scancode::P, Mod::LCTRLMOD, false, captured, true),
+                KeyRoute::Ignore
+            );
+            assert_eq!(
+                route_key(Scancode::P, Mod::LCTRLMOD, true, captured, false),
+                KeyRoute::Ignore
+            );
+        }
+        assert_eq!(
+            route_key(Scancode::P, Mod::NOMOD, false, true, false),
+            KeyRoute::Guest
+        );
     }
 
     #[test]

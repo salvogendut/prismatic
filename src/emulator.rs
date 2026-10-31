@@ -21,7 +21,11 @@ use std::{
     net::SocketAddr,
     panic::{AssertUnwindSafe, catch_unwind},
     path::Path,
-    sync::{Arc, Mutex, mpsc},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -30,6 +34,7 @@ use std::{
 pub enum Phase {
     Starting,
     Running,
+    Paused,
     Halted,
     PoweredOff,
     Stopping,
@@ -42,6 +47,7 @@ impl Phase {
         match self {
             Self::Starting => "Starting machine...",
             Self::Running => "Running",
+            Self::Paused => "PAUSED",
             Self::Halted => "Machine halted",
             Self::PoweredOff => "Machine powered off",
             Self::Stopping => "Stopping machine...",
@@ -283,11 +289,18 @@ impl Drop for OwnedMachine {
 pub struct Emulator {
     pub frames: FrameSlot,
     status: Arc<Mutex<Status>>,
-    stop: mpsc::SyncSender<()>,
+    commands: mpsc::SyncSender<Command>,
+    stop_requested: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     input: Arc<Mutex<Option<Arc<Ps2Controller>>>>,
     pub activity: Activity,
     has_media: bool,
+}
+
+enum Command {
+    Stop,
+    Pause,
+    Resume,
 }
 
 impl Emulator {
@@ -308,7 +321,9 @@ impl Emulator {
         let state_dir = state_dir.to_owned();
         let frames = FrameSlot::default();
         let status = Arc::new(Mutex::new(Status::default()));
-        let (stop, receiver) = mpsc::sync_channel(1);
+        let (commands, receiver) = mpsc::sync_channel(1);
+        let stop_requested = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop_requested.clone();
         let worker_frames = frames.clone();
         let worker_status = status.clone();
         let input = Arc::new(Mutex::new(None));
@@ -323,6 +338,9 @@ impl Emulator {
                     hardware.validate_prom()?;
                     std::fs::create_dir_all(&state_dir)
                         .map_err(|e| format!("Cannot create machine state directory: {e}"))?;
+                    let _state_lease =
+                        crate::instance::Lease::acquire(&state_dir.join("machine.lock"))?;
+                    let _disk_leases = crate::instance::disks(&media)?;
                     prepare_serial_log(&config)?;
                     // Iris's Indigo2 fallback also searches the current directory.
                     // Give it the bundled image explicitly so a local ROM cannot
@@ -365,7 +383,7 @@ impl Emulator {
                             worker_frames,
                             worker_activity,
                         )));
-                        if matches!(receiver.try_recv(), Err(mpsc::TryRecvError::Empty)) {
+                        if !worker_stop.load(Ordering::Acquire) {
                             owned.machine.start();
                             // Iris debug builds deliberately leave the CPU parked.
                             if !owned.machine.cpu_is_running() {
@@ -378,7 +396,11 @@ impl Emulator {
                             return Ok(Phase::Stopped);
                         }
                     }
+                    let mut paused = false;
                     let final_phase = loop {
+                        if worker_stop.load(Ordering::Acquire) {
+                            break Phase::Stopped;
+                        }
                         {
                             let _guard = owned.slot.lock();
                             // A monitor pause also stops the CPU. Only the core's
@@ -388,6 +410,8 @@ impl Emulator {
                             }
                             let phase = if owned.machine.cpu_is_running() {
                                 Phase::Running
+                            } else if paused {
+                                Phase::Paused
                             } else {
                                 Phase::Halted
                             };
@@ -398,7 +422,29 @@ impl Emulator {
                         }
                         match receiver.recv_timeout(Duration::from_millis(100)) {
                             Err(mpsc::RecvTimeoutError::Timeout) => {}
-                            _ => break Phase::Stopped,
+                            Ok(Command::Pause) => {
+                                // A second keypress can arrive before the UI sees
+                                // Paused. Keep device stop/start pairs balanced.
+                                if !paused {
+                                    let _guard = owned.slot.lock();
+                                    if owned.machine.status().state != GuestState::PoweredOff {
+                                        owned.machine.stop();
+                                        paused = true;
+                                    }
+                                }
+                            }
+                            Ok(Command::Resume) => {
+                                let _guard = owned.slot.lock();
+                                // Never undo a guest power-off that arrived while
+                                // waiting for a command. The next tick handles it.
+                                if owned.machine.status().state != GuestState::PoweredOff {
+                                    owned.machine.start_guest()?;
+                                    paused = false;
+                                }
+                            }
+                            Ok(Command::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                break Phase::Stopped;
+                            }
                         }
                     };
                     worker_status.lock().unwrap().phase = Phase::Stopping;
@@ -420,7 +466,8 @@ impl Emulator {
         Ok(Self {
             frames,
             status,
-            stop,
+            commands,
+            stop_requested,
             thread: Some(thread),
             input,
             activity,
@@ -437,7 +484,18 @@ impl Emulator {
     }
 
     pub fn request_stop(&self) {
-        let _ = self.stop.try_send(());
+        self.stop_requested.store(true, Ordering::Release);
+        let _ = self.commands.try_send(Command::Stop);
+    }
+
+    pub fn request_pause(&self, pause: bool) -> Result<(), String> {
+        self.commands
+            .try_send(if pause {
+                Command::Pause
+            } else {
+                Command::Resume
+            })
+            .map_err(|_| "Machine is busy changing state; try again".into())
     }
 
     pub fn finished(&mut self) -> bool {
@@ -502,6 +560,11 @@ mod tests {
             }
             assert_eq!(emulator.status().phase, phase);
         };
+        wait_for(&emulator, Phase::Running);
+        emulator.request_pause(true).unwrap();
+        wait_for(&emulator, Phase::Paused);
+        assert!(!emulator.finished());
+        emulator.request_pause(false).unwrap();
         wait_for(&emulator, Phase::Running);
         let mut stream = TcpStream::connect(emulator.status().monitor.unwrap()).unwrap();
         stream

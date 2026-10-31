@@ -557,10 +557,11 @@ mod tests {
         );
         let config = dir.path().join("settings.toml");
         settings.save(&config).unwrap();
+        let saved_files = fs::read_dir(dir.path()).unwrap().count();
         let mut loaded = Settings::load(&config).unwrap();
         loaded.media.validate_files().unwrap();
         assert_eq!(loaded.media.devices[&7].path, image.to_str().unwrap());
-        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), saved_files);
         loaded
             .media
             .devices

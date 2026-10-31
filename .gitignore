@@ -2,6 +2,7 @@
 *.bmp
 
 /prismatic.cfg
+/prismatic.cfg.lock
 
 # Timestamped F4/F6 guest captures and files still being encoded.
 /prismatic-*.ppm

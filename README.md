@@ -7,11 +7,13 @@ following the desktop conventions of the Happy Years emulators
 ([1984](https://github.com/salvogendut/1984), [1985](https://github.com/salvogendut/1985),
 [1986](https://github.com/salvogendut/1986), and [1989](https://github.com/salvogendut/1989)).
 
-Prismatic embeds Iris and starts a **diskless SGI Indy** by default, with an
-R4400, 64 MB RAM, Newport graphics and Iris's built-in PROM. **F9 > General**
+Prismatic embeds Iris and opens **PAUSED** with a **diskless SGI Indy**
+configuration by default: R4400, 64 MB RAM, Newport graphics and Iris's built-in PROM. **F9 > General**
 configures Indy IP24, Indigo2 IP22, Indigo2 IMPACT IP28, O2 IP32 and Octane IP30,
-with compatible RAM/CPU choices, keyboard layout and PROM selection.
-The guest framebuffer
+with compatible RAM/CPU choices, keyboard layout, PROM selection and saved
+machine labels.
+Configure it first, then press **Ctrl+P** to boot. Every normal launch and label
+switch starts paused; smoke tests start automatically. The guest framebuffer
 appears in the SDL3 window, with the Happy Years F9 overlay, fullscreen,
 scanlines, filtering and saved desktop preferences. SDL keyboard and relative
 mouse input now reach the guest through Iris's PS/2 controller.
@@ -87,8 +89,11 @@ remaining work.
 | --- | --- |
 | Click guest display | Capture keyboard and mouse; the capture click is consumed |
 | Ctrl+Enter | Release input and return the pointer to the desktop |
+| Ctrl+P | Boot the selected machine; pause or resume an existing session |
+| F2 | Cycle saved machine labels; a running session requires confirmation before switching |
 | Ctrl+Plus / Ctrl+Minus | Increase / decrease window scale by 25%; also accepts Ctrl+= and keypad +/− |
 | F4 | Save a guest-display screenshot (PPM) |
+| F5 | Confirm a cold reset; a paused session remains paused |
 | F6 | Start or stop an animated GIF capture |
 | F9 | Open options; save and close an open options session |
 | Left / Right (in options/dialogs) | Change section or confirmation choice |
@@ -97,7 +102,7 @@ remaining work.
 | Escape (in options/dialogs) | Close; offer Save / Discard / Cancel if changed |
 | F11 | Toggle fullscreen |
 | F12 / window close | Confirm quit |
-| Shift+F4 / Shift+F6 / Shift+F9 / Shift+F11 / Shift+F12 (captured) | Send a bare guest function-key tap |
+| Shift+F2 / Shift+F4 / Shift+F5 / Shift+F6 / Shift+F9 / Shift+F11 / Shift+F12 (captured) | Send a bare guest function-key tap |
 
 While captured, other keys, including Escape and the remaining function keys,
 go to the guest. Opening options or a quit confirmation, losing focus, or
@@ -184,19 +189,80 @@ additional graphics boards and second SCSI buses are not exposed yet.
 
 Changing models keeps compatible CPU/RAM choices, selects R4400 when changing
 from an R5000 Indy to Indigo2, and caps RAM at 256 MB when returning to Indy.
-These hardware settings take effect by stopping the old machine and starting a
-fresh one, so the current guest session is lost. The window stays responsive
+These hardware settings take effect by stopping the old machine and preparing a
+fresh, paused configuration, so the current guest session is lost. Ctrl+P boots it.
+Before the first boot, options can change without restarting a machine. The
+window stays responsive
 during restart. Display options apply on Save without restarting. Startup or
 restart failures remain visible in the window and terminal; F9 lets you revise
 the saved settings. A new worker is never started after a stop timeout.
 
 When IRIX requests power-off, Prismatic finishes storage cleanup, finalizes any
 GIF recording, clears the guest display and shows **Machine powered off** with
-the RUN light off. The window stays open: press **F9**, then **F9** again to Save
-and start the configured machine. Discard leaves it powered off. A monitor halt
+the RUN light off. The window stays open: press **Ctrl+P** to boot again, or use
+F9 to revise its options and leave it ready in PAUSED. Discard leaves it powered
+off. A monitor halt
 or breakpoint keeps the last display and reports **Machine halted** instead.
 In 4Dwm's System Shutdown dialog, select **Power Off the System** to request
 power-off; a shutdown that returns to firmware does not power off the machine.
+
+### Named machines
+
+In **General > Save machine as...**, type a label and press Enter, then **F9** to
+save the complete options draft. Labels accept 1–32 printable ASCII characters.
+Save As keeps the source label; an existing name is rejected so it cannot be
+overwritten accidentally. Select an existing label with **General > Machine
+label** or **F2**, then edit its options and Save to update it. Discard changes
+neither the saved labels nor the active machine.
+
+Each label remembers its machine model, CPU, RAM, keyboard, firmware, media and
+Advanced machine options. Desktop preferences, capture options and Tinker remain
+shared. F2 cycles labels alphabetically, and the status strip shows the active
+label and its state. Close Options before using Ctrl+P. F5 asks before cold-resetting
+an existing guest. It stops and recreates the machine, finalizes any GIF capture,
+and boots again if it was running. A paused machine remains ready for Ctrl+P.
+Pause/resume preserves memory; cold reset discards the guest session.
+
+One machine runs per window. Switching a running or previously booted paused
+session stops it after confirmation, then leaves the selected label **PAUSED**.
+Each launch also starts PAUSED. To open a particular saved label directly:
+
+```sh
+cargo run --release --locked -- --machine-label "Indy IRIX"
+```
+
+Labels are TOML stanzas in `prismatic.cfg`; `machine_label` selects the default.
+The menus write complete settings. This abbreviated example uses defaults for
+omitted fields:
+
+```toml
+machine_label = "Indy IRIX"
+
+[machines."Indy IRIX"]
+legacy_state = true
+[machines."Indy IRIX".machine]
+profile = "indy_ip24"
+cpu = "r4400"
+ram_mb = 64
+[machines."Indy IRIX".media.devices.1]
+kind = "disk"
+path = "/path/to/irix.chd"
+
+[machines."Indigo2 Test".machine]
+profile = "indigo2_ip22"
+cpu = "r4400"
+ram_mb = 128
+```
+
+The first label adopts the unnamed machine's firmware state (`legacy_state =
+true`). Additional labels have separate NVRAM/EEPROM/flash directories under
+`machines/<hex-encoded-label>/<model>/`. Disk paths still identify the existing
+images and their overlays; Save As copies the configuration. Independent windows
+can run different labels with different writable disks. Instance locks prevent
+two Prismatic windows from writing the same firmware state or disk overlay;
+read-only CDs can be shared. Configuration saves preserve unrelated labels from
+other windows and reject conflicting edits to the same label. Reopen the config
+to pick up labels added in another window.
 
 Prismatic passes explicit temporary copies of Iris's bundled Indigo2 PROMs to
 avoid the core's alternate ROM search in the working directory. IMPACT and GBE
@@ -442,8 +508,10 @@ the SDL output, and stops Iris. It fails if startup, display output (120-second
 timeout), or shutdown fails. This checks the display path; it does not identify
 PROM text or prove that a complete OS boot works.
 
-`cargo test --locked` also checks IP22 guest power-off through its panel register,
-separately from a monitor halt, using temporary state and no guest disks.
+`cargo test --locked` also checks named-label persistence, concurrent catalog
+saves, instance locks, draft isolation and pause/reset/resume. The IP22 power-off
+regression writes its panel register separately from a monitor halt, using
+temporary state and no guest disks.
 
 For a diskless IP28 check, create a separate configuration and use the same
 smoke path (the input script also works with its PROM):

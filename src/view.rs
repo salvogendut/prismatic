@@ -99,6 +99,7 @@ pub fn draw(
         }
     }
     if let Some(message) = presentation.placeholder {
+        shade(canvas, 100)?;
         let x = 256;
         let y = area.height() as i32 / 2 - 56;
         text(canvas, x, y, "P R I S M A T I C", TEXT)?;
@@ -108,7 +109,7 @@ pub fn draw(
             canvas,
             x,
             y + 92,
-            "F4 Screenshot  F6 GIF  F9 Options  F12 Quit",
+            "Ctrl+P Boot/resume  F2 Machine  F5 Reset  F9 Options",
             MUTED,
         )?;
     }
@@ -122,6 +123,30 @@ pub fn draw(
     }
     if let Some(dialog) = overlay.dialog {
         draw_dialog(canvas, dialog)?;
+    }
+    if let Some(edit) = &overlay.label_edit {
+        shade(canvas, 150)?;
+        let x = 120;
+        let y = HEIGHT as i32 / 2 - 80;
+        panel(canvas, Rect::new(x, y, 720, 160))?;
+        text(canvas, x + 24, y + 20, "Save machine as", TEXT)?;
+        text(canvas, x + 24, y + 52, &format!("{}|", edit.text), TEXT)?;
+        text(
+            canvas,
+            x + 24,
+            y + 84,
+            edit.error
+                .as_deref()
+                .unwrap_or("Enter accepts label; F9 saves options. Escape cancels."),
+            MUTED,
+        )?;
+        text(
+            canvas,
+            x + 24,
+            y + 116,
+            "Use up to 32 ASCII characters. Existing labels are kept.",
+            MUTED,
+        )?;
     }
 
     if let Some(message) = notification {
@@ -357,6 +382,12 @@ fn shade(canvas: &mut WindowCanvas, alpha: u8) -> Result<(), sdl3::Error> {
 
 fn draw_dialog(canvas: &mut WindowCanvas, dialog: Dialog) -> Result<(), sdl3::Error> {
     let (title, detail, buttons, selected) = match dialog {
+        Dialog::Reset { confirm } => (
+            "Reset this machine?",
+            "The current guest session will be lost. Paused machines stay paused.",
+            vec!["Reset", "Cancel"],
+            usize::from(!confirm),
+        ),
         Dialog::Firmware { choice } => (
             "Choose PROM firmware for this machine",
             "O2 needs an IP32 PROM; Octane needs an IP30 PROM. Extract ZIPs first.",
@@ -444,9 +475,9 @@ fn draw_status(
     )?;
     let status = short_ascii(presentation.status, 48);
     let keys = if presentation.captured {
-        "  Ctrl+Enter=release  F4=screenshot  F6=gif  F9=options  F11=full  F12=quit"
+        "  Ctrl+Enter=release  Ctrl+P=pause  F2=machine  F4=shot  F5=reset  F6=gif  F9=options  F12=quit"
     } else {
-        "  Click=capture  F4=screenshot  F6=gif  F9=options  F11=full  F12=quit"
+        "  Ctrl+P=boot/pause  F2=machine  F4=shot  F5=reset  F6=gif  F9=options  F11=full  F12=quit"
     };
     let text_width = (status.len() + keys.len()) as f32 * 8.0;
     let scale = ((WIDTH - 16) as f32 / text_width).min(1.0);

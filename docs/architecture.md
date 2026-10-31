@@ -28,6 +28,8 @@ including when the hints are hidden.
 | `src/smoke.rs` | Scripted SDL input and General/Media/Advanced menu and restart smoke tests |
 | `src/overlay.rs` | Draft settings, navigation, modal choices and effects |
 | `src/settings.rs` | Desktop/hardware/media/Advanced settings, compatibility, RAM banks, state paths and atomic persistence |
+| `src/profiles.rs` | Named machine stanzas, draft selection, state identity and concurrent catalog merging |
+| `src/instance.rs` | Exclusive leases for machine state, writable disks and atomic configuration updates |
 | `src/diagnostics.rs` | Live Off/Screen/Console routing of Iris diagnostics, bounded screen text and redraw updates |
 | `src/capture.rs` | Asynchronous PPM screenshots, bounded GIF recording, atomic publication and optional FFmpeg optimization |
 | `src/sound.rs` | Embedded Happy Years screenshot shutter through a main-thread SDL audio stream |
@@ -121,9 +123,34 @@ then clears input, detaches and flushes media, and drops the core before publish
 `Phase::PoweredOff`. Cleanup errors still produce `Failed`. CPU inactivity alone
 remains `Halted`, so monitor stops and breakpoints cannot trigger teardown.
 SDL clears the final framebuffer and LEDs, finishes GIF capture and shows a
-powered-off placeholder while continuing to service menus. Saving options from
-this state starts a new worker even when hardware settings are unchanged;
-Discard has no effect. Restart confirmation is only needed for an active machine.
+powered-off placeholder while continuing to service menus. Ctrl+P can boot again;
+saving options prepares the configuration in PAUSED. Discard has no effect.
+
+Normal startup has `Phase::Paused` and no worker. Options can be edited and saved
+without constructing Iris or opening writable media. Ctrl+P constructs the worker
+and boots. Once booted, pause/resume use the bounded worker command channel: pause stops
+the CPU and peripherals, and resume restarts them at the retained PC. An atomic
+stop flag takes priority even when that channel is full. F5 performs a cold reset
+through normal stop, media flushing and complete worker reconstruction. It boots
+a replacement immediately only if the old machine was running/starting; otherwise
+it leaves the selected configuration PAUSED. This also recreates renderer and
+CPU/device state instead of relying on an in-place reset. F5 confirmation does
+not save or apply an options draft. Smoke runs retain automatic boot.
+
+`machine_label` selects a `[machines."label"]` stanza. Each entry stores hardware,
+media and Advanced machine options; presentation/capture preferences stay global.
+Save As creates a distinct entry without overwriting its source. Draft selection
+retains draft edits until Save; Discard affects neither files nor running state.
+The first named entry adopts the old model state directory. Later entries use the
+complete hex encoding of the label's ASCII bytes under `machines/`, then the model
+directory, preventing path traversal and naming collisions. No state is copied
+or created while editing. Writable media retain their existing overlay paths.
+
+Each worker holds OS file locks for its state directory and writable disk images
+through teardown. Read-only media need no exclusive lease. Catalog saves lock a
+sidecar, compare each changed entry with its loaded baseline, merge unrelated
+on-disk entries, then publish atomically. Conflicting edits fail with the draft
+retained. Baselines are save bookkeeping, excluded from dirty-state comparisons.
 
 ## Display handoff
 
@@ -270,7 +297,9 @@ Host key symbols recognize non-US layouts, Ctrl+= and keypad plus/minus;
 Alt/GUI combinations and autorepeats do not trigger scaling. Guest key mapping
 continues to use physical scancodes.
 
-F4/F6/F9/F11/F12 are host shortcuts. While captured, Shift plus a reserved function
+F2/F4/F5/F6/F9/F11/F12 are host shortcuts. Ctrl+P boots, pauses or resumes outside
+modal editing. F2 selects the next label and F5 opens reset confirmation.
+While captured, Shift plus a reserved function
 key sends a bare guest tap by temporarily lifting held modifiers and restoring
 them afterward. Modal navigation consumes keys before guest delivery. Repeats
 are forwarded only for keys first pressed during capture; Iris applies the
@@ -299,7 +328,8 @@ persists the override along with the other settings.
 
 The model emits a save request; the application validates the proposed Iris
 configuration and compares hardware/media/Advanced options against the active
-machine. Changes to core options during Starting/Running/Halted open a
+machine. Changes to core options during Starting/Running/Halted or a previously
+booted Paused session open a
 Restart/Cancel dialog, initially on Cancel. Both direct F9 save and Save from the unsaved-changes dialog follow
 this path. Cancel retains the draft, Discard has no runtime or file side effect,
 and a failed validation/write keeps the editor open. Display-only saves do not
@@ -308,8 +338,10 @@ restart. The session closes only after atomic persistence succeeds.
 A confirmed core-options save releases capture and requests normal worker stop.
 SDL keeps pumping events while the worker stops and joins; no second machine
 is constructed concurrently. After a successful stop, the frontend drops old
-input/frame handles, clears the old image and starts the selected configuration
-with its model's NVRAM directory. Status labels describe the active hardware.
+input/frame handles, clears the old image and prepares the selected configuration
+in PAUSED. Ctrl+P boots with its label/model's state directory. Status labels show
+the active machine label and state. F2 uses the same validation, persistence and
+restart confirmation path; an initial unbooted machine needs no restart.
 Stop failures/timeouts prevent replacement; construction/startup failures are
 reported with the saved configuration retained for correction in F9.
 

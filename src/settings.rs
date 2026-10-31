@@ -7,6 +7,7 @@ use iris::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -514,6 +515,12 @@ impl WindowScale {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
+    #[serde(skip)]
+    pub(crate) catalog_origin: crate::profiles::CatalogOrigin,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub machine_label: Option<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub machines: BTreeMap<String, crate::profiles::NamedMachine>,
     pub scanlines: bool,
     pub show_status: bool,
     pub smoothing: bool,
@@ -529,6 +536,9 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            catalog_origin: crate::profiles::CatalogOrigin::default(),
+            machine_label: None,
+            machines: BTreeMap::new(),
             scanlines: false,
             show_status: true,
             smoothing: false,
@@ -549,6 +559,7 @@ impl Settings {
         if self.window_scale != scale {
             let mut next = self.clone();
             next.window_scale = scale;
+            next.remember_machine();
             next.save(path)?;
             *self = next;
         }
@@ -556,7 +567,11 @@ impl Settings {
     }
 
     pub fn machine_differs_from(&self, active: &Self) -> bool {
-        self.machine != active.machine
+        (self.machine_label.is_some()
+            && active.machine_label.is_some()
+            && self.machine_label != active.machine_label)
+            || self.machine_state_key() != active.machine_state_key()
+            || self.machine != active.machine
             || self.media != active.media
             || self.advanced != active.advanced
     }
@@ -582,6 +597,15 @@ impl Settings {
             Ok(text) => {
                 let mut settings: Self = toml::from_str(&text)
                     .map_err(|e| format!("Cannot read settings {}: {e}", path.display()))?;
+                settings.validate_machines()?;
+                let parent = path.parent().unwrap_or(Path::new("."));
+                for saved in settings.machines.values_mut() {
+                    saved.media.resolve_paths(parent)?;
+                    saved.machine.resolve_prom_paths(parent)?;
+                }
+                if let Some(label) = settings.machine_label.clone() {
+                    settings.select_machine(&label)?;
+                }
                 settings.machine.validate()?;
                 settings.media.validate()?;
                 settings.advanced.validate()?;
@@ -592,6 +616,7 @@ impl Settings {
                 settings
                     .machine
                     .resolve_prom_paths(path.parent().unwrap_or(Path::new(".")))?;
+                settings.catalog_origin.record(&settings.machines);
                 Ok(settings)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
@@ -601,6 +626,7 @@ impl Settings {
 
     // Publish only complete files. A failed write leaves the previous settings intact.
     pub fn save(&self, path: &Path) -> Result<(), String> {
+        self.validate_machines()?;
         self.machine.validate()?;
         self.media.validate()?;
         self.advanced.validate()?;
@@ -610,12 +636,24 @@ impl Settings {
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
         let write = || -> Result<(), Box<dyn std::error::Error>> {
-            let text = toml::to_string_pretty(self)?;
             fs::create_dir_all(parent)?;
+            let mut lock_path = path.as_os_str().to_owned();
+            lock_path.push(".lock");
+            let _lease = crate::instance::Lease::acquire(Path::new(&lock_path))?;
+            let mut saved = self.clone();
+            saved.remember_machine();
+            for machine in saved.machines.values_mut() {
+                machine.media.resolve_paths(parent)?;
+                machine.machine.resolve_prom_paths(parent)?;
+            }
+            let own_catalog = saved.machines.clone();
+            saved.merge_machine_catalog(path)?;
+            let text = toml::to_string_pretty(&saved)?;
             let mut file = tempfile::NamedTempFile::new_in(parent)?;
             file.write_all(text.as_bytes())?;
             file.as_file().sync_all()?;
             file.persist(path)?;
+            self.catalog_origin.record(&own_catalog);
             Ok(())
         };
         write().map_err(|e| format!("Cannot save {}: {e}", path.display()))
@@ -973,6 +1011,7 @@ mod tests {
         settings.machine.octane_prom = Some("IP30prom.bin".into());
         let cfg = dir.path().join("prismatic.cfg");
         settings.save(&cfg).unwrap();
+        let saved_files = fs::read_dir(dir.path()).unwrap().count();
         let mut loaded = Settings::load(&cfg).unwrap().machine;
         for (profile, path) in [
             (MachineProfile::O2Ip32, &o2),
@@ -983,7 +1022,7 @@ mod tests {
             loaded.validate_prom().unwrap();
             assert_eq!(loaded.prom_path(), path.to_str());
         }
-        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 3);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), saved_files);
         loaded.profile = MachineProfile::O2Ip32;
         loaded.set_prom(None);
         assert!(

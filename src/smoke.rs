@@ -448,7 +448,16 @@ impl AdvancedSmoke {
             // Reopen Advanced for the screenshot. Showing it is a draft change;
             // persisted Tinker remains off and the core settings remain active.
             if !self.showing_menu {
-                for scan in [S::F9, S::Up, S::Up, S::Return, S::Right, S::Right] {
+                for scan in [
+                    S::F9,
+                    S::Up,
+                    S::Up,
+                    S::Up,
+                    S::Up,
+                    S::Return,
+                    S::Right,
+                    S::Right,
+                ] {
                     tap(events, window, scan)?;
                 }
                 self.showing_menu = true;
@@ -482,6 +491,8 @@ impl AdvancedSmoke {
             S::F9,
             S::Up,
             S::Up,
+            S::Up,
+            S::Up,
             S::Return,
             S::Right,
             S::Right,
@@ -509,7 +520,7 @@ impl AdvancedSmoke {
                 }
                 // Second attempt: hide Tinker before saving all five options.
                 if self.step == 2 {
-                    for scan in [S::Left, S::Left, S::Up, S::Up, S::Return] {
+                    for scan in [S::Left, S::Left, S::Up, S::Up, S::Up, S::Up, S::Return] {
                         tap(events, window, scan)?;
                     }
                 }
