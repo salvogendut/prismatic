@@ -12,6 +12,7 @@ use iris::{
     dev::ng1::rex3::Renderer,
     dev::ps2::Ps2Controller,
     disp::{BarStats, FB_MAX_H, FB_STRIDE, Rex3Screen, StatusBar, StatusBarTexture},
+    machine_state::GuestState,
     workstation::{MachineSlot, Workstation},
 };
 use std::{
@@ -30,6 +31,7 @@ pub enum Phase {
     Starting,
     Running,
     Halted,
+    PoweredOff,
     Stopping,
     Stopped,
     Failed(String),
@@ -41,6 +43,7 @@ impl Phase {
             Self::Starting => "Starting machine...",
             Self::Running => "Running",
             Self::Halted => "Machine halted",
+            Self::PoweredOff => "Machine powered off",
             Self::Stopping => "Stopping machine...",
             Self::Stopped => "Machine stopped",
             Self::Failed(_) => "Machine error - see terminal",
@@ -316,7 +319,7 @@ impl Emulator {
             .name("prismatic-iris".into())
             .stack_size(64 * 1024 * 1024)
             .spawn(move || {
-                let result = catch_unwind(AssertUnwindSafe(|| -> Result<(), String> {
+                let result = catch_unwind(AssertUnwindSafe(|| -> Result<Phase, String> {
                     hardware.validate_prom()?;
                     std::fs::create_dir_all(&state_dir)
                         .map_err(|e| format!("Cannot create machine state directory: {e}"))?;
@@ -371,12 +374,18 @@ impl Emulator {
                             *worker_input.lock().unwrap() = Some(owned.machine.get_ps2());
                         } else {
                             drop(_guard);
-                            return owned.stop();
+                            owned.stop()?;
+                            return Ok(Phase::Stopped);
                         }
                     }
-                    loop {
+                    let final_phase = loop {
                         {
                             let _guard = owned.slot.lock();
+                            // A monitor pause also stops the CPU. Only the core's
+                            // completed power-off event may end the worker here.
+                            if owned.machine.status().state == GuestState::PoweredOff {
+                                break Phase::PoweredOff;
+                            }
                             let phase = if owned.machine.cpu_is_running() {
                                 Phase::Running
                             } else {
@@ -389,21 +398,23 @@ impl Emulator {
                         }
                         match receiver.recv_timeout(Duration::from_millis(100)) {
                             Err(mpsc::RecvTimeoutError::Timeout) => {}
-                            _ => break,
+                            _ => break Phase::Stopped,
                         }
-                    }
+                    };
                     worker_status.lock().unwrap().phase = Phase::Stopping;
                     *worker_input.lock().unwrap() = None;
                     owned.stop()?;
-                    Ok(())
+                    Ok(final_phase)
                 }));
                 *worker_input.lock().unwrap() = None;
                 let phase = match result {
-                    Ok(Ok(())) => Phase::Stopped,
+                    Ok(Ok(phase)) => phase,
                     Ok(Err(error)) => Phase::Failed(error),
                     Err(payload) => Phase::Failed(panic_message(payload.as_ref())),
                 };
-                worker_status.lock().unwrap().phase = phase;
+                let mut status = worker_status.lock().unwrap();
+                status.phase = phase;
+                status.monitor = None;
             })
             .map_err(|e| format!("Cannot start Iris worker: {e}"))?;
         Ok(Self {
@@ -464,6 +475,70 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
 mod tests {
     use super::*;
     use iris::config::KeyboardLayout;
+
+    // Iris has process-wide display/CPU hooks; started machines must not overlap.
+    static MACHINE_TEST: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn guest_power_off_finishes_worker_but_monitor_halt_does_not() {
+        use std::{io::Read, net::TcpStream};
+        let _serial = MACHINE_TEST.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let hardware = MachineSettings {
+            profile: MachineProfile::Indigo2Ip22,
+            ..Default::default()
+        };
+        let mut emulator = Emulator::spawn(
+            dir.path(),
+            &hardware,
+            &MediaSettings::default(),
+            &AdvancedSettings::default(),
+        )
+        .unwrap();
+        let wait_for = |emulator: &Emulator, phase: Phase| {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while emulator.status().phase != phase && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(emulator.status().phase, phase);
+        };
+        wait_for(&emulator, Phase::Running);
+        let mut stream = TcpStream::connect(emulator.status().monitor.unwrap()).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let prompt = |stream: &mut TcpStream| {
+            let mut response = Vec::new();
+            let mut byte = [0];
+            while !response.ends_with(b"\n> ") && response != b"> " {
+                stream.read_exact(&mut byte).unwrap();
+                response.push(byte[0]);
+            }
+            String::from_utf8_lossy(&response).into_owned()
+        };
+        prompt(&mut stream);
+        stream.write_all(b"machine-stop\n").unwrap();
+        assert!(prompt(&mut stream).contains("halted"));
+        wait_for(&emulator, Phase::Halted);
+        assert!(
+            !emulator.finished(),
+            "A monitor halt must keep the machine available"
+        );
+
+        // The real IP22 panel power latch: the same write used by guest power-off.
+        stream.write_all(b"mw 0xbfbd9850 0 b\n").unwrap();
+        wait_for(&emulator, Phase::PoweredOff);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !emulator.finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(emulator.finished());
+        assert!(emulator.input().is_none());
+        assert!(emulator.status().monitor.is_none());
+        assert!(dir.path().join("nveeprom.bin").is_file());
+        emulator.request_stop();
+        assert_eq!(emulator.status().phase, Phase::PoweredOff);
+    }
 
     #[test]
     fn advanced_options_map_to_iris_without_creating_log_during_validation() {
@@ -674,6 +749,7 @@ mod tests {
 
     #[test]
     fn o2_and_octane_start_attach_media_and_stop_with_synthetic_firmware() {
+        let _serial = MACHINE_TEST.lock().unwrap();
         // A MIPS branch-to-self checks construction, SCSI attachment, PS/2 and
         // teardown without requiring copyrighted firmware or claiming a PROM boot.
         for (profile, cpu) in [

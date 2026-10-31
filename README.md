@@ -45,7 +45,7 @@ Dev/
 
 Prismatic uses the local Iris library directly, including the fork's power-off
 and diagnostic-routing embedding APIs. Use Iris branch `xiri/netbsd-newport`
-at commit `888c4bd` or newer and update both checkouts. Its root Cargo manifest
+at commit `0382f6b` or newer and update both checkouts. Its root Cargo manifest
 also preserves the fork's patched winit and block dependencies. Install Rust through
 rustup; `rust-toolchain.toml` selects nightly, matching Iris's requirement.
 On a Fedora development system, install the native build dependencies:
@@ -189,6 +189,14 @@ fresh one, so the current guest session is lost. The window stays responsive
 during restart. Display options apply on Save without restarting. Startup or
 restart failures remain visible in the window and terminal; F9 lets you revise
 the saved settings. A new worker is never started after a stop timeout.
+
+When IRIX requests power-off, Prismatic finishes storage cleanup, finalizes any
+GIF recording, clears the guest display and shows **Machine powered off** with
+the RUN light off. The window stays open: press **F9**, then **F9** again to Save
+and start the configured machine. Discard leaves it powered off. A monitor halt
+or breakpoint keeps the last display and reports **Machine halted** instead.
+In 4Dwm's System Shutdown dialog, select **Power Off the System** to request
+power-off; a shutdown that returns to firmware does not power off the machine.
 
 Prismatic passes explicit temporary copies of Iris's bundled Indigo2 PROMs to
 avoid the core's alternate ROM search in the working directory. IMPACT and GBE
@@ -433,6 +441,9 @@ nonuniform guest framebuffer, renders for ten more seconds, optionally captures
 the SDL output, and stops Iris. It fails if startup, display output (120-second
 timeout), or shutdown fails. This checks the display path; it does not identify
 PROM text or prove that a complete OS boot works.
+
+`cargo test --locked` also checks IP22 guest power-off through its panel register,
+separately from a monitor halt, using temporary state and no guest disks.
 
 For a diskless IP28 check, create a separate configuration and use the same
 smoke path (the input script also works with its PROM):

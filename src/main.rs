@@ -608,7 +608,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             overlay.busy = false;
             let needs_restart = !options.smoke_test
                 && (draft.machine_differs_from(&active)
-                    || matches!(status.phase, Phase::Failed(_)));
+                    || matches!(status.phase, Phase::Failed(_) | Phase::PoweredOff));
             if let Err(error) = emulator::machine_config(
                 &state_dir(&draft.machine),
                 &draft.machine,
@@ -683,9 +683,18 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 if status.phase != Phase::Running {
                     release_input(&mut guest, &mouse, canvas.window());
                 }
+                if status.phase == Phase::PoweredOff {
+                    guest.attach(None);
+                    guest_frame_received = false;
+                    leds = activity::Leds::default();
+                    frame = Arc::new(display::Frame::blank(frame.width, frame.height));
+                    texture.update(None, &frame.rgba, frame.width as usize * 4)?;
+                }
                 redraw = true;
             }
-            if let Some(next) = machine.frames.take() {
+            if let Some(next) = machine.frames.take()
+                && status.phase != Phase::PoweredOff
+            {
                 if (next.width, next.height) != (frame.width, frame.height) {
                     texture = creator.create_texture_streaming(
                         PixelFormat::RGBA32,
@@ -706,7 +715,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 redraw = true;
             }
         }
-        if stopping.is_none() {
+        if stopping.is_none() && status.phase != Phase::PoweredOff {
             captures.tick(&frame);
         } else {
             captures.stop();
@@ -893,6 +902,8 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             };
             let placeholder = if options.smoke_test {
                 Some("Display preview - no machine connected")
+            } else if status.phase == Phase::PoweredOff {
+                Some("Machine powered off - F9 then Save to start")
             } else if !guest_frame_received || matches!(status.phase, Phase::Failed(_)) {
                 Some(label)
             } else {

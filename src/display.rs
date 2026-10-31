@@ -9,6 +9,14 @@ pub struct Frame {
 }
 
 impl Frame {
+    pub fn blank(width: u32, height: u32) -> Self {
+        Self {
+            width,
+            height,
+            rgba: [0, 0, 0, 255].repeat(width as usize * height as usize),
+        }
+    }
+
     pub fn preview() -> Self {
         let (width, height) = (640, 480);
         let mut rgba = Vec::with_capacity(width * height * 4);

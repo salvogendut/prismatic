@@ -116,6 +116,14 @@ the normal event loop remains responsive. Flush failures surface as Failed and
 prevent a replacement machine. Restart/quit dialogs remind the user to shut
 down the guest OS first. Iris's process-wide `set_exit_on_guest_poweroff(false)`
 keeps guest power-off from terminating the frontend before its cleanup runs.
+The worker observes `GuestState::PoweredOff` under Iris's machine-slot lock,
+then clears input, detaches and flushes media, and drops the core before publishing
+`Phase::PoweredOff`. Cleanup errors still produce `Failed`. CPU inactivity alone
+remains `Halted`, so monitor stops and breakpoints cannot trigger teardown.
+SDL clears the final framebuffer and LEDs, finishes GIF capture and shows a
+powered-off placeholder while continuing to service menus. Saving options from
+this state starts a new worker even when hardware settings are unchanged;
+Discard has no effect. Restart confirmation is only needed for an active machine.
 
 ## Display handoff
 
