@@ -147,8 +147,7 @@ Menu Save persists General, Media, Advanced and display settings to this file."
             && options.state_dir.is_some()
         {
             return Err(
-                "Machine smoke tests always use temporary machine state; omit --state-dir"
-                    .into(),
+                "Machine smoke tests always use temporary machine state; omit --state-dir".into(),
             );
         }
         if (options.settings_smoke_test || options.media_smoke_test || options.advanced_smoke_test)
