@@ -1,5 +1,7 @@
 # Prismatic
 
+![Prismatic logo](images/Prismatic%20Rainbow%20Emulator%20Logo.png)
+
 Prismatic is the Rust/SDL3 frontend being developed for our [Iris fork](../iris),
 following the desktop conventions of the Happy Years emulators
 ([1984](../1984), [1985](../1985), [1986](../1986), and [1989](../1989)).
