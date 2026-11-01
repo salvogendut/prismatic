@@ -179,7 +179,8 @@ pub fn machine_config(
             .map_err(|_| "Iris requires a UTF-8 state directory".to_string())
     };
     let mut config = MachineConfig {
-        // Embedded PROMs are materialized on the worker before construction.
+        // Empty selects embedded firmware. Indigo2 needs a temporary file on
+        // the worker to bypass its legacy working-directory fallback.
         prom: hardware.prom_path().unwrap_or_default().to_owned(),
         nvram: path("nvram.bin")?,
         nveeprom: path("nveeprom.bin")?,
@@ -785,11 +786,14 @@ mod tests {
     fn missing_external_prom_is_a_recoverable_worker_failure() {
         for profile in [MachineProfile::O2Ip32, MachineProfile::OctaneIp30] {
             let dir = tempfile::tempdir().unwrap();
-            let hardware = MachineSettings {
+            let mut hardware = MachineSettings {
                 profile,
                 cpu: iris::config::CpuModel::R10000,
                 ..Default::default()
             };
+            hardware.set_prom(Some(
+                dir.path().join("missing.bin").to_str().unwrap().into(),
+            ));
             let mut emulator = Emulator::spawn(
                 dir.path(),
                 &hardware,
@@ -805,7 +809,7 @@ mod tests {
             let Phase::Failed(error) = emulator.status().phase else {
                 panic!("Expected a PROM error")
             };
-            assert!(error.contains("General > PROM"));
+            assert!(error.contains("Cannot open PROM"));
             assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
         }
     }
@@ -814,7 +818,7 @@ mod tests {
     fn o2_and_octane_start_attach_media_and_stop_with_synthetic_firmware() {
         let _serial = MACHINE_TEST.lock().unwrap();
         // A MIPS branch-to-self checks construction, SCSI attachment, PS/2 and
-        // teardown without requiring copyrighted firmware or claiming a PROM boot.
+        // teardown with a deterministic guest program instead of waiting for PROM boot.
         for (profile, cpu) in [
             (MachineProfile::O2Ip32, iris::config::CpuModel::R5000),
             (MachineProfile::O2Ip32, iris::config::CpuModel::R10000),

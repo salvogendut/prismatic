@@ -173,7 +173,7 @@ impl MachineSettings {
         )
     }
 
-    pub fn external_prom(&self) -> bool {
+    pub fn supports_prom_override(&self) -> bool {
         matches!(
             self.profile,
             MachineProfile::O2Ip32 | MachineProfile::OctaneIp30
@@ -198,14 +198,7 @@ impl MachineSettings {
 
     pub fn prom_label(&self) -> String {
         self.prom_path().map_or_else(
-            || {
-                if self.external_prom() {
-                    "Choose PROM file..."
-                } else {
-                    "Bundled with Iris"
-                }
-                .into()
-            },
+            || "Bundled with Iris".into(),
             |path| {
                 Path::new(path)
                     .file_name()
@@ -217,13 +210,7 @@ impl MachineSettings {
     }
 
     pub fn validate_prom(&mut self) -> Result<(), String> {
-        if self.external_prom() {
-            let path = self.prom_path().ok_or_else(|| {
-                format!(
-                    "{} needs a PROM image; select General > PROM firmware",
-                    self.profile.label()
-                )
-            })?;
+        if let Some(path) = self.prom_path() {
             let path = inspect_prom(self.profile, Path::new(path))?;
             self.set_prom(Some(path));
         }
@@ -1023,14 +1010,13 @@ mod tests {
             assert_eq!(loaded.prom_path(), path.to_str());
         }
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), saved_files);
-        loaded.profile = MachineProfile::O2Ip32;
-        loaded.set_prom(None);
-        assert!(
-            loaded
-                .validate_prom()
-                .unwrap_err()
-                .contains("General > PROM")
-        );
+        for profile in [MachineProfile::O2Ip32, MachineProfile::OctaneIp30] {
+            loaded.profile = profile;
+            loaded.set_prom(None);
+            loaded.validate_prom().unwrap();
+            assert_eq!(loaded.prom_label(), "Bundled with Iris");
+        }
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), saved_files);
         assert!(inspect_prom(MachineProfile::O2Ip32, &octane).is_err());
         for data in [vec![], vec![0; 512], vec![0; 1024 * 1024 + 1]] {
             fs::write(&octane, data).unwrap();

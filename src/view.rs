@@ -252,7 +252,7 @@ fn draw_overlay(
         Tab::General => vec![
             if session.row == 7 {
                 session.draft.machine.prom_path().map(|p| short_ascii(p, 100)).unwrap_or_else(||
-                    "O2 and Octane need an external PROM; Indy and Indigo2 use bundled firmware.".into())
+                    "All models include bundled firmware. O2 and Octane also accept external PROMs.".into())
             } else { "Machine changes keep compatible CPU/RAM choices; other values are adjusted.".into() },
             "Hardware changes ask to restart when saved. Display options apply on Save.".into(),
         ],
@@ -270,9 +270,9 @@ fn draw_overlay(
             0 => "Sets the initial Newport video mode; the guest may change it later.",
             1 if !session.draft.machine.newport() => "This machine uses Shadow cache. The Newport model preference is retained.",
             1 => "Auto selects the cache model for this build. Full/Shadow are expert overrides.",
-            2 if session.draft.machine.external_prom() => "This machine starts from host time; the saved clock offset applies to Indy/Indigo2.",
+            2 if session.draft.machine.supports_prom_override() => "This machine starts from host time; the saved clock offset applies to Indy/Indigo2.",
             2 => "Shifts the guest clock relative to host time at boot; it then runs normally.",
-            3 if session.draft.machine.external_prom() => "This machine's SCSI controller manages interrupt timing automatically.",
+            3 if session.draft.machine.supports_prom_override() => "This machine's SCSI controller manages interrupt timing automatically.",
             3 => "Deferred is Iris's BSD-compatible default. Immediate changes SCSI timing.",
             4 => "Appends to serial.log in this machine's state directory. Timestamps use host UTC.",
             5 => "Bilinear filtering smooths the display when scaled; applies without restart.",
@@ -390,8 +390,8 @@ fn draw_dialog(canvas: &mut WindowCanvas, dialog: Dialog) -> Result<(), sdl3::Er
         ),
         Dialog::Firmware { choice } => (
             "Choose PROM firmware for this machine",
-            "O2 needs an IP32 PROM; Octane needs an IP30 PROM. Extract ZIPs first.",
-            vec!["Choose file", "Clear", "Cancel"],
+            "Choose an external ROM or use the firmware bundled with Iris. Extract ZIPs first.",
+            vec!["Choose file", "Use bundled", "Cancel"],
             choice,
         ),
         Dialog::Media { choice, .. } => (

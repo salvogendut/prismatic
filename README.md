@@ -45,9 +45,9 @@ Dev/
   prismatic/
 ```
 
-Prismatic uses the local Iris library directly, including the fork's power-off
-and diagnostic-routing embedding APIs. Use Iris branch `xiri/netbsd-newport`
-at commit `0382f6b` or newer and update both checkouts. Its root Cargo manifest
+Prismatic uses the local Iris library directly, including the fork's power-off,
+diagnostic-routing and bundled O2/Octane firmware support. Use Iris branch
+`xiri/netbsd-newport` at commit `e377d79` or newer and update both checkouts. Its root Cargo manifest
 also preserves the fork's patched winit and block dependencies. Install Rust through
 rustup; `rust-toolchain.toml` selects nightly, matching Iris's requirement.
 On a Fedora development system, install the native build dependencies:
@@ -64,8 +64,8 @@ SDL is linked dynamically through the [`sdl3` Rust bindings](https://github.com/
 SDL_ttf and a separate widget toolkit are not required. Linux is the first
 validated platform; Windows and macOS integration builds remain to be checked.
 
-The default Indy needs no guest disk or external PROM. O2 and Octane need an
-external PROM image selected in General (see below). The default is diskless; only images
+All five models have bundled PROM firmware in our Iris fork; O2 and Octane also
+accept external overrides in General (see below). The default is diskless; only images
 selected in Prismatic are attached. It does not read `iris.toml`, `prom.bin`,
 or default SCSI image paths from either checkout. Normal machine state is kept under
 SDL's per-user application directory, normally
@@ -181,8 +181,8 @@ returns to the draft. Escape from the editor offers Save / Discard / Cancel.
 | Indy IP24 | R4400, R5000 | 32, 64, 128, 256 | Newport | Bundled |
 | Indigo2 IP22 | R4400 | 32, 64, 128, 256, 384, 512 | Newport | Bundled |
 | Indigo2 IMPACT IP28 | R10000 | 32, 64, 128, 256, 384, 512, 768, 1024 | Solid IMPACT | Bundled |
-| O2 IP32 | R5000, R10000 | 32, 64, 128, 256, 384, 512, 768, 1024 | CRIME/GBE | External IP32 PROM |
-| Octane IP30 | R10000 (one CPU) | 64, 128, 256, 384, 512, 768, 1024, 1536, 2048 | Solid IMPACT | External IP30 PROM |
+| O2 IP32 | R5000, R10000 | 32, 64, 128, 256, 384, 512, 768, 1024 | CRIME/GBE | Bundled 4.18; optional external IP32 PROM |
+| Octane IP30 | R10000 (one CPU) | 64, 128, 256, 384, 512, 768, 1024, 1536, 2048 | Solid IMPACT | Bundled 4.9; optional external IP30 PROM |
 
 All models offer ANSI, ISO and JIS keyboard layouts. Octane's second CPU,
 additional graphics boards and second SCSI buses are not exposed yet.
@@ -271,16 +271,23 @@ path; F4/F6 retain the guest's native dimensions.
 
 ### O2 and Octane firmware
 
-Select the machine, then **General > PROM firmware > Choose file**. Choose the
-extracted `.bin` image, press F9, and confirm restart. Paths are remembered
+Our Iris fork embeds O2 4.18 and Octane 4.9 as Rust byte arrays, just like its
+Indy and Indigo2 PROMs. Select the machine and leave **PROM firmware** at
+**Bundled with Iris**; no separate download or file selection is needed.
+
+To override the bundled image, use **General > PROM firmware > Choose file**.
+Choose the extracted `.bin` image, press F9, and confirm any requested restart.
+**Use bundled** clears the override in the draft; Save applies it and Discard
+leaves the previous selection intact. Paths are remembered
 separately as `o2_prom` and `octane_prom` under `[machine]` in `prismatic.cfg`.
 Relative paths in a hand-written config resolve beside that config. File selection
 and Save check readability and size on a worker without creating machine state;
-Save rejects a missing or invalid-sized PROM and keeps the draft open. Cancelling
+Save rejects a missing or invalid-sized external PROM and keeps the draft open;
+it does not silently substitute the bundled image. Cancelling
 the picker or discarding the draft leaves the running machine untouched. These
 checks do not authenticate firmware contents or guarantee a successful guest boot.
 
-Iris recommends the 512 KiB O2 4.18 PROM. Octane accepts an IP30 flash image up to
+The bundled O2 4.18 PROM is 512 KiB; Octane 4.9 is 1 MiB. Octane accepts an external IP30 flash image up to
 1 MiB, including the 879,312-byte IRIX `IP30prom.bin`; Prismatic accepts images
 from 512 KiB to 1 MiB. MAME documents these full flash dumps:
 
@@ -291,7 +298,14 @@ from 512 KiB to 1 MiB. MAME documents these full flash dumps:
 
 References: [MAME O2 firmware definitions](https://github.com/mamedev/mame/blob/master/src/mame/sgi/o2.cpp),
 [MAME Octane firmware definition](https://github.com/mamedev/mame/blob/master/src/mame/sgi/octane.cpp).
-Neither external PROM is bundled in Iris or Prismatic.
+The matching arrays live in `src/prombinip32.rs` and `src/prombinip30.rs` in
+[our Iris fork](https://github.com/salvogendut/iris/tree/xiri/netbsd-newport),
+and are compiled into Prismatic. The fork's `tools/embed-prom.py` regenerates
+them from the original binaries without altering their bytes.
+
+Existing machine flash remains authoritative: switching firmware does not erase
+O2's `nvram.bin` or Octane's `flash.bin`. Use a new machine label for a fresh
+firmware boot while retaining the existing machine's state.
 
 ## Advanced settings
 
@@ -527,9 +541,12 @@ IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RE
 ```
 
 IP28 has passed PROM display checks at 32 MB, 128 MB and 1 GiB, with keyboard,
-mouse and hardware inventory checked at 128 MB. O2/Octane have synthetic-ROM
-startup, media attachment and shutdown coverage; real PROM/OS boots in Prismatic
-still need verification with external firmware. These checks do not establish
+mouse and hardware inventory checked at 128 MB. Bundled O2 4.18 reaches the
+diskless boot prompt with both R5000 and R10000 at 128 MB. Bundled Octane 4.9
+reaches the PROM menu at 128 MB: its diskless POST reports internal/external
+SCSI device/cable diagnostic failures, and Enter continues to the menu.
+O2/Octane also have synthetic-ROM startup, external-override, media attachment
+and shutdown coverage. These checks do not establish
 IRIX boot compatibility across all models or RAM configurations.
 
 `--input-smoke-test` also boots with fresh NVRAM. It queues SDL events to capture

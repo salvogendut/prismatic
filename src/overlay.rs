@@ -125,7 +125,7 @@ impl Session {
                 ),
                 (
                     "Guest clock offset",
-                    if self.draft.machine.external_prom() {
+                    if self.draft.machine.supports_prom_override() {
                         "Host time (fixed)".into()
                     } else {
                         self.draft.advanced.clock_label()
@@ -133,7 +133,7 @@ impl Session {
                 ),
                 (
                     "SCSI interrupt timing",
-                    if self.draft.machine.external_prom() {
+                    if self.draft.machine.supports_prom_override() {
                         "Managed by SCSI controller"
                     } else if self.draft.advanced.scsi_deferred_interrupts {
                         "Deferred (default)"
@@ -406,7 +406,7 @@ impl Overlay {
                 (Tab::General, 4) => session.draft.scanlines = !session.draft.scanlines,
                 (Tab::General, 5) => session.draft.show_status = !session.draft.show_status,
                 (Tab::General, 6) => session.draft.tinker = !session.draft.tinker,
-                (Tab::General, 7) if session.draft.machine.external_prom() => {
+                (Tab::General, 7) if session.draft.machine.supports_prom_override() => {
                     self.dialog = Some(Dialog::Firmware { choice: 2 });
                 }
                 (Tab::Advanced, 0) if session.draft.machine.newport() => {
@@ -415,10 +415,10 @@ impl Overlay {
                 (Tab::Advanced, 1) if session.draft.machine.newport() => {
                     session.draft.advanced.cycle_cache()
                 }
-                (Tab::Advanced, 2) if !session.draft.machine.external_prom() => {
+                (Tab::Advanced, 2) if !session.draft.machine.supports_prom_override() => {
                     session.draft.advanced.cycle_clock_offset()
                 }
-                (Tab::Advanced, 3) if !session.draft.machine.external_prom() => {
+                (Tab::Advanced, 3) if !session.draft.machine.supports_prom_override() => {
                     session.draft.advanced.scsi_deferred_interrupts =
                         !session.draft.advanced.scsi_deferred_interrupts
                 }
@@ -523,6 +523,31 @@ mod tests {
         overlay.confirm_restart();
         overlay.key(Key::Enter, &live); // Cancel is the default.
         assert!(overlay.session.as_ref().unwrap().dirty());
+        for key in [Key::Escape, Key::Left, Key::Enter, Key::Options] {
+            overlay.key(key, &live);
+        }
+        assert_eq!(overlay.session.as_ref().unwrap().draft, live);
+    }
+
+    #[test]
+    fn bundled_firmware_selection_stays_in_the_draft_until_saved() {
+        let mut live = Settings::default();
+        live.machine.profile = iris::config::MachineProfile::OctaneIp30;
+        live.machine.cpu = iris::config::CpuModel::R10000;
+        live.machine.set_prom(Some("/missing/override.bin".into()));
+        let mut overlay = Overlay::default();
+        overlay.key(Key::Options, &live);
+        for _ in 0..7 {
+            overlay.key(Key::Down, &live);
+        }
+        overlay.key(Key::Enter, &live);
+        overlay.key(Key::Left, &live); // Cancel -> Use bundled.
+        overlay.key(Key::Enter, &live);
+        let draft = &mut overlay.session.as_mut().unwrap().draft;
+        assert_eq!(draft.machine.prom_path(), None);
+        draft.machine.validate_prom().unwrap();
+        assert!(draft.machine_differs_from(&live));
+        assert_eq!(live.machine.prom_path(), Some("/missing/override.bin"));
         for key in [Key::Escape, Key::Left, Key::Enter, Key::Options] {
             overlay.key(key, &live);
         }

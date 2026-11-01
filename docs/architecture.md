@@ -57,11 +57,14 @@ CPU/device emulation. The 1 GiB preset remains 512+512.
 
 Indy uses its embedded PROM. For IP22/IP28 the worker writes Iris's bundled
 `prombini2`/`prombinip28` bytes to a temporary file kept through teardown.
-O2 and Octane require external PROMs, remembered independently in
-`machine.o2_prom`/`machine.octane_prom`. The native picker and asynchronous Save
+O2 and Octane use the fork's embedded 4.18/4.9 PROMs by default. Prismatic passes
+an empty `prom` path to select those bytes directly, bypassing Iris's standalone
+working-directory search. Optional external overrides are remembered independently
+in `machine.o2_prom`/`machine.octane_prom`; Use bundled clears the draft override.
+The native picker and asynchronous Save
 validation check a readable regular file and size (O2: 512 KiB; Octane: 512 KiB
 through 1 MiB), without writing flash/NVRAM. Content compatibility is the caller's
-responsibility. The worker rechecks before construction; missing firmware is a
+responsibility. The worker rechecks before construction; a missing external override is a
 recoverable `Phase::Failed`, so F9 remains available. Relative firmware paths
 resolve against the configuration's directory, as media paths do.
 
@@ -383,8 +386,11 @@ output after ten additional seconds and requests normal stop. It has a
 IP28 was also checked with its bundled PROM and Solid IMPACT at 32 MB, 128 MB
 and 1 GiB. Its 128 MB input smoke screenshot shows the R10000/195 MHz CPU,
 128 MB memory and IMPACT graphics in `hinv`. O2/Octane have synthetic looping-ROM
-startup/media/PS2/shutdown tests and prebuilt-frame tests; real firmware boots
-have not yet been verified in Prismatic.
+startup/media/PS2/shutdown tests and prebuilt-frame tests. The bundled O2 4.18
+PROM reaches its diskless boot prompt with R5000 and R10000 at 128 MB. Octane
+4.9 reaches the firmware menu at 128 MB after acknowledging its internal and
+external SCSI device/cable diagnostic failures. These real-firmware checks use
+fresh temporary state and no guest disks; they do not verify IRIX boot.
 Visual inspection of a screenshot establishes what PROM actually displayed;
 a nonuniform-frame check alone does not identify a PROM menu or an OS boot.
 
