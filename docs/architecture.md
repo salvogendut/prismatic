@@ -295,6 +295,10 @@ installation/recovery CDs; target 0 belongs to the host controller. All Indy
 devices share one bus, including internal and external devices. These placement
 conventions guide the frontend without reserving other targets or implying
 support for historical tape/floptical devices.
+Media row labels show the Indy-style role for primary-bus IDs 1–7; additional
+buses and wider-bus targets show General use. Selection hints explain boot,
+installation, historical device roles and the reserved controller ID 0. These
+annotations do not change row indices, media types, validation or configuration.
 Native SDL file-dialog callbacks hand results to a bounded channel; file probes
 run on a separate worker. Escape abandons the result without changing the draft.
 Save revalidates all images off the SDL thread, canonicalizes paths, rejects

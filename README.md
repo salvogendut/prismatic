@@ -648,11 +648,14 @@ model. The same writable disk cannot occupy two targets, even across buses.
 | Hard disk | Raw images with 512-byte sectors; hard-disk CHDs with 512-byte sectors |
 | CD-ROM | Cooked raw data images containing ISO9660 or EFS; single-track Mode 1 CD CHDs |
 
-Use the usual Indy SCSI assignments when setting up media:
+The Media menu labels primary-bus targets with these Indy-style suggested roles
+and explains the selected role in the hint area. Additional buses and wider-bus
+IDs use **General use**. These labels guide placement across machine profiles;
+your guest OS may use different assignments.
 
 | ID | Conventional assignment |
 | --- | --- |
-| 0 | Onboard controller; reserved and absent from the Media menu |
+| 0 | Onboard controller; reserved, explained in the hints and not selectable |
 | 1 | Primary system disk; the usual boot target is `dksc(0,1,0)` |
 | 2 | Second hard disk |
 | 3 | Optional floptical drive |
