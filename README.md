@@ -49,7 +49,7 @@ Dev/
 
 Prismatic uses the local Iris library directly, including the fork's power-off,
 diagnostic routing, bundled O2/Octane firmware and frontend audio support. Use
-Iris branch `xiri` at commit `13cf247` or newer and update both checkouts.
+Iris branch `xiri` at commit `087d250` or newer and update both checkouts.
 Always use this branch for Prismatic: it carries the compatibility work for
 NetBSD and other guest operating systems alongside IRIX. Its root Cargo
 manifest also preserves the fork's patched winit and
@@ -139,7 +139,8 @@ mouse protocol.
 
 Enable **General > Tinker** to expose Advanced, Network and Extensions.
 Advanced includes Iris core options, filtering, debug output and GIF capture
-settings; Extensions selects graphics hardware, CPU count and storage services.
+settings; Extensions selects graphics hardware, CPU count, storage services,
+optional devices and experimental checkpoints.
 Hiding these tabs retains their saved settings. Options
 are edited in a private draft and applied only after a successful save. Cancelling or discarding leaves the live display
 unchanged. Confirmation dialogs initially select Cancel.
@@ -436,8 +437,9 @@ An unopenable log is reported as a startup error.
 
 ## Extensions
 
-Enable **General > Tinker** and open **Extensions** with Left/Right. Enter cycles
-**Graphics board**, **Display heads** and **CPU count** through the options
+Enable **General > Tinker** and open **Extensions** with Left/Right. The last row,
+**Extensions page**, cycles **Hardware**, **Devices** and **Checkpoints**. On the
+Hardware page, Enter cycles **Graphics board**, **Display heads** and **CPU count** through the options
 supported for the selected model. These settings belong to the selected machine
 label. Save validates and persists the draft, and asks to restart a running
 machine. Discard has no runtime effect; turning Tinker off keeps the hardware
@@ -474,9 +476,78 @@ graphics = "maximpact"
 heads = 1
 ```
 
+### Optional devices
+
+The **Devices** page exposes Iris's VINO, DaynaPort and Ultra64 backends on the
+Indy/Indigo2 family. O2 and Octane do not support these backends. All controls are
+per-label drafts, saved under `[advanced.extensions]` (or
+`[machines."Label".advanced.extensions]`), and require a restart. Disable optional
+devices before selecting an unsupported model. No extra Cargo features are needed.
+
+- **VINO source**: Off, Test pattern, Black or Host camera. Choose NTSC
+  (640×486) or PAL (768×576), and a zero-based host camera index. Camera access
+  begins when you boot with Ctrl+P. Iris retries unavailable cameras and supplies
+  black frames until capture works. Pausing stops guest DMA; closing/resetting
+  the machine releases the camera. **Device status** reports the active source;
+  the Iris monitor's `vino status` gives detailed DMA/capture diagnostics.
+- **DaynaPort target**: Off or an unused SCSI target on either supported bus.
+  Media shows that slot as Ethernet. Set a MAC (blank uses Iris's default) and a
+  separate, non-overlapping NAT subnet; the default is `192.168.10.0/24`. It
+  inherits NFS/PCAP settings at boot. Network changes therefore require restart
+  while DaynaPort is enabled. Port forwarding still targets onboard Ethernet.
+  The guest needs a DaynaPort-compatible driver; `scsi dayna` in the monitor
+  reports its network activity.
+- **Ultra64 development board**: enables Iris's N64 RAMROM/IPC bridge. This needs
+  a compatible external gopher64 emulator; Prismatic does not launch it. A host
+  lock permits only one active Ultra64 bridge across compatible Iris/Prismatic
+  instances. Startup reports failure if the bridge is unavailable.
+
+For example:
+
+```toml
+[advanced.extensions]
+vino = "test_pattern"
+pal = false
+camera_index = 0
+daynaport = 5                 # SCSI 0:5; 21 would mean SCSI 1:5
+dayna_mac = ""               # target-based default
+dayna_subnet = "192.168.10.0/24"
+ultra64 = false
+```
+
+### Experimental checkpoints
+
+The **Checkpoints** page provides **Checkpoint name**, **Save**, **Restore** and
+**List**. Boot the saved machine first, and save or discard option drafts before
+an action. Names use 1–48 ASCII letters, digits, hyphens or underscores. Save
+requires a new name, confirms before stopping the guest, and preserves its
+running/paused state. Restore confirms replacement of RAM and disk overlays,
+then leaves the machine **PAUSED**; press Ctrl+P to resume.
+
+The supported boundary is **Indy/IP22, one Newport head, raw COW hard disks or
+no disks**. Detach CDs and scratch, disable VINO/DaynaPort/Ultra64, GDB and tracing.
+CHD overlays, second-head framebuffers, GR2/IMPACT, O2 and Octane do not yet have
+complete checkpoint coverage through this integration. Existing CHDs remain
+fully supported for ordinary emulation.
+
+Each label keeps bundles in `checkpoints/<name>/` under its machine state
+directory. A bundle contains native Iris state, private RAM/framebuffer chunks,
+disk overlays and `prismatic.toml` provenance. Restore requires the **same
+Prismatic executable, saved machine configuration and base disk contents**.
+BLAKE3 hashes detect modified or missing state files and same-size base-disk
+changes before native restore begins. Rebuilding Prismatic invalidates old
+checkpoints. Full disk hashing can take time; the window remains responsive.
+
+These are experimental local checkpoints, not portable VM images. Iris does not
+restore host network connections, transient audio state or external NFS files;
+applications may need to reconnect or restart audio. If native restore fails
+after validation, Prismatic stops the machine rather than running partially
+restored state. Keep normal guest backups and use checkpoints created locally
+through this menu; arbitrary Iris monitor snapshots are not accepted here.
+
 ### CD changer and disk actions
 
-In Extensions, cycle **Storage action target** to a configured disk or CD-ROM
+On the Extensions **Hardware** page, cycle **Storage action target** to a configured disk or CD-ROM
 on either SCSI bus. **Add CD to changer** appends an image to that drive's saved
 list; **Clear queued CDs** removes the additional discs. The boot image from
 Media remains first. These are draft settings: Save applies them with the usual

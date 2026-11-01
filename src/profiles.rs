@@ -169,6 +169,11 @@ impl Settings {
             machine.machine.validate()?;
             machine.media.validate_for(machine.machine.profile)?;
             machine.advanced.validate()?;
+            machine.advanced.extensions.validate(
+                &machine.machine,
+                &machine.media,
+                &machine.network,
+            )?;
             machine.network.validate(machine.machine.profile)?;
         }
         if let Some(label) = &self.machine_label

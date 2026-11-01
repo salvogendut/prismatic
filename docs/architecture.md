@@ -293,9 +293,9 @@ overlay. This avoids MAME's requirement for a nonzero parent SHA-1 without
 modifying or extracting the base. Only an empty, structurally valid legacy
 diff can be bypassed, and it is left intact. The sparse adapter refuses commit
 so raw sector writes can never reach a CHD container. CDs use a read-only raw node
-or `ChdCdNode`. No filesystem decoding lives in the frontend. Snapshot loading
-is not exposed; the constructor's empty disk-reference provenance must be
-addressed before adding snapshot support.
+or `ChdCdNode`. No filesystem decoding lives in the frontend. The checkpoint adapter supplies explicit disk-reference provenance after this
+fallible attachment path; the empty constructor configuration is never used as
+evidence of disk identity.
 
 `MediaNode` delegates the disk block interface while recording actual reads/writes
 and flushing on drop. CD and scratch targets use `ActivityTarget`, which observes
@@ -644,13 +644,68 @@ pages, draft discard, paused Save, restart cancellation, runtime reports, a full
 VNC framebuffer, reset teardown and monitor trace stop. These establish host integration; remote clients on Windows/macOS and
 OS-specific effects of nondefault clock/affinity/JIT settings need separate testing.
 
+## Optional devices and checkpoints
+
+Extensions has Hardware, Devices and Checkpoints pages. Hardware retains its
+existing rows. Device settings live in `AdvancedSettings.extensions`, so named
+machine stanzas, transactional saves and restart comparison include them.
+Validation runs without opening cameras, NAT engines or shared memory. It rejects
+unsupported profiles, occupied DaynaPort SCSI slots, invalid MACs and overlapping
+DaynaPort/onboard subnets. DaynaPort attaches fallibly after normal media, through
+HPC3's native backend; it inherits network services at boot, so any Network edit
+requires restart while it is configured. Media identifies its reserved target.
+
+The `xiri` core starts/stops VINO DMA with machine peripherals. Drop clears the
+VINO source and physical-memory back references, releasing the camera and breaking
+its ownership cycle. Linux capture uses a bounded V4L2 dequeue timeout and
+interruptible hotplug backoff. A paused machine retains its host capture source;
+pre-boot PAUSED has no machine or camera. Ultra64 holds a host-wide file lease
+before touching its fixed-name shared-memory region; the frontend checks actual
+board creation and reports initialization failure. A weak bus adapter prevents
+retained physical-memory graphs from keeping an old bridge alive; event objects
+are destroyed before their shared-memory mapping, and the lease is released last. No external N64 emulator is
+launched. These devices use unconditional native backends, not retired features.
+
+`checkpoints.rs` owns a deliberately narrow capability gate: Indy/IP22, single
+Newport head, raw COW disks or diskless, no CD/scratch/optional device, GDB or
+active trace. It sends actions through the existing bounded machine-worker queue
+and reports results through a bounded reply. UI rendering/input never performs
+snapshot I/O. Actions require saved options, and Save/Restore require a default-
+Cancel confirmation. Restore leaves CPU and peripherals stopped; the core's
+paused load no longer briefly restarts peripherals after reading state.
+
+Each bundle has a private native snapshot root containing `state/` and `.cas/`.
+Save writes a temporary sibling directory and publishes it by rename only after
+all state and provenance are present, without overwriting an existing checkpoint.
+The manifest records serialized hardware/media/Advanced/Network configuration,
+the executable's BLAKE3 hash, full base-disk hashes and an inventory of all state
+files. Symlinks and nonregular files are rejected. Restore verifies those before
+calling destructive native load, independently of Iris's diagnostic provenance
+bypass. The adapter supplies externally attached `DiskRef`s and restores the
+monitor's separate snapshot root after each operation. A failed native load ends
+the worker; a failed preflight leaves the guest intact. Save resumes a previously
+running guest even if saving fails. Live Network edits are included in checkpoint
+provenance. Checkpoints neither roll back external NFS files nor reconstruct host
+network connections or HAL2 transient audio state.
+
+The tests exercise optional-device validation and label persistence, default-
+Cancel action dialogs, VINO ownership release, DaynaPort attachment, native CPU
+and raw COW overlay restoration, paused state, overwrite refusal and rejection of
+modified bundles/base images. Host camera hardware, an external gopher64 peer,
+and guest-specific DaynaPort drivers still require end-to-end testing, as do
+Windows/macOS host backends.
+
+Validation includes 136 default and 137 optional-feature frontend tests, strict
+Clippy, dummy UI/PROM/Media/Advanced smokes and an isolated Xvfb desktop exercising
+all Extensions pages, device status, draft discard, paused restart, checkpoint
+confirmation/save/restore and explicit resume. Four focused Iris regressions cover
+VINO shutdown and status locking, cancellable Linux camera retry, Ultra64 lease
+exclusion, and repeated private-bridge start/stop/drop/reopen. The private IPC test
+does not touch an active user bridge.
+
 ## Next milestones
 
-1. Add device-selection controls and feature boundaries for Iris's existing host backends.
-   Validate Linux, Windows and macOS builds and device behavior.
-2. Add the remaining optional devices (VINO/camera, DaynaPort, Ultra64).
-   Hardware, storage/network services and Advanced performance/debug/remote tools are wired.
-   Classify settings as live, next boot or restart-required. Validate before
-   applying and confirm disruptive changes. Address snapshot disk provenance
-   before exposing snapshot load/save.
-3. Extend audio validation to sustained IRIX playback and host-device changes on each platform.
+1. Validate Windows/macOS builds, host camera hardware and sustained guest audio.
+2. Exercise DaynaPort guest drivers and the external Ultra64/gopher64 bridge.
+3. Extend native snapshot coverage before enabling more profiles/devices: CHD
+   overlays, second-head framebuffers, GR2/IMPACT and transient audio state.

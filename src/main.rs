@@ -1,10 +1,12 @@
 mod activity;
 mod audio;
 mod capture;
+mod checkpoints;
 mod diagnostics;
 mod display;
 mod emulator;
 mod expert;
+mod extensions;
 mod input;
 mod instance;
 mod media;
@@ -87,7 +89,9 @@ Media: raw/CHD hard disks and ISO9660/EFS/CHD CD-ROMs.
 Starts PAUSED; Ctrl+P boots the selected machine. Default media is disconnected.
 Guest audio uses SDL3; General provides saved mute and volume controls.
 Tinker reveals Network: NAT subnet, NFS, TFTP, local port forwards and optional PCAP bridging.
-Tinker reveals Extensions: graphics boards, Newport display heads and Octane CPU count.
+Tinker reveals Extensions: Hardware, Devices and experimental Checkpoints pages.
+VINO/camera, DaynaPort and Ultra64 are available on the Indy/Indigo2 family.
+Checkpoints support single-head Newport Indy/IP22 with raw COW disks or no disks.
 Media selects both SCSI buses where supported and IDs 1-15 on Octane.
 --keyboard overrides the saved keyboard type for this session.
 --smoke-test renders the UI without starting Iris.
@@ -339,7 +343,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         }
         if let Some(result) = storage_job.as_ref().and_then(storage::Job::poll) {
             storage_job = None;
-            let message = result.unwrap_or_else(|error| format!("Storage failed: {error}"));
+            let message = result.unwrap_or_else(|error| format!("Operation failed: {error}"));
             eprintln!("Prismatic: {message}");
             overlay.show_report(message);
             redraw = true;
@@ -695,6 +699,25 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                                 .ok_or_else(|| "No machine is loaded".to_owned())
                                 .and_then(|machine| machine.storage_action(action))
                         };
+                        match job {
+                            Ok(job) => {
+                                storage_job = Some(job);
+                                overlay.busy = true;
+                                overlay.action_busy = true;
+                            }
+                            Err(error) => overlay.show_report(error),
+                        }
+                    }
+                    Effect::Checkpoint(operation, name) => {
+                        let job = emulator
+                            .as_ref()
+                            .ok_or_else(|| {
+                                "Boot the saved machine with Ctrl+P before checkpoint actions"
+                                    .to_owned()
+                            })
+                            .and_then(|machine| {
+                                machine.checkpoint_action(operation, name, active.network.clone())
+                            });
                         match job {
                             Ok(job) => {
                                 storage_job = Some(job);

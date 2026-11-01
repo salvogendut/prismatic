@@ -143,7 +143,7 @@ impl Job {
         match self.0.try_recv() {
             Ok(result) => Some(result),
             Err(mpsc::TryRecvError::Empty) => None,
-            Err(_) => Some(Err("Storage operation stopped unexpectedly".into())),
+            Err(_) => Some(Err("Operation stopped unexpectedly".into())),
         }
     }
     pub fn offline(action: Action, settings: MediaSettings) -> Result<Self, String> {

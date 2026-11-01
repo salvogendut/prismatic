@@ -2732,6 +2732,7 @@ dependencies = [
 name = "prismatic"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "gif",
  "iris",
  "jiff",

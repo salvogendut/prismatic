@@ -452,6 +452,7 @@ pub struct AdvancedSettings {
     pub scsi_deferred_interrupts: bool,
     pub serial_logging: SerialLogging,
     pub expert: crate::expert::ExpertSettings,
+    pub extensions: crate::extensions::ExtensionsSettings,
 }
 
 impl Default for AdvancedSettings {
@@ -463,6 +464,7 @@ impl Default for AdvancedSettings {
             scsi_deferred_interrupts: true,
             serial_logging: SerialLogging::Off,
             expert: crate::expert::ExpertSettings::default(),
+            extensions: Default::default(),
         }
     }
 }
@@ -671,6 +673,9 @@ impl Settings {
             || self.media != active.media
             || self.advanced != active.advanced
             || self.network.requires_restart(&active.network)
+            || ((self.advanced.extensions.daynaport.is_some()
+                || active.advanced.extensions.daynaport.is_some())
+                && self.network != active.network)
     }
     /// Create a complete configuration on first launch, or migrate the previous
     /// default filename. An existing (even invalid) destination is never replaced.
@@ -708,6 +713,11 @@ impl Settings {
                 settings.machine.validate()?;
                 settings.media.validate_for(settings.machine.profile)?;
                 settings.advanced.validate()?;
+                settings.advanced.extensions.validate(
+                    &settings.machine,
+                    &settings.media,
+                    &settings.network,
+                )?;
                 settings.gif.validate()?;
                 settings.audio.validate()?;
                 settings.network.validate(settings.machine.profile)?;
@@ -733,6 +743,9 @@ impl Settings {
         self.machine.validate()?;
         self.media.validate_for(self.machine.profile)?;
         self.advanced.validate()?;
+        self.advanced
+            .extensions
+            .validate(&self.machine, &self.media, &self.network)?;
         self.gif.validate()?;
         self.audio.validate()?;
         self.network.validate(self.machine.profile)?;
@@ -772,6 +785,33 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_device_stanzas_roundtrip_per_label_and_force_network_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prismatic.cfg");
+        let mut settings = Settings::default();
+        settings.advanced.extensions.vino = crate::extensions::Source::Black;
+        settings.advanced.extensions.daynaport = Some(5);
+        settings.advanced.extensions.camera_index = 3;
+        settings.save_as_machine("Indy-video").unwrap();
+        settings.advanced.extensions = Default::default();
+        settings.machine.profile = MachineProfile::Indigo2Ip22;
+        settings.save_as_machine("Indigo2").unwrap();
+        settings.save(&path).unwrap();
+        let mut loaded = Settings::load(&path).unwrap();
+        loaded.select_machine("Indy-video").unwrap();
+        assert_eq!(loaded.advanced.extensions.camera_index, 3);
+        assert_eq!(loaded.advanced.extensions.daynaport, Some(5));
+        let mut draft = loaded.clone();
+        draft.network.nat_subnet = "10.1.0.0/24".into();
+        assert!(draft.machine_differs_from(&loaded));
+        assert!(
+            std::fs::read_to_string(path)
+                .unwrap()
+                .contains("advanced.extensions")
+        );
+    }
 
     #[test]
     fn extensions_migrate_persist_per_label_and_reject_invalid_saves() {

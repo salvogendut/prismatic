@@ -271,6 +271,8 @@ pub fn machine_config(
     }
     config.graphics.heads = hardware.heads;
     network.apply(&mut config)?;
+    advanced.extensions.validate(hardware, media, network)?;
+    advanced.extensions.apply(&mut config);
     advanced.expert.apply(&mut config)?;
     config.validate()?;
     Ok(config)
@@ -349,6 +351,12 @@ pub struct Emulator {
 }
 
 enum Command {
+    Checkpoint(
+        crate::checkpoints::Operation,
+        String,
+        Box<crate::network::NetworkSettings>,
+        mpsc::SyncSender<Result<String, String>>,
+    ),
     Stop,
     Pause,
     Resume,
@@ -367,8 +375,11 @@ impl Emulator {
         network: &crate::network::NetworkSettings,
     ) -> Result<Self, String> {
         let mut config = machine_config(state_dir, hardware, media, advanced, network)?;
+        let mut checkpoint_context =
+            crate::checkpoints::Context::new(hardware, media, advanced, network);
         let mut network = network.clone();
         let expert = advanced.expert.clone();
+        let extensions = advanced.extensions.clone();
         let audio = Arc::new(crate::audio::Inbox::default());
         config.audio.output = Some(audio.clone());
         // Attach explicitly before CPU start: Iris's CLI constructor exits the
@@ -443,6 +454,7 @@ impl Emulator {
                         &state_dir,
                         &worker_activity,
                     )?;
+                    extensions.attach(owned.machine.as_mut())?;
                     *worker_network.lock().unwrap() = owned.machine.nat_control();
                     if let Some(path) = &expert.boot_elf {
                         owned.machine.load_elf(path)?;
@@ -512,12 +524,27 @@ impl Emulator {
                             *worker_status.lock().unwrap() = Status {
                                 phase,
                                 monitor: owned.machine.monitor_addr(),
-                                runtime: services.report(&expert, owned.machine.monitor_addr()),
+                                runtime: format!("{}\nVINO: {} / {} / camera {}\nDaynaPort: {} / {}\nUltra64: {}",
+                                    services.report(&expert, owned.machine.monitor_addr()), owned.machine.as_any_mut().downcast_mut::<iris::machine::Machine>().map_or_else(|| "Unavailable".into(), |m| m.vino_source_status()), if extensions.pal { "PAL" } else { "NTSC" }, extensions.camera_index,
+                                    extensions.daynaport.map_or_else(|| "Off".into(), |s| format!("SCSI {}:{}", s / 16, s % 16)), extensions.dayna_subnet,
+                                    if extensions.ultra64 { "Enabled (external bridge)" } else { "Off" }),
                                 pcap: owned.machine.net_pcap_status(),
                             };
                         }
                         match receiver.recv_timeout(Duration::from_millis(100)) {
                             Err(mpsc::RecvTimeoutError::Timeout) => {}
+                            Ok(Command::Checkpoint(operation, name, network, reply)) => {
+                                let _guard = owned.slot.lock();
+                                checkpoint_context.set_network(*network);
+                                let (result, fatal) = if owned.machine.status().state == GuestState::PoweredOff {
+                                    (Err("Machine powered off before the operation".into()), false)
+                                } else {
+                                    crate::checkpoints::execute(owned.machine.as_mut(), &checkpoint_context, &state_dir, &name, operation, &mut paused)
+                                };
+                                let failure = result.as_ref().err().cloned();
+                                let _ = reply.try_send(result);
+                                if fatal { break Phase::Failed(format!("Restore failed; machine stopped: {}", failure.unwrap_or_default())); }
+                            }
                             Ok(Command::Storage(action, result)) => {
                                 let _guard = owned.slot.lock();
                                 let outcome =
@@ -591,6 +618,19 @@ impl Emulator {
             has_media,
             network_control,
         })
+    }
+
+    pub fn checkpoint_action(
+        &self,
+        operation: crate::checkpoints::Operation,
+        name: String,
+        network: crate::network::NetworkSettings,
+    ) -> Result<crate::storage::Job, String> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.commands
+            .try_send(Command::Checkpoint(operation, name, Box::new(network), tx))
+            .map_err(|_| "Machine is busy; try again")?;
+        Ok(crate::storage::Job::live(rx))
     }
 
     pub fn storage_action(
@@ -670,6 +710,251 @@ mod tests {
 
     // Iris has process-wide display/CPU hooks; started machines must not overlap.
     static MACHINE_TEST: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn native_checkpoint_restores_cpu_and_cow_disk_and_stays_paused() {
+        use crate::checkpoints::{Context, Operation, execute};
+        use iris::scsi::{ScsiDataLength, ScsiRequest, scsi_cmd};
+        let _serial = MACHINE_TEST.lock().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let disk = directory.path().join("disk.raw");
+        std::fs::write(&disk, vec![0; 4096]).unwrap();
+        let hardware = MachineSettings {
+            ram_mb: 32,
+            ..Default::default()
+        };
+        let mut media = MediaSettings::default();
+        media.devices.insert(
+            1,
+            media::Medium {
+                kind: media::MediaKind::Disk,
+                path: disk.to_str().unwrap().into(),
+            },
+        );
+        let advanced = AdvancedSettings::default();
+        let network = Default::default();
+        let context = Context::new(&hardware, &media, &advanced, &network);
+        let mut config =
+            machine_config(directory.path(), &hardware, &media, &advanced, &network).unwrap();
+        config.scsi.clear();
+        let native = thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || iris::workstation::build(config).unwrap())
+            .unwrap()
+            .join()
+            .unwrap();
+        let mut owned = OwnedMachine::new(native);
+        media::attach(
+            owned.machine.as_mut(),
+            &media,
+            &Activity::default(),
+            &mut owned.media_errors,
+        )
+        .unwrap();
+        let native = owned
+            .machine
+            .as_any_mut()
+            .downcast_mut::<iris::machine::Machine>()
+            .unwrap();
+        native.cpu_step_n_inline(1).unwrap();
+        let saved_pc = native.cpu_state_digest().unwrap().pc;
+        let write = |machine: &mut dyn Workstation, value| {
+            media::with_bus(machine, 0, |bus| {
+                bus.request(
+                    1,
+                    &ScsiRequest {
+                        cdb: vec![scsi_cmd::WRITE_10, 0, 0, 0, 0, 3, 0, 0, 1, 0],
+                        data_len: ScsiDataLength::Unlimited,
+                        data_in: Some(vec![value; 512]),
+                    },
+                )
+                .unwrap()
+                .unwrap();
+            })
+            .unwrap();
+        };
+        write(owned.machine.as_mut(), 0xA5);
+        let mut paused = true;
+        let (result, fatal) = execute(
+            owned.machine.as_mut(),
+            &context,
+            directory.path(),
+            "roundtrip",
+            Operation::Save,
+            &mut paused,
+        );
+        result.unwrap();
+        assert!(!fatal);
+        assert!(paused);
+        assert!(!owned.machine.cpu_is_running());
+        let (result, _) = execute(
+            owned.machine.as_mut(),
+            &context,
+            directory.path(),
+            "roundtrip",
+            Operation::Save,
+            &mut paused,
+        );
+        assert!(result.unwrap_err().contains("already exists"));
+        write(owned.machine.as_mut(), 0x5A);
+        let native = owned
+            .machine
+            .as_any_mut()
+            .downcast_mut::<iris::machine::Machine>()
+            .unwrap();
+        native.cpu_step_n_inline(2).unwrap();
+        assert_ne!(native.cpu_state_digest().unwrap().pc, saved_pc);
+        let (result, fatal) = execute(
+            owned.machine.as_mut(),
+            &context,
+            directory.path(),
+            "roundtrip",
+            Operation::Restore,
+            &mut paused,
+        );
+        result.unwrap();
+        assert!(!fatal);
+        assert!(paused);
+        assert!(!owned.machine.cpu_is_running());
+        assert_eq!(
+            owned
+                .machine
+                .as_any_mut()
+                .downcast_mut::<iris::machine::Machine>()
+                .unwrap()
+                .cpu_state_digest()
+                .unwrap()
+                .pc,
+            saved_pc
+        );
+        media::with_bus(owned.machine.as_mut(), 0, |bus| {
+            let response = bus
+                .request(
+                    1,
+                    &ScsiRequest {
+                        cdb: vec![scsi_cmd::READ_10, 0, 0, 0, 0, 3, 0, 0, 1, 0],
+                        data_len: ScsiDataLength::Unlimited,
+                        data_in: None,
+                    },
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(response.data, vec![0xA5; 512]);
+        })
+        .unwrap();
+        // A damaged bundle is rejected before touching the current CPU or disk.
+        std::fs::write(
+            directory.path().join("checkpoints/roundtrip/state/cpu.bin"),
+            b"bad",
+        )
+        .unwrap();
+        let (result, fatal) = execute(
+            owned.machine.as_mut(),
+            &context,
+            directory.path(),
+            "roundtrip",
+            Operation::Restore,
+            &mut paused,
+        );
+        assert!(result.is_err());
+        assert!(!fatal);
+        assert_eq!(
+            owned
+                .machine
+                .as_any_mut()
+                .downcast_mut::<iris::machine::Machine>()
+                .unwrap()
+                .cpu_state_digest()
+                .unwrap()
+                .pc,
+            saved_pc
+        );
+        // A failed save must restart a guest that was running before the action.
+        let invalid_state = directory.path().join("not-a-directory");
+        std::fs::write(&invalid_state, b"file").unwrap();
+        owned.machine.cpu_start();
+        paused = false;
+        let (result, fatal) = execute(
+            owned.machine.as_mut(),
+            &context,
+            &invalid_state,
+            "failed-save",
+            Operation::Save,
+            &mut paused,
+        );
+        assert!(result.is_err());
+        assert!(!fatal);
+        assert!(!paused);
+        assert!(owned.machine.cpu_is_running());
+        owned.machine.stop();
+        // Exercise native deserialization failure after a successful preflight.
+        let manifest_path = directory
+            .path()
+            .join("checkpoints/roundtrip/prismatic.toml");
+        let mut manifest: toml::Value =
+            toml::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        manifest["files"]["state/cpu.bin"] =
+            toml::Value::String(blake3::hash(b"bad").to_hex().to_string());
+        std::fs::write(&manifest_path, toml::to_string(&manifest).unwrap()).unwrap();
+        let (result, fatal) = execute(
+            owned.machine.as_mut(),
+            &context,
+            directory.path(),
+            "roundtrip",
+            Operation::Restore,
+            &mut paused,
+        );
+        assert!(result.is_err());
+        assert!(fatal);
+        assert!(paused);
+        assert!(!owned.machine.cpu_is_running());
+        owned.stop().unwrap();
+        assert_eq!(std::fs::read(&disk).unwrap(), vec![0; 4096]);
+    }
+
+    #[test]
+    fn optional_devices_attach_and_vino_releases_on_machine_drop() {
+        let _serial = MACHINE_TEST.lock().unwrap();
+        for _ in 0..2 {
+            let dir = tempfile::tempdir().unwrap();
+            let mut advanced = AdvancedSettings::default();
+            advanced.extensions.vino = crate::extensions::Source::TestPattern;
+            advanced.extensions.daynaport = Some(5);
+            let config = machine_config(
+                dir.path(),
+                &Default::default(),
+                &Default::default(),
+                &advanced,
+                &Default::default(),
+            )
+            .unwrap();
+            let native = thread::Builder::new()
+                .stack_size(64 * 1024 * 1024)
+                .spawn(move || iris::workstation::build(config).unwrap())
+                .unwrap()
+                .join()
+                .unwrap();
+            let mut owned = OwnedMachine::new(native);
+            advanced.extensions.attach(owned.machine.as_mut()).unwrap();
+            media::with_bus(owned.machine.as_mut(), 0, |bus| {
+                bus.with_targets(|targets| {
+                    assert!(targets[5].as_ref().unwrap().moves_packets());
+                });
+            })
+            .unwrap();
+            assert!(
+                owned
+                    .machine
+                    .as_any_mut()
+                    .downcast_mut::<iris::machine::Machine>()
+                    .unwrap()
+                    .vino_source_status()
+                    .contains("cdmc")
+            );
+            owned.machine.restart_peripherals();
+            owned.stop().unwrap();
+        }
+    }
 
     #[test]
     fn boot_elf_runs_at_entry_instead_of_prom() {

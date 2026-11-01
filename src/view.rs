@@ -156,6 +156,11 @@ pub fn draw(
             ),
             crate::overlay::TextField::Network(field) => (field.title(), field.hint()),
             crate::overlay::TextField::Expert(field) => (field.title(), field.hint()),
+            crate::overlay::TextField::Extensions(field) => (field.title(), field.hint()),
+            crate::overlay::TextField::CheckpointName => (
+                "Checkpoint name",
+                "1-48 letters, digits, hyphens or underscores. Save never overwrites a checkpoint.",
+            ),
         };
         text(canvas, x + 24, y + 20, title, TEXT)?;
         let visible: String = edit
@@ -374,6 +379,17 @@ fn draw_overlay(
             10 => "Enter cycles Core, Performance, Connections and Developer pages.",
             _ => "FFmpeg optionally optimizes after recording; the built-in GIF is kept on failure.",
         }.into(), "Core options require restart. Turning Tinker off keeps the saved values active.".into()],
+        Tab::Extensions if session.extensions_page == crate::extensions::Page::Devices => vec![match session.row {
+            0..=2 => "VINO is modeled on Indy/Indigo2. Host camera opens on boot; unavailable cameras supply black frames and retry.",
+            3..=5 => "DaynaPort uses its own NAT subnet and inherits NFS/PCAP at boot. Network edits require restart while enabled; port forwards target onboard Ethernet.",
+            6 => "Ultra64 is an N64 development bridge, requiring a compatible external gopher64. Only one bridge instance may run.",
+            7 => "Reports active settings. Use the Iris monitor's vino status or scsi dayna commands for capture and packet diagnostics.",
+            _ => "Enter cycles Hardware, Devices and Checkpoints.",
+        }.into(), "All device settings are saved per label and require restart.".into()],
+        Tab::Extensions if session.extensions_page == crate::extensions::Page::Checkpoints => vec![
+            "Experimental native state: single-head Newport Indy/IP22, raw COW disks or diskless. No CDs, scratch or optional devices.".into(),
+            "Restores require the same executable, saved configuration and base disk contents. Audio/network sessions and external NFS files are not restored.".into(),
+        ],
         Tab::Extensions => vec![match session.row {
             0 => "GR2/IMPACT compatibility depends on Iris and the guest OS; Newport is the default on Indy/IP22.",
             1 => "Two Newport heads appear side by side. Screenshots and GIFs include both heads.",
@@ -443,7 +459,12 @@ fn draw_overlay(
                     crate::expert::Page::Connections => index < 6,
                     crate::expert::Page::Developer => index < 4,
                 })
-            || (session.tab == Tab::Extensions && (index < 5 || index == 6 || index == 7));
+            || (session.tab == Tab::Extensions
+                && match session.extensions_page {
+                    crate::extensions::Page::Hardware => index < 5 || index == 6 || index == 7,
+                    crate::extensions::Page::Devices => index < 7,
+                    crate::extensions::Page::Checkpoints => false,
+                });
         text(canvas, 20, y, label, TEXT)?;
         text(
             canvas,
@@ -477,7 +498,7 @@ fn draw_overlay(
         20,
         footer_y,
         if action_busy {
-            "Storage operation in progress..."
+            "Operation in progress..."
         } else if busy {
             "Choosing files / checking options...   Esc Cancel"
         } else {
@@ -546,6 +567,12 @@ fn draw_dialog(
             "Select a raw/CHD disk, or ISO9660/EFS/CHD CD-ROM.",
             vec!["Hard disk", "CD-ROM", "Disconnect", "Cancel"],
             choice,
+        ),
+        Dialog::Checkpoint { operation, confirm } => (
+            operation.title(),
+            operation.detail(),
+            vec!["Continue", "Cancel"],
+            usize::from(!confirm),
         ),
         Dialog::Unsaved { choice } => (
             "Save changes?",

@@ -1,4 +1,6 @@
+use crate::checkpoints::Operation as CheckpointOperation;
 use crate::expert::{Field as ExpertField, Page};
+use crate::extensions::{Field as ExtensionsField, Page as ExtensionsPage};
 use crate::media::{MediaKind, Medium};
 use crate::network::{Field, Folder, Interface};
 use crate::settings::{Settings, WindowScale};
@@ -45,15 +47,42 @@ impl Tab {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dialog {
-    Unsaved { choice: usize }, // Save, Discard, Cancel
-    Quit { confirm: bool },
-    Restart { confirm: bool },
-    Media { id: u8, choice: usize },
-    Firmware { choice: usize }, // Choose, Clear, Cancel
-    Reset { confirm: bool },
-    Folder { folder: Folder, choice: usize },
-    Storage { slot: u8, cd: bool, choice: usize },
-    Action { operation: Operation, confirm: bool },
+    Unsaved {
+        choice: usize,
+    }, // Save, Discard, Cancel
+    Quit {
+        confirm: bool,
+    },
+    Restart {
+        confirm: bool,
+    },
+    Media {
+        id: u8,
+        choice: usize,
+    },
+    Firmware {
+        choice: usize,
+    }, // Choose, Clear, Cancel
+    Reset {
+        confirm: bool,
+    },
+    Folder {
+        folder: Folder,
+        choice: usize,
+    },
+    Storage {
+        slot: u8,
+        cd: bool,
+        choice: usize,
+    },
+    Checkpoint {
+        operation: CheckpointOperation,
+        confirm: bool,
+    },
+    Action {
+        operation: Operation,
+        confirm: bool,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -71,6 +100,7 @@ pub enum Effect {
     Storage(Operation),
     RunAction(Action),
     RuntimeStatus,
+    Checkpoint(CheckpointOperation, String),
 }
 
 pub struct Session {
@@ -81,6 +111,8 @@ pub struct Session {
     media_controller: u8,
     storage_index: usize,
     pub advanced_page: Page,
+    pub extensions_page: ExtensionsPage,
+    pub checkpoint: String,
 }
 
 impl Session {
@@ -225,6 +257,66 @@ impl Session {
                 ("GIF encoder", self.draft.gif.encoder.label().into()),
                 ("Advanced page", "Core - Enter for next".into()),
             ],
+            Tab::Extensions if self.extensions_page == ExtensionsPage::Devices => {
+                let s = &self.draft.advanced.extensions;
+                vec![
+                    ("VINO source", s.vino.label().into()),
+                    (
+                        "Video standard",
+                        if s.pal {
+                            "PAL (768x576)"
+                        } else {
+                            "NTSC (640x486)"
+                        }
+                        .into(),
+                    ),
+                    ("Camera index", s.camera_index.to_string()),
+                    (
+                        "DaynaPort target",
+                        s.daynaport.map_or_else(
+                            || "Off".into(),
+                            |slot| format!("SCSI {}:{}", slot / 16, slot % 16),
+                        ),
+                    ),
+                    (
+                        "DaynaPort MAC",
+                        if s.dayna_mac.is_empty() {
+                            "Auto (based on target)".into()
+                        } else {
+                            s.dayna_mac.clone()
+                        },
+                    ),
+                    ("DaynaPort NAT subnet", s.dayna_subnet.clone()),
+                    ("Ultra64 development board", on_off(s.ultra64)),
+                    ("Device status", "View running device status".into()),
+                    ("Extensions page", "Devices - Enter for next".into()),
+                ]
+            }
+            Tab::Extensions if self.extensions_page == ExtensionsPage::Checkpoints => vec![
+                (
+                    "Native checkpoint support",
+                    crate::checkpoints::capability(
+                        &self.draft.machine,
+                        &self.draft.media,
+                        &self.draft.advanced,
+                    )
+                    .map_or_else(
+                        |e| e,
+                        |()| "Experimental; raw COW disks checked on action".into(),
+                    ),
+                ),
+                ("Checkpoint name", self.checkpoint.clone()),
+                (
+                    "Save checkpoint...",
+                    "New name required; preserves run/pause state".into(),
+                ),
+                (
+                    "Restore checkpoint...",
+                    "Exact build/config/disks; leaves PAUSED".into(),
+                ),
+                ("List checkpoints", "Saved for this machine label".into()),
+                ("Extensions page", "Checkpoints - Enter for next".into()),
+            ],
             Tab::Extensions => vec![
                 (
                     "Graphics board",
@@ -300,6 +392,7 @@ impl Session {
                     "Export scratch payload...",
                     "Save full payload to a new host file".into(),
                 ),
+                ("Extensions page", "Hardware - Enter for next".into()),
             ],
             Tab::Media => {
                 const LABELS: [&str; 32] = [
@@ -339,7 +432,11 @@ impl Session {
                 let mut rows: Vec<_> = (1..=self.media_targets())
                     .map(|id| {
                         let slot = self.media_controller * 16 + id;
-                        let mut value = self.draft.media.row_value(slot);
+                        let mut value = if self.draft.advanced.extensions.daynaport == Some(slot) {
+                            "DaynaPort Ethernet (Extensions)".into()
+                        } else {
+                            self.draft.media.row_value(slot)
+                        };
                         if self.media_controller >= self.draft.machine.profile.scsi_controllers()
                             || id > self.draft.machine.profile.max_scsi_id()
                         {
@@ -380,6 +477,8 @@ pub enum TextField {
     Label,
     Network(Field),
     Expert(ExpertField),
+    Extensions(ExtensionsField),
+    CheckpointName,
 }
 
 pub struct TextEdit {
@@ -578,8 +677,16 @@ impl Overlay {
                     edit.error = None;
                 }
                 Key::Enter => {
-                    let draft = &mut self.session.as_mut().unwrap().draft;
+                    let session = self.session.as_mut().unwrap();
+                    let draft = &mut session.draft;
                     let result = match edit.field {
+                        TextField::CheckpointName => {
+                            crate::checkpoints::validate_name(edit.text.trim())
+                                .map(|()| session.checkpoint = edit.text.trim().into())
+                        }
+                        TextField::Extensions(field) => {
+                            field.apply(&mut draft.advanced.extensions, &edit.text)
+                        }
                         TextField::Label => draft.save_as_machine(edit.text.trim()),
                         TextField::Network(field) => field.apply(&mut draft.network, &edit.text),
                         TextField::Expert(field) => {
@@ -611,6 +718,21 @@ impl Overlay {
         }
         if let Some(dialog) = self.dialog {
             match (dialog, key) {
+                (Dialog::Checkpoint { operation, confirm }, Key::Left | Key::Right) => {
+                    self.dialog = Some(Dialog::Checkpoint {
+                        operation,
+                        confirm: !confirm,
+                    });
+                }
+                (Dialog::Checkpoint { operation, confirm }, Key::Enter) => {
+                    self.dialog = None;
+                    if confirm {
+                        return Effect::Checkpoint(
+                            operation,
+                            self.session.as_ref().unwrap().checkpoint.clone(),
+                        );
+                    }
+                }
                 (_, Key::Escape) => {
                     self.dialog = None;
                     self.action = None;
@@ -772,6 +894,8 @@ impl Overlay {
                     media_controller: 0,
                     storage_index: 0,
                     advanced_page: Page::Core,
+                    extensions_page: ExtensionsPage::Hardware,
+                    checkpoint: "checkpoint-1".into(),
                 });
                 if key == Key::NextMachine {
                     let session = self.session.as_mut().unwrap();
@@ -952,6 +1076,76 @@ impl Overlay {
                 (Tab::Network, 7) if session.draft.network.mode == iris::config::NetMode::Nat => {
                     self.edit_network(Field::Forwards)
                 }
+                (Tab::Extensions, row) if row + 1 == session.rows().len() => {
+                    session.extensions_page = session.extensions_page.next();
+                    session.row = session.rows().len() - 1;
+                }
+                (Tab::Extensions, row) if session.extensions_page == ExtensionsPage::Devices => {
+                    let s = &mut session.draft.advanced.extensions;
+                    let field = match row {
+                        0 => {
+                            s.vino = s.vino.next();
+                            None
+                        }
+                        1 => {
+                            s.pal = !s.pal;
+                            None
+                        }
+                        2 => Some(ExtensionsField::CameraIndex),
+                        3 => {
+                            s.cycle_dayna(&session.draft.machine);
+                            None
+                        }
+                        4 => Some(ExtensionsField::DaynaMac),
+                        5 => Some(ExtensionsField::DaynaSubnet),
+                        6 => {
+                            s.ultra64 = !s.ultra64;
+                            None
+                        }
+                        7 => return Effect::RuntimeStatus,
+                        _ => None,
+                    };
+                    if let Some(field) = field {
+                        self.text_edit = Some(TextEdit {
+                            text: field.value(s),
+                            field: TextField::Extensions(field),
+                            selected: true,
+                            error: None,
+                        });
+                    }
+                }
+                (Tab::Extensions, row)
+                    if session.extensions_page == ExtensionsPage::Checkpoints =>
+                {
+                    if row == 1 {
+                        self.text_edit = Some(TextEdit {
+                            text: session.checkpoint.clone(),
+                            field: TextField::CheckpointName,
+                            selected: true,
+                            error: None,
+                        });
+                    } else if (2..=4).contains(&row) {
+                        if session.dirty() {
+                            self.show_report(
+                                "Save or discard option drafts before checkpoint actions".into(),
+                            );
+                        } else if row == 4 {
+                            return Effect::Checkpoint(
+                                CheckpointOperation::List,
+                                session.checkpoint.clone(),
+                            );
+                        } else {
+                            self.dialog = Some(Dialog::Checkpoint {
+                                operation: if row == 2 {
+                                    CheckpointOperation::Save
+                                } else {
+                                    CheckpointOperation::Restore
+                                },
+                                confirm: false,
+                            });
+                        }
+                    }
+                }
                 (Tab::Extensions, 0) => session.draft.machine.cycle_graphics(),
                 (Tab::Extensions, 1) if session.draft.machine.newport() => {
                     session.draft.machine.heads = 3 - session.draft.machine.heads
@@ -1019,6 +1213,59 @@ impl Overlay {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_devices_are_drafts_and_checkpoint_restore_requires_confirmation() {
+        let live = Settings {
+            tinker: true,
+            ..Default::default()
+        };
+        let mut overlay = Overlay::default();
+        overlay.key(Key::Options, &live);
+        let session = overlay.session.as_mut().unwrap();
+        session.tab = Tab::Extensions;
+        session.extensions_page = ExtensionsPage::Devices;
+        session.row = 0;
+        overlay.key(Key::Enter, &live);
+        assert_eq!(
+            live.advanced.extensions.vino,
+            crate::extensions::Source::Off
+        );
+        assert_eq!(
+            overlay
+                .session
+                .as_ref()
+                .unwrap()
+                .draft
+                .advanced
+                .extensions
+                .vino,
+            crate::extensions::Source::TestPattern
+        );
+        let session = overlay.session.as_mut().unwrap();
+        session.extensions_page = ExtensionsPage::Checkpoints;
+        session.row = 3;
+        overlay.key(Key::Enter, &live);
+        assert!(overlay.dialog.is_none()); // dirty draft blocked
+        overlay.report = None;
+        let session = overlay.session.as_mut().unwrap();
+        session.draft = live.clone();
+        overlay.key(Key::Enter, &live);
+        assert_eq!(
+            overlay.dialog,
+            Some(Dialog::Checkpoint {
+                operation: CheckpointOperation::Restore,
+                confirm: false
+            })
+        );
+        assert_eq!(overlay.key(Key::Enter, &live), Effect::None);
+        overlay.key(Key::Enter, &live);
+        overlay.key(Key::Left, &live);
+        assert_eq!(
+            overlay.key(Key::Enter, &live),
+            Effect::Checkpoint(CheckpointOperation::Restore, "checkpoint-1".into())
+        );
+    }
 
     #[test]
     fn unavailable_saved_features_can_be_cleared_without_editing_the_file() {

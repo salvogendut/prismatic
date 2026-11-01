@@ -188,7 +188,7 @@ impl MediaSettings {
     }
 }
 
-fn is_chd(path: &Path) -> io::Result<bool> {
+pub(crate) fn is_chd(path: &Path) -> io::Result<bool> {
     let mut header = [0; 8];
     let count = File::open(path)?.read(&mut header)?;
     Ok((count == 8 && &header == b"MComprHD") || iris::chd_disk::is_chd(&path.to_string_lossy()))
