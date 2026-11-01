@@ -42,8 +42,10 @@ including when the hints are hidden.
 
 ## Core boundary
 
-The root Cargo manifest depends directly on `../iris`, preserving that fork's
-winit and block patches at the root where Cargo applies them. The nightly
+The root Cargo manifest depends directly on `../iris` on its `xiri` branch,
+preserving that fork's winit and block patches at the root where Cargo applies
+them. Development, builds and tests use `xiri` to retain NetBSD and other guest
+OS compatibility work alongside IRIX support. The nightly
 Rust toolchain matches Iris. No emulator source is copied into this repository.
 The default is Indy IP24, R4400, 64 MB RAM, one Newport head, and no SCSI
 devices. General selects all five workstation profiles: Indy IP24, Indigo2 IP22,

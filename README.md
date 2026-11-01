@@ -48,8 +48,10 @@ Dev/
 
 Prismatic uses the local Iris library directly, including the fork's power-off,
 diagnostic routing, bundled O2/Octane firmware and frontend audio support. Use
-Iris branch `xiri/netbsd-newport` at commit `4aff0d9` or newer and update both
-checkouts. Its root Cargo manifest also preserves the fork's patched winit and
+Iris branch `xiri` at commit `4aff0d9` or newer and update both checkouts.
+Always use this branch for Prismatic: it carries the compatibility work for
+NetBSD and other guest operating systems alongside IRIX. Its root Cargo
+manifest also preserves the fork's patched winit and
 block dependencies. Install Rust through
 rustup; `rust-toolchain.toml` selects nightly, matching Iris's requirement.
 On a Fedora development system, install the native build dependencies:
@@ -303,7 +305,7 @@ from 512 KiB to 1 MiB. MAME documents these full flash dumps:
 References: [MAME O2 firmware definitions](https://github.com/mamedev/mame/blob/master/src/mame/sgi/o2.cpp),
 [MAME Octane firmware definition](https://github.com/mamedev/mame/blob/master/src/mame/sgi/octane.cpp).
 The matching arrays live in `src/prombinip32.rs` and `src/prombinip30.rs` in
-[our Iris fork](https://github.com/salvogendut/iris/tree/xiri/netbsd-newport),
+[our Iris fork](https://github.com/salvogendut/iris/tree/xiri),
 and are compiled into Prismatic. The fork's `tools/embed-prom.py` regenerates
 them from the original binaries without altering their bytes.
 
@@ -497,7 +499,7 @@ many Wi-Fi networks reject an additional guest MAC address. A missing feature
 or failed capture is reported rather than silently switching to NAT. Prismatic
 does not change host permissions. NAT port forwards and TFTP are inactive in
 PCAP mode; their saved settings are retained for switching back. For further
-guest setup, see [our Iris networking guide](https://github.com/salvogendut/iris/blob/xiri/netbsd-newport/NETWORKING.md).
+guest setup, see [our Iris networking guide](https://github.com/salvogendut/iris/blob/xiri/NETWORKING.md).
 
 For an unnamed machine, the configuration uses `[network]`; named machines
 use `[machines."LABEL".network]`:

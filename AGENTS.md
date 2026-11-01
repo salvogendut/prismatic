@@ -4,6 +4,10 @@
 - The emulation engine is our sibling `../iris` fork. Keep CPU/device changes
   there and integration code here. Inspect its current APIs before adapting
   them; read its `AGENTS.md` before editing the fork.
+- Always use the `xiri` branch of `../iris` for Prismatic development, builds
+  and testing. Check the branch before working; do not substitute upstream
+  `main` or the former `xiri/netbsd-newport` branch. Preserve NetBSD and other
+  guest OS compatibility when integrating changes; do not assume IRIX-only use.
 - Match the native Happy Years UI conventions in `../1984`, `../1985`,
   `../1986`, and especially `../1989`: emulator-first window, F9 overlay,
   keyboard navigation, status hints, notifications and Tinker-gated controls.
