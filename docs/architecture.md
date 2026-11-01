@@ -1,5 +1,27 @@
 # Frontend and Iris integration
 
+## Performance build
+
+Prismatic `main` uses the sibling Iris branch `perf/sgiemu-port` at
+`66f5a59`, based on the integrated `xiri` revision `087d250`. Its frontend-facing
+APIs are unchanged. The performance changes stay in Iris: Cranelift SSA copies
+of guest integer registers and cached DS1x86 calendar conversion. The register
+cache keeps architectural state current and excludes FPU/fallback regions.
+
+Build with `pcap,idle-pause,perfetto,jitv2` using `nightly-2026-10-28`.
+The `developer` feature disables the new register cache, so the performance
+binary omits it. Default-feature checks still exercise the interpreter build;
+checks and PROM smoke runs with the performance feature set exercise the JIT.
+The performance integration requires no Prismatic UI or configuration schema changes.
+
+Validation against `66f5a59` passes formatting, strict frontend Clippy, 136
+default-feature tests and 137 tests with the performance feature set. The release
+binary passes dummy SDL, diskless PROM and guest-input smoke tests, with JIT pages
+compiled during PROM execution. These checks do not measure an OS boot speedup.
+The media attachment/restart smoke test currently reaches the confirmed restart
+but times out waiting for PROM display output within its 240-second limit.
+Media restart validation remains incomplete on this performance build.
+
 ## Design baseline
 
 Prismatic uses Rust and SDL3, following the native Happy Years desktop UI,
@@ -276,6 +298,10 @@ installation/recovery CDs; target 0 belongs to the host controller. All Indy
 devices share one bus, including internal and external devices. These placement
 conventions guide the frontend without reserving other targets or implying
 support for historical tape/floptical devices.
+Media row labels show the Indy-style role for primary-bus IDs 1–7; additional
+buses and wider-bus targets show General use. Selection hints explain boot,
+installation, historical device roles and the reserved controller ID 0. These
+annotations do not change row indices, media types, validation or configuration.
 Native SDL file-dialog callbacks hand results to a bounded channel; file probes
 run on a separate worker. Escape abandons the result without changing the draft.
 Save revalidates all images off the SDL thread, canonicalizes paths, rejects

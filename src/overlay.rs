@@ -162,6 +162,33 @@ impl Session {
             .then_some(self.media_controller * 16 + self.row as u8 + 1)
     }
 
+    /// Indy factory placement is a guide, independent of the attached media type.
+    pub fn media_placement_hint(&self) -> &'static str {
+        match self.media_slot() {
+            Some(1) => {
+                "Indy convention: primary system disk; the usual IRIX boot target is dksc(0,1,0)."
+            }
+            Some(2) => "Indy convention: second hard disk for additional data or scratch storage.",
+            Some(3) => {
+                "Indy convention: optional 21 MB floptical drive. Floptical emulation is not available; disk/CD images can use this ID."
+            }
+            Some(4) => {
+                "Indy convention: tape backup drive. Tape emulation is not available; disk/CD images can use this ID."
+            }
+            Some(5) => {
+                "Indy convention: open for additional storage or other supported SCSI devices."
+            }
+            Some(6) => "Indy convention: CD-ROM drive for IRIX installation and recovery media.",
+            Some(7) => {
+                "Indy convention: usually unused. The controller uses ID 0; ID 7 remains available for a device."
+            }
+            Some(_) => {
+                "No fixed role on this target. Choose any supported device on an unused ID on this bus."
+            }
+            None => "Each controller has its own target IDs. Enter switches the bus shown above.",
+        }
+    }
+
     pub fn storage_slot(&self) -> Option<u8> {
         let count = self.draft.media.devices.len();
         if count == 0 {
@@ -397,37 +424,37 @@ impl Session {
             Tab::Media => {
                 const LABELS: [&str; 32] = [
                     "",
-                    "SCSI 0:1",
-                    "SCSI 0:2",
-                    "SCSI 0:3",
-                    "SCSI 0:4",
-                    "SCSI 0:5",
-                    "SCSI 0:6",
-                    "SCSI 0:7",
-                    "SCSI 0:8",
-                    "SCSI 0:9",
-                    "SCSI 0:10",
-                    "SCSI 0:11",
-                    "SCSI 0:12",
-                    "SCSI 0:13",
-                    "SCSI 0:14",
-                    "SCSI 0:15",
+                    "SCSI 0:1 - System disk",
+                    "SCSI 0:2 - Second disk",
+                    "SCSI 0:3 - Floptical",
+                    "SCSI 0:4 - Tape",
+                    "SCSI 0:5 - General use",
+                    "SCSI 0:6 - CD-ROM",
+                    "SCSI 0:7 - Spare",
+                    "SCSI 0:8 - General use",
+                    "SCSI 0:9 - General use",
+                    "SCSI 0:10 - General use",
+                    "SCSI 0:11 - General use",
+                    "SCSI 0:12 - General use",
+                    "SCSI 0:13 - General use",
+                    "SCSI 0:14 - General use",
+                    "SCSI 0:15 - General use",
                     "",
-                    "SCSI 1:1",
-                    "SCSI 1:2",
-                    "SCSI 1:3",
-                    "SCSI 1:4",
-                    "SCSI 1:5",
-                    "SCSI 1:6",
-                    "SCSI 1:7",
-                    "SCSI 1:8",
-                    "SCSI 1:9",
-                    "SCSI 1:10",
-                    "SCSI 1:11",
-                    "SCSI 1:12",
-                    "SCSI 1:13",
-                    "SCSI 1:14",
-                    "SCSI 1:15",
+                    "SCSI 1:1 - General use",
+                    "SCSI 1:2 - General use",
+                    "SCSI 1:3 - General use",
+                    "SCSI 1:4 - General use",
+                    "SCSI 1:5 - General use",
+                    "SCSI 1:6 - General use",
+                    "SCSI 1:7 - General use",
+                    "SCSI 1:8 - General use",
+                    "SCSI 1:9 - General use",
+                    "SCSI 1:10 - General use",
+                    "SCSI 1:11 - General use",
+                    "SCSI 1:12 - General use",
+                    "SCSI 1:13 - General use",
+                    "SCSI 1:14 - General use",
+                    "SCSI 1:15 - General use",
                 ];
                 let mut rows: Vec<_> = (1..=self.media_targets())
                     .map(|id| {

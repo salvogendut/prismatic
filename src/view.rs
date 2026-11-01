@@ -353,7 +353,14 @@ fn draw_overlay(
             "Hardware changes ask to restart when saved. Display and audio options apply on Save.".into(),
         ],
         Tab::Media => {
-            let mut hints = vec!["Hard disks: persistent copy-on-write. CD-ROMs: read-only (ISO9660 or EFS).".into()];
+            let mut hints = vec![
+                session.media_placement_hint().into(),
+                "Suggested roles only; supported targets accept either media type. ID 0: onboard controller (reserved).".into(),
+            ];
+            if session.draft.machine.profile == iris::config::MachineProfile::IndyIp24 {
+                hints.push("Indy internal and external devices share one SCSI bus; each device needs a unique ID.".into());
+            }
+            hints.push("Hard disks: persistent copy-on-write. CD-ROMs: read-only (ISO9660 or EFS).".into());
             if let Some(medium) = session.media_slot().and_then(|slot| session.draft.media.devices.get(&slot)) {
                 let path = short_ascii(&medium.path, 200);
                 hints.extend(path.as_bytes().chunks(100).map(|chunk| std::str::from_utf8(chunk).unwrap().to_owned()));
