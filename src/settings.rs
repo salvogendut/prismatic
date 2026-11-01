@@ -499,6 +499,39 @@ impl WindowScale {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct AudioSettings {
+    pub muted: bool,
+    pub volume: u8,
+}
+
+impl Default for AudioSettings {
+    fn default() -> Self {
+        Self {
+            muted: false,
+            volume: 100,
+        }
+    }
+}
+
+impl AudioSettings {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.volume > 100 {
+            return Err("Guest audio volume must be between 0 and 100".into());
+        }
+        Ok(())
+    }
+
+    pub fn cycle_volume(&mut self) {
+        self.volume = if self.volume == 0 {
+            100
+        } else {
+            self.volume.saturating_sub(10)
+        };
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
@@ -515,6 +548,7 @@ pub struct Settings {
     pub debug_output: DebugOutput,
     pub window_scale: WindowScale,
     pub gif: GifSettings,
+    pub audio: AudioSettings,
     pub machine: MachineSettings,
     pub media: MediaSettings,
     pub advanced: AdvancedSettings,
@@ -533,6 +567,7 @@ impl Default for Settings {
             debug_output: DebugOutput::Off,
             window_scale: WindowScale::default(),
             gif: GifSettings::default(),
+            audio: AudioSettings::default(),
             machine: MachineSettings::default(),
             media: MediaSettings::default(),
             advanced: AdvancedSettings::default(),
@@ -597,6 +632,7 @@ impl Settings {
                 settings.media.validate()?;
                 settings.advanced.validate()?;
                 settings.gif.validate()?;
+                settings.audio.validate()?;
                 settings
                     .media
                     .resolve_paths(path.parent().unwrap_or(Path::new(".")))?;
@@ -618,6 +654,7 @@ impl Settings {
         self.media.validate()?;
         self.advanced.validate()?;
         self.gif.validate()?;
+        self.audio.validate()?;
         let parent = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -650,6 +687,33 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_defaults_persist_without_restart_and_invalid_volume_preserves_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prismatic.cfg");
+        fs::write(&path, "scanlines = true\n").unwrap();
+        let original = Settings::load(&path).unwrap();
+        assert_eq!(
+            original.audio,
+            AudioSettings {
+                muted: false,
+                volume: 100
+            }
+        );
+        let mut edited = original.clone();
+        edited.audio.muted = true;
+        edited.audio.volume = 40;
+        assert!(!edited.machine_differs_from(&original));
+        edited.save(&path).unwrap();
+        assert_eq!(Settings::load(&path).unwrap().audio, edited.audio);
+        let saved = fs::read(&path).unwrap();
+        edited.audio.volume = 101;
+        assert!(edited.save(&path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), saved);
+        fs::write(&path, "[audio]\nvolume = 101\n").unwrap();
+        assert!(Settings::load(&path).is_err());
+    }
 
     #[test]
     fn window_scale_migrates_persists_and_rejects_invalid_factors() {

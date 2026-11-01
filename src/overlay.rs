@@ -104,6 +104,8 @@ impl Session {
                         .unwrap_or_else(|| "Unnamed - use Save machine as".into()),
                 ),
                 ("Save machine as...", "Enter a new label".into()),
+                ("Guest audio", on_off(!self.draft.audio.muted)),
+                ("Guest volume", format!("{}%", self.draft.audio.volume)),
             ],
             Tab::Advanced => vec![
                 (
@@ -409,6 +411,8 @@ impl Overlay {
                 (Tab::General, 7) if session.draft.machine.supports_prom_override() => {
                     self.dialog = Some(Dialog::Firmware { choice: 2 });
                 }
+                (Tab::General, 10) => session.draft.audio.muted = !session.draft.audio.muted,
+                (Tab::General, 11) => session.draft.audio.cycle_volume(),
                 (Tab::Advanced, 0) if session.draft.machine.newport() => {
                     session.draft.advanced.cycle_resolution()
                 }
@@ -527,6 +531,30 @@ mod tests {
             overlay.key(key, &live);
         }
         assert_eq!(overlay.session.as_ref().unwrap().draft, live);
+    }
+
+    #[test]
+    fn audio_edits_are_drafts_and_do_not_require_a_machine_restart() {
+        let live = Settings::default();
+        let mut overlay = Overlay::default();
+        overlay.key(Key::Options, &live);
+        for _ in 0..10 {
+            overlay.key(Key::Down, &live);
+        }
+        overlay.key(Key::Enter, &live);
+        overlay.key(Key::Down, &live);
+        overlay.key(Key::Enter, &live);
+        let Effect::Save(draft) = overlay.key(Key::Options, &live) else {
+            panic!("Expected Save")
+        };
+        assert!(draft.audio.muted);
+        assert_eq!(draft.audio.volume, 90);
+        assert!(!draft.machine_differs_from(&live));
+        assert!(!live.audio.muted);
+        for key in [Key::Escape, Key::Left, Key::Enter, Key::Options] {
+            overlay.key(key, &live);
+        }
+        assert_eq!(overlay.session.as_ref().unwrap().draft.audio, live.audio);
     }
 
     #[test]
@@ -688,10 +716,12 @@ mod tests {
         let mut overlay = Overlay::default();
         for key in [
             Key::Options,
-            Key::Up,
-            Key::Up,
-            Key::Up,
-            Key::Up,
+            Key::Down,
+            Key::Down,
+            Key::Down,
+            Key::Down,
+            Key::Down,
+            Key::Down,
             Key::Enter,
             Key::Right,
             Key::Right,
@@ -711,10 +741,12 @@ mod tests {
         for key in [
             Key::Left,
             Key::Left,
-            Key::Up,
-            Key::Up,
-            Key::Up,
-            Key::Up,
+            Key::Down,
+            Key::Down,
+            Key::Down,
+            Key::Down,
+            Key::Down,
+            Key::Down,
             Key::Enter,
         ] {
             overlay.key(key, &live);
@@ -839,10 +871,12 @@ mod tests {
         assert_eq!(overlay.session.as_ref().unwrap().tab, Tab::About);
         for key in [
             Key::Right,
-            Key::Up,
-            Key::Up,
-            Key::Up,
-            Key::Up,
+            Key::Down,
+            Key::Down,
+            Key::Down,
+            Key::Down,
+            Key::Down,
+            Key::Down,
             Key::Enter,
             Key::Right,
             Key::Right,

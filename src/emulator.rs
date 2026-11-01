@@ -186,7 +186,7 @@ pub fn machine_config(
         nveeprom: path("nveeprom.bin")?,
         banks: hardware.banks()?,
         scsi: media.iris_devices().into_iter().collect(),
-        no_audio: true,
+        no_audio: false,
         headless: false,
         keyboard: hardware.keyboard,
         rtc_offset: advanced.rtc_offset(),
@@ -289,6 +289,7 @@ impl Drop for OwnedMachine {
 
 pub struct Emulator {
     pub frames: FrameSlot,
+    pub audio: Arc<crate::audio::Inbox>,
     status: Arc<Mutex<Status>>,
     commands: mpsc::SyncSender<Command>,
     stop_requested: Arc<AtomicBool>,
@@ -312,6 +313,8 @@ impl Emulator {
         advanced: &AdvancedSettings,
     ) -> Result<Self, String> {
         let mut config = machine_config(state_dir, hardware, media, advanced)?;
+        let audio = Arc::new(crate::audio::Inbox::default());
+        config.audio.output = Some(audio.clone());
         // Attach explicitly before CPU start: Iris's CLI constructor exits the
         // process on media errors. The frontend must report them in the window.
         config.scsi.clear();
@@ -466,6 +469,7 @@ impl Emulator {
             .map_err(|e| format!("Cannot start Iris worker: {e}"))?;
         Ok(Self {
             frames,
+            audio,
             status,
             commands,
             stop_requested,
@@ -703,7 +707,7 @@ mod tests {
         assert_eq!(config.machine.profile, MachineProfile::IndyIp24);
         assert_eq!(config.graphics.board, Some(GraphicsBoard::Newport));
         assert!(!config.headless);
-        assert!(config.no_audio);
+        assert!(!config.no_audio);
         assert_eq!(config.monitor_port, Some(0));
         assert!(config.port_forward.is_empty());
         assert!(config.nfs.is_none());

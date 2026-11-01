@@ -450,10 +450,12 @@ impl AdvancedSmoke {
             if !self.showing_menu {
                 for scan in [
                     S::F9,
-                    S::Up,
-                    S::Up,
-                    S::Up,
-                    S::Up,
+                    S::Down,
+                    S::Down,
+                    S::Down,
+                    S::Down,
+                    S::Down,
+                    S::Down,
                     S::Return,
                     S::Right,
                     S::Right,
@@ -489,10 +491,12 @@ impl AdvancedSmoke {
         }
         let edit = [
             S::F9,
-            S::Up,
-            S::Up,
-            S::Up,
-            S::Up,
+            S::Down,
+            S::Down,
+            S::Down,
+            S::Down,
+            S::Down,
+            S::Down,
             S::Return,
             S::Right,
             S::Right,
@@ -520,7 +524,17 @@ impl AdvancedSmoke {
                 }
                 // Second attempt: hide Tinker before saving all five options.
                 if self.step == 2 {
-                    for scan in [S::Left, S::Left, S::Up, S::Up, S::Up, S::Up, S::Return] {
+                    for scan in [
+                        S::Left,
+                        S::Left,
+                        S::Down,
+                        S::Down,
+                        S::Down,
+                        S::Down,
+                        S::Down,
+                        S::Down,
+                        S::Return,
+                    ] {
                         tap(events, window, scan)?;
                     }
                 }

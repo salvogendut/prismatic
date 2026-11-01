@@ -19,8 +19,9 @@ scanlines, filtering and saved desktop preferences. SDL keyboard and relative
 mouse input now reach the guest through Iris's PS/2 controller.
 
 **F9 > Media** attaches hard disks and CD-ROMs; bottom LEDs show machine, CPU,
-network and disk activity. **Guest audio is not connected yet**; screenshots
-play the shared Happy Years shutter sound through SDL3. With fresh NVRAM and
+network and disk activity. **Guest audio plays through SDL3**, with saved mute
+and volume controls in General. Screenshots play the shared Happy Years shutter
+sound independently. With fresh NVRAM and
 no disk, the PROM normally displays "Unable to boot; press any key to continue".
 Click the display to capture input, then press Enter to reach the PROM menu.
 Choose **Enter Command Monitor** (5) and try `hinv` to inspect the emulated
@@ -46,9 +47,10 @@ Dev/
 ```
 
 Prismatic uses the local Iris library directly, including the fork's power-off,
-diagnostic-routing and bundled O2/Octane firmware support. Use Iris branch
-`xiri/netbsd-newport` at commit `e377d79` or newer and update both checkouts. Its root Cargo manifest
-also preserves the fork's patched winit and block dependencies. Install Rust through
+diagnostic routing, bundled O2/Octane firmware and frontend audio support. Use
+Iris branch `xiri/netbsd-newport` at commit `4aff0d9` or newer and update both
+checkouts. Its root Cargo manifest also preserves the fork's patched winit and
+block dependencies. Install Rust through
 rustup; `rust-toolchain.toml` selects nightly, matching Iris's requirement.
 On a Fedora development system, install the native build dependencies:
 
@@ -58,8 +60,9 @@ cargo run --release --locked
 ```
 
 The current Iris library still compiles its winit/glutin, CPAL and camera
-modules. Prismatic does not open Iris's winit window, and guest audio is disabled
-for this milestone; libclang is needed to build the Linux camera bindings.
+modules. Prismatic uses its own SDL window and audio output; Iris's CPAL output
+is bypassed through a per-machine PCM handoff. libclang is needed to build the
+Linux camera bindings.
 SDL is linked dynamically through the [`sdl3` Rust bindings](https://github.com/vhspace/sdl3-rs).
 SDL_ttf and a separate widget toolkit are not required. Linux is the first
 validated platform; Windows and macOS integration builds remain to be checked.
@@ -193,7 +196,7 @@ These hardware settings take effect by stopping the old machine and preparing a
 fresh, paused configuration, so the current guest session is lost. Ctrl+P boots it.
 Before the first boot, options can change without restarting a machine. The
 window stays responsive
-during restart. Display options apply on Save without restarting. Startup or
+during restart. Display and audio options apply on Save without restarting. Startup or
 restart failures remain visible in the window and terminal; F9 lets you revise
 the saved settings. A new worker is never started after a stop timeout.
 
@@ -440,6 +443,23 @@ Idle lamps retain a dim version of their function's color. Disk/CD lamps appear
 only for attached targets. Pulses remain visible briefly even when no new guest
 frame is drawn. Opening an overlay dims both bottom bands consistently.
 
+## Guest audio
+
+Guest playback is enabled by default for Indy/Indigo2 (HAL2), O2 (MACE) and
+Octane (RAD), using SDL3's default playback device. **F9 > General > Guest audio**
+mutes/unmutes playback; **Guest volume** cycles down in 10% steps from 100% to
+0%, then returns to 100%. Save applies the changes without restarting; Discard
+keeps the current sound settings. These are shared desktop preferences across
+machine labels. Muting keeps the guest's audio hardware enabled and does not
+mute the screenshot shutter.
+
+Pause, power-off, reset and label switching clear queued guest sound. Audio
+buffers are bounded; when the UI falls behind, old samples are discarded to
+avoid delayed playback. If opening the host device fails, emulation continues
+and a notification explains how to retry: save Guest audio Off, then On.
+The SDL default device is reopened after a new machine starts or audio is
+retried. Host microphone recording is not connected.
+
 ## Persistent configuration
 
 **`prismatic.cfg`** contains the current saved General, Media and display
@@ -456,7 +476,7 @@ For a configuration in the current directory, run:
 cargo run --release --locked -- --config ./prismatic.cfg
 ```
 
-The file uses human-readable TOML with `[machine]`, `[advanced]`, `[gif]` and one table per
+The file uses human-readable TOML with `[machine]`, `[advanced]`, `[audio]`, `[gif]` and one table per
 attached device, for example:
 
 ```toml
@@ -466,6 +486,10 @@ smoothing = false
 tinker = false
 debug_output = "off"
 window_scale = 1.0 # 0.75 through 4.0, in steps of 0.25.
+
+[audio]
+muted = false
+volume = 100 # 0 through 100 percent.
 
 [machine]
 profile = "indy_ip24"

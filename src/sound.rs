@@ -1,4 +1,4 @@
-//! UI sounds only. Iris guest audio remains disabled.
+//! Screenshot shutter sound, independent of the guest audio in `audio.rs`.
 use sdl3::{
     audio::{AudioSpec, AudioSpecWAV, AudioStreamOwner},
     iostream::IOStream,

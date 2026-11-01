@@ -1,4 +1,5 @@
 mod activity;
+mod audio;
 mod capture;
 mod diagnostics;
 mod display;
@@ -80,7 +81,7 @@ Advanced sets GIF resolution (Native/320/480/640), frame rate (10/20/25) and enc
 Captures save the guest display as timestamped PPM/GIF files in the working directory.
 Media: raw/CHD hard disks and ISO9660/EFS/CHD CD-ROMs.
 Starts PAUSED; Ctrl+P boots the selected machine. Default media is disconnected.
-Guest audio is not connected yet.
+Guest audio uses SDL3; General provides saved mute and volume controls.
 --keyboard overrides the saved keyboard type for this session.
 --smoke-test renders the UI without starting Iris.
 --boot-smoke-test waits for guest display output, captures ten seconds later, and stops.
@@ -301,6 +302,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let mut first_content: Option<Instant> = None;
     let mut captures = capture::Captures::new(std::env::current_dir()?);
     let mut shutter = sound::Shutter::default();
+    let mut guest_audio = audio::GuestAudio::default();
     let started = Instant::now();
     let mut stopping: Option<Instant> = None;
     // A new worker is constructed only after the previous worker has joined.
@@ -818,6 +820,19 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 guest_frame_received = true;
                 redraw = true;
             }
+        }
+        if let Err(error) = guest_audio.pump(
+            &sdl,
+            emulator.as_ref().map(|machine| &machine.audio),
+            stopping.is_none() && matches!(status.phase, Phase::Starting | Phase::Running),
+            settings.audio,
+        ) {
+            eprintln!("Prismatic: guest audio unavailable: {error}");
+            toast = Some((
+                "Guest audio unavailable; toggle audio off/on to retry".into(),
+                Instant::now(),
+            ));
+            redraw = true;
         }
         if stopping.is_none() && status.phase != Phase::PoweredOff {
             captures.tick(&frame);

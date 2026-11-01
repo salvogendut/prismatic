@@ -33,6 +33,7 @@ including when the hints are hidden.
 | `src/diagnostics.rs` | Live Off/Screen/Console routing of Iris diagnostics, bounded screen text and redraw updates |
 | `src/capture.rs` | Asynchronous PPM screenshots, bounded GIF recording, atomic publication and optional FFmpeg optimization |
 | `src/sound.rs` | Embedded Happy Years screenshot shutter through a main-thread SDL audio stream |
+| `src/audio.rs` | Bounded per-machine guest PCM handoff and main-thread SDL3 playback |
 | `src/display.rs` | Packed RGBA frame type, startup/UI-preview pixels and aspect-preserving placement |
 | `src/view.rs` | SDL drawing, status strip, LEDs, options, confirmations and notifications |
 | `src/media.rs` | Native file chooser, asynchronous read-only probes, media settings and Iris block-node adapters |
@@ -84,9 +85,27 @@ before targets are detached and flushed; no frontend constructor uses Iris's
 exit-on-media-error default attachment path.
 
 Iris's current library still compiles winit/glutin, CPAL, and camera support.
-Prismatic does not call `Ui::run`, so there is only the SDL window. Guest audio is
-disabled in the machine config. Removing unused host dependencies and exposing
-a PCM sink for SDL audio are later changes in the fork.
+Prismatic does not call `Ui::run`, so there is only the SDL window. Guest audio
+is enabled, with a runtime-only `AudioConfig.output` factory per worker. The
+shared HAL2/MACE/RAD output path sends resampled 48 kHz stereo i16 PCM into a
+lock-free ring of at most 100 ms and hands the consumer to Prismatic's single
+pending-stream inbox. It never opens CPAL for a Prismatic machine. The normal
+standalone Iris configuration retains its CPAL backend.
+
+SDL audio opening, gain, queueing and teardown all run on the main thread.
+The event loop drains at most 40 ms at once and caps SDL's input queue at 60 ms,
+discarding older samples after a stall. Reads/discards commit stereo pairs so
+ring overflow does not swap channels. Host mute/volume live under `[audio]`,
+outside named machine stanzas, and apply only after successful Save. They do
+not alter guest devices or require a restart. Inactive/paused states discard
+incoming samples and clear SDL's queue; a closed producer or replacement
+machine drops the playback stream. A newly resumed HAL2 output replaces the
+pending consumer; O2/Octane streams can remain allocated while paused.
+
+Device errors clear playback, report once and leave emulation running. Saving
+mute then unmute retries; a new machine gets a fresh audio inbox and retry
+state. The screenshot shutter uses an independent stream. Host recording,
+device-selection controls and removal of unused host dependencies remain future work.
 
 ## Machine lifecycle
 
@@ -260,7 +279,7 @@ through a dedicated SDL3 audio stream on the main thread. The embedded WAV is
 decoded and the default playback device opened lazily. Repeated shots clear the
 stream before replay, keeping queued audio bounded. Missing host audio is
 reported once and never turns a successful file save into a capture failure.
-This UI sound is independent of Iris's still-disabled guest audio.
+This UI sound is independent of the guest's SDL audio stream and mute setting.
 
 GIF width, fps and encoder persist in `[gif]`, independently of restart-required
 Iris settings. Width 0 means native guest resolution and is the default; saved
@@ -394,6 +413,16 @@ fresh temporary state and no guest disks; they do not verify IRIX boot.
 Visual inspection of a screenshot establishes what PROM actually displayed;
 a nonuniform-frame check alone does not identify a PROM menu or an OS boot.
 
+Guest audio has unit coverage for bounded queues, stereo-frame alignment,
+closed producers, mute/pause flushing, device-open failures and retry. An
+isolated desktop check programs real HAL2 DMA on Indy and IP22, capturing SDL's
+output: stereo peaks of 12000/6000 become 6000/3000 at saved 50% volume and zero
+while muted. It also checks draft isolation, pause/resume, cold reset, F2 label
+switching and clean teardown. IP28 and O2 PROM playback produced non-silent SDL
+captures. These checks do not establish sustained IRIX playback quality or
+host microphone support; Octane's shared RAD output route still needs an
+end-to-end guest playback recording.
+
 The input smoke test uses the same temporary-state lifecycle and deadline. It
 queues SDL events through the normal application loop to enter the command
 monitor and type `hinv`, then checks capture release/recapture and modal entry.
@@ -423,10 +452,10 @@ preservation, invalid log targets and restart detection independent of UI flags.
 
 ## Next milestones
 
-1. Add guest PCM playback through SDL audio and feature boundaries for Iris's existing host backends.
+1. Add device-selection controls and feature boundaries for Iris's existing host backends.
    Validate Linux, Windows and macOS builds and device behavior.
 2. Extend General/Media/Advanced and add Extensions and Network controls.
    Classify settings as live, next boot or restart-required. Validate before
    applying and confirm disruptive changes. Add explicit COW management and
    guest-aware media swapping when their core interfaces are ready.
-3. Add F5 confirmed reset and F7 pause controls as their backend behavior becomes ready.
+3. Extend audio validation to sustained IRIX playback and host-device changes on each platform.
