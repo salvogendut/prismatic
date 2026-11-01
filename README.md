@@ -2,7 +2,7 @@
 
 ![Prismatic logo](images/Prismatic%20Rainbow%20Emulator%20Logo.png)
 
-Prismatic is the Rust/SDL3 frontend being developed for our [Iris fork](https://github.com/salvogendut/iris),
+Prismatic is the Rust/SDL3 frontend being developed for [our](https://github.com/salvogendut/iris) fork of [Iris](https://github.com/techomancer/iris),
 following the desktop conventions of the Happy Years emulators
 ([1984](https://github.com/salvogendut/1984), [1985](https://github.com/salvogendut/1985),
 [1986](https://github.com/salvogendut/1986), and [1989](https://github.com/salvogendut/1989)).
@@ -693,3 +693,11 @@ physical keys, host/modal routing, PS/2 releases, mouse input, high-DPI hit
 testing, configuration migration, COW persistence, CD read-only access,
 invalid media, flush failures, LED pulses, Advanced option mapping, restart
 detection and retained settings when Tinker is hidden. Linux is validated; other platforms still need integration checks.
+
+## Acknowledgments
+
+Thank you to [techomancer](https://github.com/techomancer) and the contributors
+to [Iris](https://github.com/techomancer/iris) for developing the SGI emulation
+core that powers Prismatic. Their emulator, hardware research and documentation
+provide the foundation for [our fork](https://github.com/salvogendut/iris) and
+its integration with the Happy Years Rust/SDL3 interface.
