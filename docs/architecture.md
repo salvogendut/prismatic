@@ -27,6 +27,7 @@ including when the hints are hidden.
 | `src/input.rs` | Host/modal key routing, physical scancode mapping, held guest input, PS/2 delivery |
 | `src/smoke.rs` | Scripted SDL input and General/Media/Advanced menu and restart smoke tests |
 | `src/overlay.rs` | Draft settings, navigation, modal choices and effects |
+| `src/expert.rs` | Advanced pages, validated performance/connection/developer settings, owned GDB/VNC and boot tracing |
 | `src/settings.rs` | Desktop/hardware/media/Advanced settings, compatibility, RAM banks, state paths and atomic persistence |
 | `src/profiles.rs` | Named machine stanzas, draft selection, state identity and concurrent catalog merging |
 | `src/instance.rs` | Exclusive leases for machine state, writable disks and atomic configuration updates |
@@ -477,6 +478,44 @@ those controls show fixed values and ignore Enter on these models. Their saved
 values are retained for switching back. Non-Newport profiles similarly show
 fixed Shadow cache and guest-controlled resolution.
 
+Advanced now has four pages. `Session.advanced_page` is presentation state, reset
+when the overlay opens; the Core page retains its original row ordering. Numeric
+and path fields use the existing transactional text editor. `AdvancedSettings.expert`
+is serialized under `[advanced.expert]` and copied into named machine stanzas.
+Structural validation runs on load/save; capability, host affinity and ELF-file
+checks run on the validation worker before persistence. Relative ELF paths resolve
+against the config directory for both the current and inactive labels.
+
+`expert::apply` maps Count MHz, thread affinity, JIT worker count and monitor/serial
+ports into `MachineConfig`. Count MHz uses integer kHz internally so draft equality
+is exact. Runtime setup happens only on the machine worker: probe fixed ports,
+initialize affinity for every workstation, set idle parking through Iris's atomic
+API, and configure the optional persistent JIT cache through its safe library API.
+No environment variables are mutated after threads start. JIT cache destinations
+are per-label; Iris's bounded cache writer captures each job's destination before
+a later label can change the configuration. Feature-disabled controls remain
+visible with capability hints. All saved expert settings participate in normal
+restart detection, including while Tinker is hidden.
+
+The worker loads an optional ELF before starting the CPU on supported Indy/Indigo2
+models. It starts optional Perfetto recording before the first instruction and
+remote services after peripherals start. `expert::Services` owns GDB and VNC
+handles. Both disconnect clients and join their workers before the workstation is
+stopped/dropped, including failures and unwinding. GDB binds synchronously and
+exposes its actual loopback address; VNC uses Iris's primary-display `HostInput`.
+Monitor, GDB and VNC endpoints and trace status are published through the existing
+status mutex; the SDL thread only reads snapshots. Serial automatic addresses
+remain in Iris diagnostics because the library has no serial-address accessor.
+
+Each boot trace gets a unique reserved file under the label's `traces/` directory;
+it never truncates a previous capture. Stop flushes the recording and retains the
+file. Cleanup also closes monitor-started recordings and tolerates a trace already
+stopped through the monitor. Tracing uses bounded Iris event rings. Remote ports are loopback-only;
+GDB/VNC default off. Fixed-port preflight failures, GDB/VNC bind failures, monitor bind failures and
+invalid ELF files produce recoverable startup failures. A serial bind race after
+preflight can only be reported through Iris diagnostics. The new optional Cargo features forward `idle-pause`, `jitv2`, `perfetto`
+and `developer` to the compatible Iris `xiri` checkout.
+
 Serial logging uses Iris's channel-B sink and raw or wall-clock timestamps.
 The path is `serial.log` within the selected machine's state directory. The
 worker checks that this is an appendable regular file before construction,
@@ -597,12 +636,20 @@ MAC restarts. Final UI, diskless PROM, Media and Advanced smokes and the optiona
 PCAP release build use the same `xiri` revision. Two-CPU Octane LED checks also
 pass against the synced core's status source.
 
+Step 3 checks cover the default and optional `pcap,idle-pause,jitv2,perfetto,developer`
+builds. Real worker tests boot a static MIPS ELF, exchange GDB RSP, disconnect a
+partial VNC handshake and reuse its ports, and flush unique boot traces even after
+a monitor trace stop. An isolated SDL desktop check exercises all four Advanced
+pages, draft discard, paused Save, restart cancellation, runtime reports, a full
+VNC framebuffer, reset teardown and monitor trace stop. These establish host integration; remote clients on Windows/macOS and
+OS-specific effects of nondefault clock/affinity/JIT settings need separate testing.
+
 ## Next milestones
 
 1. Add device-selection controls and feature boundaries for Iris's existing host backends.
    Validate Linux, Windows and macOS builds and device behavior.
-2. Extend Advanced/Network/Extensions with performance/debug tools and optional
-   devices; graphics, CPU count, expanded SCSI and storage/network services are wired.
+2. Add the remaining optional devices (VINO/camera, DaynaPort, Ultra64).
+   Hardware, storage/network services and Advanced performance/debug/remote tools are wired.
    Classify settings as live, next boot or restart-required. Validate before
    applying and confirm disruptive changes. Address snapshot disk provenance
    before exposing snapshot load/save.

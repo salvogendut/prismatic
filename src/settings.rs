@@ -451,6 +451,7 @@ pub struct AdvancedSettings {
     pub clock_offset_years: i64,
     pub scsi_deferred_interrupts: bool,
     pub serial_logging: SerialLogging,
+    pub expert: crate::expert::ExpertSettings,
 }
 
 impl Default for AdvancedSettings {
@@ -461,6 +462,7 @@ impl Default for AdvancedSettings {
             clock_offset_years: 0,
             scsi_deferred_interrupts: true,
             serial_logging: SerialLogging::Off,
+            expert: crate::expert::ExpertSettings::default(),
         }
     }
 }
@@ -511,6 +513,7 @@ impl AdvancedSettings {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        self.expert.validate()?;
         // The file also accepts individual years between the menu presets.
         if !(-30..=0).contains(&self.clock_offset_years) {
             return Err("Advanced clock offset must be between -30 and 0 years".into());
@@ -697,6 +700,7 @@ impl Settings {
                     saved.media.resolve_paths(parent)?;
                     saved.machine.resolve_prom_paths(parent)?;
                     saved.network.resolve_paths(parent)?;
+                    saved.advanced.expert.resolve_paths(parent)?;
                 }
                 if let Some(label) = settings.machine_label.clone() {
                     settings.select_machine(&label)?;
@@ -708,6 +712,7 @@ impl Settings {
                 settings.audio.validate()?;
                 settings.network.validate(settings.machine.profile)?;
                 settings.network.resolve_paths(parent)?;
+                settings.advanced.expert.resolve_paths(parent)?;
                 settings
                     .media
                     .resolve_paths(path.parent().unwrap_or(Path::new(".")))?;
@@ -742,11 +747,13 @@ impl Settings {
             let _lease = crate::instance::Lease::acquire(Path::new(&lock_path))?;
             let mut saved = self.clone();
             saved.network.resolve_paths(parent)?;
+            saved.advanced.expert.resolve_paths(parent)?;
             saved.remember_machine();
             for machine in saved.machines.values_mut() {
                 machine.media.resolve_paths(parent)?;
                 machine.machine.resolve_prom_paths(parent)?;
                 machine.network.resolve_paths(parent)?;
+                machine.advanced.expert.resolve_paths(parent)?;
             }
             let own_catalog = saved.machines.clone();
             saved.merge_machine_catalog(path)?;
@@ -950,6 +957,7 @@ mod tests {
             clock_offset_years: -18,
             scsi_deferred_interrupts: false,
             serial_logging: SerialLogging::Timestamped,
+            ..Default::default()
         };
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), settings);

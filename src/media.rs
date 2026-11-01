@@ -381,6 +381,12 @@ impl MediaJobs {
                 .validate_runtime(settings.machine.profile)?;
             settings.network.resolve_paths(&directory)?;
             settings.network.validate_files()?;
+            settings
+                .advanced
+                .expert
+                .validate_runtime(settings.machine.profile)?;
+            settings.advanced.expert.resolve_paths(&directory)?;
+            settings.advanced.expert.validate_files()?;
             settings.machine.validate_prom()?;
             settings.media.validate_files()?;
             Ok(Completion::Validated {

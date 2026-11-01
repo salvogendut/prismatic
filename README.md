@@ -49,7 +49,7 @@ Dev/
 
 Prismatic uses the local Iris library directly, including the fork's power-off,
 diagnostic routing, bundled O2/Octane firmware and frontend audio support. Use
-Iris branch `xiri` at commit `d3d8a99` or newer and update both checkouts.
+Iris branch `xiri` at commit `13cf247` or newer and update both checkouts.
 Always use this branch for Prismatic: it carries the compatibility work for
 NetBSD and other guest operating systems alongside IRIX. Its root Cargo
 manifest also preserves the fork's patched winit and
@@ -81,8 +81,9 @@ persistent flash. `--state-dir PATH` keeps the existing Indy layout at `PATH`;
 other models use their named subdirectory under `PATH`. Firmware source files
 are read-only; O2 saves flash in `nvram.bin`, Octane in `flash.bin` alongside its
 `nvram.bin`. Existing flash preserves the guest's firmware and environment.
-The Iris monitor binds an ephemeral loopback port,
-printed in the terminal; serial ports also use ephemeral loopback ports.
+The Iris monitor and serial ports default to ephemeral loopback ports.
+Advanced > Connections selects fixed ports and optional GDB/VNC servers;
+Connection status shows the active monitor, GDB and VNC addresses.
 Iris also maintains its shared draw-shape cache at
 `~/.iris/rex-jit-profile.bin`; `IRIS_REX_JIT_PROFILE` overrides that cache path.
 
@@ -329,6 +330,11 @@ the same **Restart / Cancel** confirmation as General and Media. Cancel keeps
 the draft, and Discard leaves the running machine and saved file unchanged.
 Turning Tinker off hides the controls without resetting their values.
 
+The **Advanced page** row cycles **Core**, **Performance**, **Connections** and
+**Developer**. Press Up from the first row to reach it quickly. Enter opens a
+text editor for numeric values and paths; Ctrl+A replaces the value, Enter
+accepts the draft, and Escape cancels. The existing controls below are on Core.
+
 | Setting | Choices | Default |
 | --- | --- | --- |
 | Guest resolution | Guest-controlled, 1024×768, 1280×960, 1280×1024 | Guest-controlled |
@@ -341,6 +347,59 @@ Turning Tinker off hides the controls without resetting their values.
 | GIF resolution | Native guest resolution, or 320/480/640 pixels wide | Native |
 | GIF frame rate | 10, 20, 25 fps | 25 |
 | GIF encoder | Built-in, FFmpeg optimize (if available) | Built-in |
+
+Performance exposes the following settings, all saved per machine label:
+
+| Setting | Behavior |
+| --- | --- |
+| Count clock | CP0 Count rate in MHz; `auto` uses the model default. This controls guest timer/clock reporting, independently of host emulation throughput. |
+| Idle parking | Enables Iris's known-idle-loop parking in `idle-pause` builds. |
+| Host thread affinity | Enables optional host core IDs for CPU, REX3 processing and Newport refresh threads. `auto` leaves a role to the host scheduler. CPU IDs must be available to the process; both Octane CPUs use the CPU role. |
+| JIT compiler workers | 1–64 workers for the experimental `jitv2` build. The execution engine is selected at build time. |
+| JIT disk cache | Opt-in compiled-page reuse, stored under this label's state directory in `jit-cache/`. |
+
+Connections provides editable **Monitor**, **Serial A/B**, **GDB** and **VNC**
+TCP ports. Monitor and serial ports accept `0`/`auto` for automatic allocation;
+GDB and VNC additionally accept blank/`off` to disable them (the default).
+All bind to **127.0.0.1 without authentication**. Configured fixed ports must
+be distinct and free when booting; use different ports or automatic allocation
+when running labels in separate processes. GDB targets CPU 0; attaching stops
+that CPU. VNC shares the primary guest display and input, with a saved 1–60 fps
+limit (default 30). Connection status describes the loaded machine, independently
+of menu drafts; automatic serial addresses are available in Debug > Console.
+Services start on Ctrl+P boot and close on reset, label switch, power-off or quit.
+
+Developer provides **Boot ELF**, **Trace on boot**, trace categories and the
+trace timeline. Boot ELF accepts a static, big-endian MIPS ELF32 executable on
+Indy/IP22/IP28; it loads before the CPU starts and bypasses PROM execution.
+Relative paths resolve beside `prismatic.cfg`; clear the field to restore PROM
+boot. Iris does not currently support direct ELF loading on O2/Octane.
+With `perfetto`, Trace on boot writes a new `traces/boot-*.pftrace` in the label's
+state directory for every boot. It flushes on stop without replacing earlier
+traces. Categories accept `all` or a comma-separated list such as
+`cpu,irq,gfx,scsi`; prefix a category with `-` to exclude it (`all,-prim`).
+The timeline uses host time or retired guest instructions (CPU 0 on Octane).
+Runtime status shows the active trace path and build features. Open the trace
+with the Perfetto UI. The `developer` feature also enables Iris's existing
+monitor device/GPU tracing commands; see the fork's `debug.md` for those commands.
+
+Optional controls show **Not built** and their saved value when unavailable.
+Enter restores the default JIT worker count or disables saved cache/tracing options
+when that feature is missing, so a configuration can be reused with a simpler build.
+Build flags are explicit:
+
+```sh
+cargo run --release --locked --features pcap,idle-pause,perfetto
+# Also enable the experimental CPU JIT and developer monitor instrumentation:
+cargo run --release --locked --features pcap,idle-pause,perfetto,jitv2,developer
+```
+
+Performance, connection and developer setting changes use the normal Save and
+restart confirmation. Draft validation checks ELF format, host core IDs and
+build support without starting servers or creating cache/trace files. Discard
+has no runtime effects. Settings persist in `[advanced.expert]` and each named
+machine's `[machines."Label".advanced.expert]` stanza. Existing configs keep their
+previous behavior; optional remote services, boot ELF and tracing default off.
 
 Debug output routes Iris's routine startup, bus-probe, Newport register/display
 and draw-cache diagnostics. **Screen** shows the latest 12 wrapped lines above
@@ -726,6 +785,24 @@ clock_offset_years = 0
 scsi_deferred_interrupts = true
 serial_logging = "off"
 
+[advanced.expert]
+# count_mhz = 33.0       # Omit for the model default.
+idle_parking = true     # Effective only with the idle-pause build feature.
+thread_affinity = false
+# cpu_core = 2          # Omit a role to let the host scheduler choose.
+jit_threads = 1         # Requires jitv2 to change.
+jit_cache = false
+monitor_port = 0        # Automatic loopback port.
+serial_port_a = 0
+serial_port_b = 0
+# gdb_port = 1234       # Omit to disable; 0 chooses an automatic port.
+# vnc_port = 5900
+vnc_max_fps = 30
+# boot_elf = "tests/loop.elf"
+trace_on_boot = false   # Requires perfetto.
+trace_categories = "all"
+trace_guest_clock = false
+
 [gif]
 width = 0 # Native guest resolution; alternatively 320, 480 or 640.
 fps = 25
@@ -753,6 +830,7 @@ defaults. NVRAM/EEPROM remain separate machine-state files.
 cargo fmt -p prismatic --check
 cargo clippy --locked --all-targets --no-deps -- -D warnings
 cargo test --locked
+cargo test --locked --features pcap,idle-pause,jitv2,perfetto,developer
 SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --smoke-test
 IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --boot-smoke-test --screenshot /tmp/prismatic-prom.bmp
 IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --input-smoke-test --screenshot /tmp/prismatic-input.bmp
@@ -771,7 +849,10 @@ PROM text or prove that a complete OS boot works.
 `cargo test --locked` also checks named-label persistence, concurrent catalog
 saves, instance locks, draft isolation and pause/reset/resume. The IP22 power-off
 regression writes its panel register separately from a monitor halt, using
-temporary state and no guest disks.
+temporary state and no guest disks. Advanced tests also cover per-label
+expert settings, invalid draft edits, port collisions, real GDB protocol exchange,
+VNC teardown during a partial handshake, immediate port reuse and direct ELF boot.
+The optional-feature suite checks that each boot trace is distinct and flushed.
 
 For a diskless IP28 check, create a separate configuration and use the same
 smoke path (the input script also works with its PROM):

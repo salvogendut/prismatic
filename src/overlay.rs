@@ -1,3 +1,4 @@
+use crate::expert::{Field as ExpertField, Page};
 use crate::media::{MediaKind, Medium};
 use crate::network::{Field, Folder, Interface};
 use crate::settings::{Settings, WindowScale};
@@ -69,6 +70,7 @@ pub enum Effect {
     ListInterfaces,
     Storage(Operation),
     RunAction(Action),
+    RuntimeStatus,
 }
 
 pub struct Session {
@@ -78,6 +80,7 @@ pub struct Session {
     pub row: usize,
     media_controller: u8,
     storage_index: usize,
+    pub advanced_page: Page,
 }
 
 impl Session {
@@ -171,6 +174,9 @@ impl Session {
                 ("Guest audio", on_off(!self.draft.audio.muted)),
                 ("Guest volume", format!("{}%", self.draft.audio.volume)),
             ],
+            Tab::Advanced if self.advanced_page != Page::Core => {
+                self.draft.advanced.expert.rows(self.advanced_page)
+            }
             Tab::Advanced => vec![
                 (
                     "Guest resolution",
@@ -217,6 +223,7 @@ impl Session {
                 ("GIF resolution", self.draft.gif.resolution_label()),
                 ("GIF frame rate", format!("{} fps", self.draft.gif.fps)),
                 ("GIF encoder", self.draft.gif.encoder.label().into()),
+                ("Advanced page", "Core - Enter for next".into()),
             ],
             Tab::Extensions => vec![
                 (
@@ -372,6 +379,7 @@ pub struct Overlay {
 pub enum TextField {
     Label,
     Network(Field),
+    Expert(ExpertField),
 }
 
 pub struct TextEdit {
@@ -574,6 +582,9 @@ impl Overlay {
                     let result = match edit.field {
                         TextField::Label => draft.save_as_machine(edit.text.trim()),
                         TextField::Network(field) => field.apply(&mut draft.network, &edit.text),
+                        TextField::Expert(field) => {
+                            field.apply(&mut draft.advanced.expert, &edit.text)
+                        }
                     };
                     match result {
                         Ok(()) => self.text_edit = None,
@@ -760,6 +771,7 @@ impl Overlay {
                     row: 0,
                     media_controller: 0,
                     storage_index: 0,
+                    advanced_page: Page::Core,
                 });
                 if key == Key::NextMachine {
                     let session = self.session.as_mut().unwrap();
@@ -827,6 +839,70 @@ impl Overlay {
                 }
                 (Tab::General, 10) => session.draft.audio.muted = !session.draft.audio.muted,
                 (Tab::General, 11) => session.draft.audio.cycle_volume(),
+                (Tab::Advanced, row) if row + 1 == session.rows().len() => {
+                    session.advanced_page = session.advanced_page.next();
+                    session.row = session.rows().len() - 1;
+                }
+                (Tab::Advanced, row) if session.advanced_page != Page::Core => {
+                    let settings = &mut session.draft.advanced.expert;
+                    let field = match (session.advanced_page, row) {
+                        (Page::Performance, 0) => Some(ExpertField::CountMhz),
+                        (Page::Performance, 1) if iris::build_features::IDLE_PAUSE => {
+                            settings.idle_parking = !settings.idle_parking;
+                            None
+                        }
+                        (Page::Performance, 2) => {
+                            settings.thread_affinity = !settings.thread_affinity;
+                            None
+                        }
+                        (Page::Performance, 3) => Some(ExpertField::CpuCore),
+                        (Page::Performance, 4) => Some(ExpertField::Rex3Core),
+                        (Page::Performance, 5) => Some(ExpertField::RefreshCore),
+                        (Page::Performance, 6) => {
+                            if iris::build_features::JITV2 {
+                                Some(ExpertField::JitThreads)
+                            } else {
+                                settings.jit_threads = 1;
+                                None
+                            }
+                        }
+                        (Page::Performance, 7) => {
+                            settings.jit_cache = iris::build_features::JITV2 && !settings.jit_cache;
+                            None
+                        }
+                        (Page::Connections, 0) => Some(ExpertField::Monitor),
+                        (Page::Connections, 1) => Some(ExpertField::SerialA),
+                        (Page::Connections, 2) => Some(ExpertField::SerialB),
+                        (Page::Connections, 3) => Some(ExpertField::Gdb),
+                        (Page::Connections, 4) => Some(ExpertField::Vnc),
+                        (Page::Connections, 5) => Some(ExpertField::VncFps),
+                        (Page::Connections, 6) | (Page::Developer, 4) => {
+                            return Effect::RuntimeStatus;
+                        }
+                        (Page::Developer, 0) => Some(ExpertField::BootElf),
+                        (Page::Developer, 1) => {
+                            settings.trace_on_boot =
+                                cfg!(feature = "perfetto") && !settings.trace_on_boot;
+                            None
+                        }
+                        (Page::Developer, 2) if cfg!(feature = "perfetto") => {
+                            Some(ExpertField::TraceCategories)
+                        }
+                        (Page::Developer, 3) if cfg!(feature = "perfetto") => {
+                            settings.trace_guest_clock = !settings.trace_guest_clock;
+                            None
+                        }
+                        _ => None,
+                    };
+                    if let Some(field) = field {
+                        self.text_edit = Some(TextEdit {
+                            text: field.value(settings),
+                            field: TextField::Expert(field),
+                            error: None,
+                            selected: true,
+                        });
+                    }
+                }
                 (Tab::Advanced, 0) if session.draft.machine.newport() => {
                     session.draft.advanced.cycle_resolution()
                 }
@@ -943,6 +1019,111 @@ impl Overlay {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unavailable_saved_features_can_be_cleared_without_editing_the_file() {
+        let mut live = Settings {
+            tinker: true,
+            ..Default::default()
+        };
+        live.advanced.expert.jit_threads = 4;
+        live.advanced.expert.jit_cache = true;
+        live.advanced.expert.trace_on_boot = true;
+        let mut overlay = Overlay::default();
+        overlay.key(Key::Options, &live);
+        if !iris::build_features::JITV2 {
+            let session = overlay.session.as_mut().unwrap();
+            session.tab = Tab::Advanced;
+            session.advanced_page = Page::Performance;
+            session.row = 6;
+            overlay.key(Key::Enter, &live);
+            overlay.key(Key::Down, &live);
+            overlay.key(Key::Enter, &live);
+            let draft = &overlay.session.as_ref().unwrap().draft.advanced.expert;
+            assert_eq!(draft.jit_threads, 1);
+            assert!(!draft.jit_cache);
+        }
+        if !cfg!(feature = "perfetto") {
+            let session = overlay.session.as_mut().unwrap();
+            session.tab = Tab::Advanced;
+            session.advanced_page = Page::Developer;
+            session.row = 1;
+            overlay.key(Key::Enter, &live);
+            assert!(
+                !overlay
+                    .session
+                    .as_ref()
+                    .unwrap()
+                    .draft
+                    .advanced
+                    .expert
+                    .trace_on_boot
+            );
+        }
+        assert!(live.advanced.expert.trace_on_boot);
+        assert!(live.advanced.expert.jit_cache);
+    }
+
+    #[test]
+    fn advanced_pages_edit_only_drafts_and_runtime_status_is_separate() {
+        let live = Settings {
+            tinker: true,
+            ..Default::default()
+        };
+        let mut overlay = Overlay::default();
+        for key in [
+            Key::Options,
+            Key::Right,
+            Key::Right,
+            Key::Up,
+            Key::Enter,
+            Key::Down,
+            Key::Enter,
+        ] {
+            overlay.key(key, &live);
+        }
+        assert_eq!(
+            overlay.session.as_ref().unwrap().advanced_page,
+            Page::Performance
+        );
+        assert!(overlay.text_edit.is_some());
+        overlay.text_input("97.5");
+        overlay.key(Key::Enter, &live);
+        assert_eq!(
+            overlay
+                .session
+                .as_ref()
+                .unwrap()
+                .draft
+                .advanced
+                .expert
+                .count_mhz
+                .map(f64::from),
+            Some(97.5)
+        );
+        assert_eq!(live.advanced.expert.count_mhz, None);
+        for key in [
+            Key::Escape,
+            Key::Left,
+            Key::Enter,
+            Key::Options,
+            Key::Right,
+            Key::Right,
+        ] {
+            overlay.key(key, &live);
+        }
+        assert!(!overlay.session.as_ref().unwrap().dirty());
+        assert_eq!(overlay.session.as_ref().unwrap().advanced_page, Page::Core);
+        for key in [Key::Up, Key::Enter, Key::Enter, Key::Up] {
+            overlay.key(key, &live);
+        }
+        assert_eq!(
+            overlay.session.as_ref().unwrap().advanced_page,
+            Page::Connections
+        );
+        assert_eq!(overlay.key(Key::Enter, &live), Effect::RuntimeStatus);
+        assert!(!overlay.session.as_ref().unwrap().dirty());
+    }
 
     #[test]
     fn storage_actions_confirm_separately_from_drafts_and_consume_busy_keys() {

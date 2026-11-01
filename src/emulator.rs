@@ -61,6 +61,7 @@ impl Phase {
 pub struct Status {
     pub phase: Phase,
     pub monitor: Option<SocketAddr>,
+    pub runtime: String,
     pub pcap: iris::net::PcapStatus,
 }
 
@@ -69,6 +70,7 @@ impl Default for Status {
         Self {
             phase: Phase::Starting,
             monitor: None,
+            runtime: String::new(),
             pcap: iris::net::PcapStatus::Inactive,
         }
     }
@@ -269,6 +271,7 @@ pub fn machine_config(
     }
     config.graphics.heads = hardware.heads;
     network.apply(&mut config)?;
+    advanced.expert.apply(&mut config)?;
     config.validate()?;
     Ok(config)
 }
@@ -365,6 +368,7 @@ impl Emulator {
     ) -> Result<Self, String> {
         let mut config = machine_config(state_dir, hardware, media, advanced, network)?;
         let mut network = network.clone();
+        let expert = advanced.expert.clone();
         let audio = Arc::new(crate::audio::Inbox::default());
         config.audio.output = Some(audio.clone());
         // Attach explicitly before CPU start: Iris's CLI constructor exits the
@@ -402,6 +406,7 @@ impl Emulator {
                         crate::instance::Lease::acquire(&state_dir.join("machine.lock"))?;
                     let _disk_leases = crate::instance::disks(&media)?;
                     prepare_serial_log(&config)?;
+                    expert.prepare(&config, &state_dir)?;
                     // Iris's Indigo2 fallback also searches the current directory.
                     // Give it the bundled image explicitly so a local ROM cannot
                     // silently change a configured machine's firmware.
@@ -439,7 +444,12 @@ impl Emulator {
                         &worker_activity,
                     )?;
                     *worker_network.lock().unwrap() = owned.machine.nat_control();
+                    if let Some(path) = &expert.boot_elf {
+                        owned.machine.load_elf(path)?;
+                    }
                     owned.machine.register_system_controller();
+                    // Start before CPUs, so boot traces include the first instruction.
+                    let mut services = crate::expert::Services::start(&expert, &state_dir)?;
                     {
                         let _guard = owned.slot.lock();
                         let display = owned
@@ -471,9 +481,14 @@ impl Emulator {
                             *worker_input.lock().unwrap() = Some(owned.machine.get_ps2());
                         } else {
                             drop(_guard);
+                            services.finish()?;
                             owned.stop()?;
                             return Ok(Phase::Stopped);
                         }
+                    }
+                    services.start_remote(&expert, owned.machine.as_ref())?;
+                    if owned.machine.monitor_addr().is_none() {
+                        return Err("Iris could not bind the configured monitor port".into());
                     }
                     let mut paused = false;
                     let final_phase = loop {
@@ -497,6 +512,7 @@ impl Emulator {
                             *worker_status.lock().unwrap() = Status {
                                 phase,
                                 monitor: owned.machine.monitor_addr(),
+                                runtime: services.report(&expert, owned.machine.monitor_addr()),
                                 pcap: owned.machine.net_pcap_status(),
                             };
                         }
@@ -545,7 +561,9 @@ impl Emulator {
                     };
                     worker_status.lock().unwrap().phase = Phase::Stopping;
                     *worker_input.lock().unwrap() = None;
+                    let service_result = services.finish();
                     owned.stop()?;
+                    service_result?;
                     Ok(final_phase)
                 }));
                 *worker_input.lock().unwrap() = None;
@@ -558,6 +576,7 @@ impl Emulator {
                 let mut status = worker_status.lock().unwrap();
                 status.phase = phase;
                 status.monitor = None;
+                status.runtime.clear();
             })
             .map_err(|e| format!("Cannot start Iris worker: {e}"))?;
         Ok(Self {
@@ -651,6 +670,264 @@ mod tests {
 
     // Iris has process-wide display/CPU hooks; started machines must not overlap.
     static MACHINE_TEST: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn boot_elf_runs_at_entry_instead_of_prom() {
+        use std::{io::Read, net::TcpStream};
+        let _serial = MACHINE_TEST.lock().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("loop.elf");
+        let mut elf = vec![0u8; 92];
+        elf[..7].copy_from_slice(b"\x7fELF\x01\x02\x01");
+        for (at, value) in [(16, 2u16), (18, 8), (40, 52), (42, 32), (44, 1)] {
+            elf[at..at + 2].copy_from_slice(&value.to_be_bytes());
+        }
+        for (at, value) in [
+            (20, 1u32),
+            (24, 0x88001000),
+            (28, 52),
+            (52, 1),
+            (56, 84),
+            (60, 0x88001000),
+            (64, 0x08001000),
+            (68, 8),
+            (72, 8),
+            (76, 5),
+            (80, 4),
+            (84, 0x1000ffff),
+        ] {
+            elf[at..at + 4].copy_from_slice(&value.to_be_bytes());
+        }
+        std::fs::write(&path, elf).unwrap();
+        let mut advanced = AdvancedSettings::default();
+        advanced.expert.boot_elf = Some(path.to_str().unwrap().into());
+        let mut emulator = Emulator::spawn(
+            &directory.path().join("state"),
+            &MachineSettings::default(),
+            &MediaSettings::default(),
+            &advanced,
+            &Default::default(),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while emulator.status().phase == Phase::Starting && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(emulator.status().phase, Phase::Running);
+        emulator.request_pause(true).unwrap();
+        while emulator.status().phase != Phase::Paused && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(emulator.status().phase, Phase::Paused);
+        let mut stream = TcpStream::connect(emulator.status().monitor.unwrap()).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let prompt = |stream: &mut TcpStream| {
+            let mut response = Vec::new();
+            let mut byte = [0];
+            while !response.ends_with(b"\n> ") && response != b"> " {
+                stream.read_exact(&mut byte).unwrap();
+                response.push(byte[0]);
+            }
+            String::from_utf8_lossy(&response).into_owned()
+        };
+        prompt(&mut stream);
+        stream.write_all(b"r\n").unwrap();
+        let registers = prompt(&mut stream);
+        assert!(
+            registers.contains("88001000") || registers.contains("88001004"),
+            "{registers}"
+        );
+        emulator.request_stop();
+        while !emulator.finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(emulator.finished());
+    }
+
+    #[cfg(feature = "perfetto")]
+    #[test]
+    fn boot_traces_flush_and_each_boot_creates_a_separate_file() {
+        let _serial = MACHINE_TEST.lock().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let mut advanced = AdvancedSettings::default();
+        advanced.expert.trace_on_boot = true;
+        advanced.expert.trace_categories = "all,-prim".into();
+        for index in 1..=2 {
+            let mut emulator = Emulator::spawn(
+                directory.path(),
+                &MachineSettings::default(),
+                &MediaSettings::default(),
+                &advanced,
+                &Default::default(),
+            )
+            .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while emulator.status().phase == Phase::Starting && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(emulator.status().phase, Phase::Running);
+            assert!(emulator.status().runtime.contains("recording to"));
+            thread::sleep(Duration::from_millis(100));
+            if index == 2 {
+                // Same API used by `perfetto stop` in Iris's monitor.
+                iris::perfetto::stop().unwrap();
+            }
+            emulator.request_stop();
+            while !emulator.finished() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(emulator.finished());
+            assert_eq!(emulator.status().phase, Phase::Stopped);
+            assert_eq!(iris::perfetto::mask(), 0);
+            let files: Vec<_> = std::fs::read_dir(directory.path().join("traces"))
+                .unwrap()
+                .collect();
+            assert_eq!(files.len(), index);
+            assert!(
+                files
+                    .iter()
+                    .all(|file| file.as_ref().unwrap().metadata().unwrap().len() > 64)
+            );
+        }
+    }
+
+    #[test]
+    fn remote_services_disconnect_clients_and_release_ports_on_label_change() {
+        use std::{
+            io::Read,
+            net::{TcpListener, TcpStream},
+        };
+        let _serial = MACHINE_TEST.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let mut advanced = AdvancedSettings::default();
+        advanced.expert.gdb_port = Some(0);
+        advanced.expert.vnc_port = Some(0);
+        #[cfg(feature = "jitv2")]
+        {
+            advanced.expert.jit_threads = 2;
+            advanced.expert.jit_cache = true;
+        }
+        for index in 0..2 {
+            let mut emulator = Emulator::spawn(
+                &root.path().join(index.to_string()),
+                &MachineSettings::default(),
+                &MediaSettings::default(),
+                &advanced,
+                &Default::default(),
+            )
+            .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while emulator.status().phase == Phase::Starting && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(20));
+            }
+            assert_eq!(emulator.status().phase, Phase::Running);
+            let report = emulator.status().runtime;
+            let endpoint = |name: &str| -> SocketAddr {
+                report
+                    .lines()
+                    .find_map(|s| s.strip_prefix(name))
+                    .unwrap()
+                    .split_whitespace()
+                    .next()
+                    .unwrap()
+                    .parse()
+                    .unwrap()
+            };
+            let gdb_addr = endpoint("GDB: ");
+            let vnc_addr = endpoint("VNC: ");
+            let mut debugger = TcpStream::connect(gdb_addr).unwrap();
+            debugger
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            debugger.write_all(b"$?#3f").unwrap();
+            let mut byte = [0];
+            debugger.read_exact(&mut byte).unwrap();
+            assert_eq!(byte, [b'+']); // Actual RSP, not just a listening socket.
+            // Leave VNC mid-handshake; shutdown must still close/join it.
+            let mut viewer = TcpStream::connect(vnc_addr).unwrap();
+            viewer
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut banner = [0; 12];
+            viewer.read_exact(&mut banner).unwrap();
+            assert_eq!(&banner, b"RFB 003.008\n");
+            emulator.request_stop();
+            let deadline = Instant::now() + Duration::from_secs(8);
+            while !emulator.finished() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                emulator.finished(),
+                "Remote clients prevented worker shutdown"
+            );
+            assert_eq!(emulator.status().phase, Phase::Stopped);
+            assert!(emulator.status().runtime.is_empty());
+            assert_eq!(viewer.read(&mut byte).unwrap(), 0);
+            let mut remaining = Vec::new();
+            debugger.read_to_end(&mut remaining).unwrap();
+            let gdb_probe = TcpListener::bind(gdb_addr).unwrap();
+            let vnc_probe = TcpListener::bind(vnc_addr).unwrap();
+            advanced.expert.gdb_port = Some(gdb_addr.port());
+            advanced.expert.vnc_port = Some(vnc_addr.port());
+            drop((gdb_probe, vnc_probe));
+        }
+    }
+
+    #[test]
+    fn occupied_connection_port_fails_before_constructing_machine() {
+        let _serial = MACHINE_TEST.lock().unwrap();
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut advanced = AdvancedSettings::default();
+        advanced.expert.gdb_port = Some(listener.local_addr().unwrap().port());
+        let dir = tempfile::tempdir().unwrap();
+        let mut emulator = Emulator::spawn(
+            dir.path(),
+            &MachineSettings::default(),
+            &MediaSettings::default(),
+            &advanced,
+            &Default::default(),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !emulator.finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            matches!(emulator.status().phase, Phase::Failed(ref error) if error.contains("GDB port"))
+        );
+        assert!(emulator.input().is_none());
+        assert!(!dir.path().join("nvram.bin").exists());
+    }
+
+    #[test]
+    fn expert_clock_and_connections_map_without_startup_side_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut advanced = AdvancedSettings::default();
+        advanced.expert.count_mhz = Some(crate::expert::CountMhz::try_from(97.5).unwrap());
+        advanced.expert.monitor_port = 12345;
+        advanced.expert.serial_port_a = 12346;
+        advanced.expert.serial_port_b = 12347;
+        let config = machine_config(
+            dir.path(),
+            &MachineSettings::default(),
+            &MediaSettings::default(),
+            &advanced,
+            &Default::default(),
+        )
+        .unwrap();
+        assert_eq!(config.clock.fixed_mhz, Some(97.5));
+        assert_eq!(
+            (
+                config.monitor_port,
+                config.serial_port_a,
+                config.serial_port_b
+            ),
+            (Some(12345), Some(12346), Some(12347))
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
 
     #[test]
     fn worker_storage_actions_use_second_bus_and_preserve_paused_scratch_state() {
@@ -851,6 +1128,7 @@ mod tests {
             clock_offset_years: -20,
             scsi_deferred_interrupts: false,
             serial_logging: SerialLogging::Timestamped,
+            ..Default::default()
         };
         let cfg = machine_config(
             dir.path(),

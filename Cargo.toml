@@ -7,6 +7,10 @@ description = "A Happy Years desktop frontend for the Iris SGI emulator"
 
 [features]
 pcap = ["iris/pcap"]
+idle-pause = ["iris/idle-pause"]
+jitv2 = ["iris/jitv2"]
+perfetto = ["iris/perfetto"]
+developer = ["iris/developer"]
 
 [dependencies]
 iris = { path = "../iris" }

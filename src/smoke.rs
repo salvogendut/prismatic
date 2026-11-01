@@ -416,6 +416,7 @@ impl AdvancedSmoke {
             clock_offset_years: -5,
             scsi_deferred_interrupts: false,
             serial_logging: crate::settings::SerialLogging::Timestamped,
+            ..Default::default()
         }
     }
 

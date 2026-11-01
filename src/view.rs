@@ -127,7 +127,7 @@ pub fn draw(
     if let Some(lines) = &overlay.report {
         shade(canvas, 180)?;
         panel(canvas, Rect::new(60, 120, 840, 440))?;
-        text(canvas, 80, 140, "Storage operation", TEXT)?;
+        text(canvas, 80, 140, "Operation result", TEXT)?;
         for (i, line) in lines
             .iter()
             .skip(overlay.report_offset)
@@ -155,6 +155,7 @@ pub fn draw(
                 "Use up to 32 ASCII characters. Existing labels are kept.",
             ),
             crate::overlay::TextField::Network(field) => (field.title(), field.hint()),
+            crate::overlay::TextField::Expert(field) => (field.title(), field.hint()),
         };
         text(canvas, x + 24, y + 20, title, TEXT)?;
         let visible: String = edit
@@ -187,7 +188,9 @@ pub fn draw(
                 .unwrap_or("Enter accepts; F9 saves options. Ctrl+A selects all. Esc cancels."),
             MUTED,
         )?;
-        text(canvas, x + 24, y + 116, hint, MUTED)?;
+        for (line, hint) in wrap_ascii(hint, 82).iter().take(2).enumerate() {
+            text(canvas, x + 24, y + 116 + line as i32 * 16, hint, MUTED)?;
+        }
     }
     if let Some(picker) = &overlay.interfaces {
         shade(canvas, 150)?;
@@ -233,6 +236,25 @@ pub fn draw(
         text(canvas, 40, y + 14, &shown, TEXT)?;
     }
     Ok(())
+}
+
+fn wrap_ascii(value: &str, width: usize) -> Vec<String> {
+    let value = short_ascii(value, usize::MAX);
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in value.split_whitespace() {
+        if !line.is_empty() && line.len() + 1 + word.len() > width {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 fn short_ascii(value: &str, max: usize) -> String {
@@ -334,6 +356,7 @@ fn draw_overlay(
             hints.push("Media changes require restart. Shut down the guest OS before saving.".into());
             hints
         }
+        Tab::Advanced if session.advanced_page != crate::expert::Page::Core => vec![crate::expert::hint(session.advanced_page, session.row).into(), "Saved per machine label. Setting changes take effect on the next boot/restart.".into()],
         Tab::Advanced => vec![match session.row {
             0 if !session.draft.machine.newport() => "GR2, IMPACT and GBE video modes are controlled by the PROM and guest OS.",
             0 => "Sets the initial Newport video mode; the guest may change it later.",
@@ -348,6 +371,7 @@ fn draw_overlay(
             6 => "Debug: Off, Screen (latest messages), Console (terminal). Applies on Save.",
             7 => "Native uses the guest screen size; scaled widths are optional. Applies to the next GIF.",
             8 => "GIF sampling rate. Changes apply to the next recording; F6 starts or stops.",
+            10 => "Enter cycles Core, Performance, Connections and Developer pages.",
             _ => "FFmpeg optionally optimizes after recording; the built-in GIF is kept on failure.",
         }.into(), "Core options require restart. Turning Tinker off keeps the saved values active.".into()],
         Tab::Extensions => vec![match session.row {
@@ -363,6 +387,10 @@ fn draw_overlay(
         Tab::About => vec![],
         Tab::Network => session.draft.network.hints(session.row),
     };
+    let hints: Vec<String> = hints
+        .iter()
+        .flat_map(|hint| wrap_ascii(hint, 100))
+        .collect();
     let row_count = if session.tab == Tab::About {
         4
     } else {
@@ -408,7 +436,13 @@ fn draw_overlay(
             fill(canvas, Rect::new(10, y, PANEL_WIDTH - 4, 16), SELECTED)?;
         }
         let restart = (session.tab == Tab::General && (index < 4 || index == 7))
-            || (session.tab == Tab::Advanced && index < 5)
+            || (session.tab == Tab::Advanced
+                && match session.advanced_page {
+                    crate::expert::Page::Core => index < 5,
+                    crate::expert::Page::Performance => index < 8,
+                    crate::expert::Page::Connections => index < 6,
+                    crate::expert::Page::Developer => index < 4,
+                })
             || (session.tab == Tab::Extensions && (index < 5 || index == 6 || index == 7));
         text(canvas, 20, y, label, TEXT)?;
         text(

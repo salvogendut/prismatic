@@ -4,6 +4,7 @@ mod capture;
 mod diagnostics;
 mod display;
 mod emulator;
+mod expert;
 mod input;
 mod instance;
 mod media;
@@ -78,7 +79,8 @@ Shift+F2/F4/F5/F6/F9/F11/F12: send a bare guest function-key tap while captured
 Ctrl+Plus/Minus (also Ctrl+= and keypad +/-): scale window by 25% and save
 
 General: machine, RAM, CPU, keyboard and named machine labels. Core changes require restart.
-Tinker > Advanced: resolution, cache, clock offset, SCSI timing, serial and debug output.
+Tinker > Advanced: Core, Performance, Connections and Developer pages.
+Saved clock/affinity/JIT options, loopback monitor/serial/GDB/VNC, boot ELF and Perfetto traces.
 Advanced sets GIF resolution (Native/320/480/640), frame rate (10/20/25) and encoder.
 Captures save the guest display as timestamped PPM/GIF files in the working directory.
 Media: raw/CHD hard disks and ISO9660/EFS/CHD CD-ROMs.
@@ -701,6 +703,13 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                             }
                             Err(error) => overlay.show_report(error),
                         }
+                    }
+                    Effect::RuntimeStatus => {
+                        let message = emulator.as_ref().map(|e| {
+                            let status = e.status();
+                            if status.runtime.is_empty() { status.phase.label().to_owned() } else { status.runtime }
+                        }).unwrap_or_else(|| format!("No machine loaded. Ctrl+P boots the saved configuration.\nBuild features: {}", iris::build_features::enabled().join(", ")));
+                        overlay.show_report(message);
                     }
                     Effect::None => {}
                     Effect::ListInterfaces => media_jobs.list_interfaces(),
