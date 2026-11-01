@@ -48,19 +48,27 @@ Dev/
 ```
 
 Prismatic uses the local Iris library directly, including the fork's power-off,
-diagnostic routing, bundled O2/Octane firmware and frontend audio support. Use
-Iris branch `xiri` at commit `087d250` or newer and update both checkouts.
-Always use this branch for Prismatic: it carries the compatibility work for
-NetBSD and other guest operating systems alongside IRIX. Its root Cargo
-manifest also preserves the fork's patched winit and
-block dependencies. Install Rust through
-rustup; `rust-toolchain.toml` selects nightly, matching Iris's requirement.
+diagnostic routing, bundled O2/Octane firmware and frontend audio support.
+On this Prismatic branch, `perf/sgiemu-port`, use Iris branch
+`perf/sgiemu-port` at commit `66f5a59` and update both checkouts together.
+It builds on `xiri`, retaining the integration and compatibility work for NetBSD
+and other guest operating systems alongside IRIX. Prismatic `main` continues
+to use Iris `xiri`. The root Cargo manifest preserves the fork's patched winit
+and block dependencies. Install Rust through rustup; `rust-toolchain.toml`
+selects `nightly-2026-10-28`, the toolchain used for the Iris performance work.
 On a Fedora development system, install the native build dependencies:
 
 ```sh
-sudo dnf install gcc gcc-c++ make pkgconf-pkg-config sdl3-devel alsa-lib-devel clang-devel
-cargo run --release --locked
+sudo dnf install gcc gcc-c++ make pkgconf-pkg-config sdl3-devel alsa-lib-devel clang-devel libpcap-devel
+cargo run --release --locked --features pcap,idle-pause,perfetto,jitv2
 ```
+
+The performance build enables Iris's experimental CPU JIT and its new integer
+register cache, alongside the RTC calendar cache. Keep `developer` disabled:
+developer/lockstep instrumentation disables the register cache. The existing
+PCAP, idle-pause and Perfetto controls remain available. These optimizations
+are workload-dependent; the branch's bare-metal results do not establish a
+Prismatic desktop or OS boot speedup.
 
 The current Iris library still compiles its winit/glutin, CPAL and camera
 modules. Prismatic uses its own SDL window and audio output; Iris's CPAL output
@@ -391,7 +399,10 @@ Build flags are explicit:
 
 ```sh
 cargo run --release --locked --features pcap,idle-pause,perfetto
+# Performance branch: enable the CPU JIT with its GPR cache active:
+cargo run --release --locked --features pcap,idle-pause,perfetto,jitv2
 # Also enable the experimental CPU JIT and developer monitor instrumentation:
+# This diagnostic build disables the performance branch's GPR cache.
 cargo run --release --locked --features pcap,idle-pause,perfetto,jitv2,developer
 ```
 

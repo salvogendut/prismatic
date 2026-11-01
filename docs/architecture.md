@@ -1,5 +1,24 @@
 # Frontend and Iris integration
 
+## Performance branch build
+
+Prismatic `perf/sgiemu-port` uses the sibling Iris branch of the same name at
+`66f5a59`, based on the integrated `xiri` revision `087d250`. Its frontend-facing
+APIs are unchanged. The performance changes stay in Iris: Cranelift SSA copies
+of guest integer registers and cached DS1x86 calendar conversion. The register
+cache keeps architectural state current and excludes FPU/fallback regions.
+
+Build with `pcap,idle-pause,perfetto,jitv2` using `nightly-2026-10-28`.
+The `developer` feature disables the new register cache, so the performance
+binary omits it. Default-feature checks still exercise the interpreter build;
+checks and PROM smoke runs with the performance feature set exercise the JIT.
+No Prismatic UI or configuration schema changes are needed for this branch.
+
+Validation against `66f5a59` passes formatting, strict frontend Clippy, 136
+default-feature tests and 137 tests with the performance feature set. The release
+binary passes dummy SDL, diskless PROM and guest-input smoke tests, with JIT pages
+compiled during PROM execution. These checks do not measure an OS boot speedup.
+
 ## Design baseline
 
 Prismatic uses Rust and SDL3, following the native Happy Years desktop UI,

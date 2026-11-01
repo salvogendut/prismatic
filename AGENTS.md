@@ -4,8 +4,11 @@
 - The emulation engine is our sibling `../iris` fork. Keep CPU/device changes
   there and integration code here. Inspect its current APIs before adapting
   them; read its `AGENTS.md` before editing the fork.
-- Always use the `xiri` branch of `../iris` for Prismatic development, builds
-  and testing. Check the branch before working; do not substitute upstream
+- On this Prismatic branch, `perf/sgiemu-port`, use the user-requested
+  `perf/sgiemu-port` branch of `../iris` (based on `xiri`). Build the performance
+  binary with `pcap,idle-pause,perfetto,jitv2`, without `developer`: developer
+  instrumentation disables the new GPR cache. Other Prismatic branches continue
+  to use `xiri`. Check the Iris branch before working; do not substitute upstream
   `main` or the former `xiri/netbsd-newport` branch. Preserve NetBSD and other
   guest OS compatibility when integrating changes; do not assume IRIX-only use.
 - Match the native Happy Years UI conventions in `../1984`, `../1985`,
