@@ -7,7 +7,7 @@ use crate::{
 };
 use iris::{
     compositor::SwCompositor,
-    config::{CacheModel, GraphicsBoard, MachineConfig, MachineProfile},
+    config::{CacheModel, MachineConfig, MachineProfile},
     debug_overlay::DebugOverlay,
     dev::ng1::rex3::Renderer,
     dev::ps2::Ps2Controller,
@@ -74,36 +74,76 @@ impl Default for Status {
     }
 }
 
-// One pending frame at most, replaced by the producer if the UI falls behind.
-// Taking an Arc keeps the upload outside the lock and avoids cloning pixel data.
-#[derive(Clone, Default)]
-pub struct FrameSlot(Arc<Mutex<Option<Arc<Frame>>>>);
+// One latest frame per head. Composing outside the lock keeps Iris refresh
+// threads independent of SDL uploads and drops intermediate frames naturally.
+#[derive(Default)]
+struct FrameState {
+    frames: [Option<Arc<Frame>>; 2],
+    dirty: bool,
+}
+
+#[derive(Clone)]
+pub struct FrameSlot {
+    inner: Arc<Mutex<FrameState>>,
+    heads: u8,
+}
+
+impl Default for FrameSlot {
+    fn default() -> Self {
+        Self::new(1)
+    }
+}
 
 impl FrameSlot {
-    fn publish(&self, frame: Frame) {
-        *self.0.lock().unwrap() = Some(Arc::new(frame));
+    fn new(heads: u8) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(FrameState::default())),
+            heads,
+        }
+    }
+    fn publish(&self, head: usize, frame: Frame) {
+        let mut state = self.inner.lock().unwrap();
+        state.frames[head] = Some(Arc::new(frame));
+        state.dirty = true;
     }
     pub fn take(&self) -> Option<Arc<Frame>> {
-        self.0.lock().unwrap().take()
+        let frames = {
+            let mut state = self.inner.lock().unwrap();
+            if !state.dirty {
+                return None;
+            }
+            state.dirty = false;
+            state.frames.clone()
+        };
+        if self.heads == 1 {
+            frames[0].clone()
+        } else {
+            Some(Arc::new(Frame::side_by_side(
+                frames[0].as_deref(),
+                frames[1].as_deref(),
+            )))
+        }
     }
 }
 
 struct CaptureRenderer {
     frames: FrameSlot,
+    head: usize,
     compositor: SwCompositor,
     presented: bool,
     activity: Activity,
-    cycles: u64,
+    cpu_counters: activity::CpuCounters,
 }
 
 impl CaptureRenderer {
-    fn new(frames: FrameSlot, activity: Activity) -> Self {
+    fn new(frames: FrameSlot, activity: Activity, head: usize) -> Self {
         Self {
             frames,
+            head,
             compositor: SwCompositor::new(),
             presented: false,
             activity,
-            cycles: 0,
+            cpu_counters: activity::CpuCounters::default(),
         }
     }
 }
@@ -120,10 +160,10 @@ impl Renderer for CaptureRenderer {
         live_fb_rgb: Option<&[u32]>,
         live_fb_aux: Option<&[u32]>,
     ) {
-        if stats.cycles != self.cycles {
-            self.activity.signal(activity::CPU);
-            self.cycles = stats.cycles;
-        }
+        self.activity.signal(self.cpu_counters.update([
+            Some(stats.cycles),
+            stats.more_cpus[0].map(|(cycles, _)| cycles),
+        ]));
         if stats.hb & 3 != 0 {
             self.activity.signal(activity::NET);
         }
@@ -144,7 +184,7 @@ impl Renderer for CaptureRenderer {
             screen.frame_seq = screen.frame_seq.wrapping_add(1);
         }
         self.frames
-            .publish(pack_frame(pixels, width, height, FB_STRIDE));
+            .publish(self.head, pack_frame(pixels, width, height, FB_STRIDE));
         self.presented = true;
     }
 }
@@ -172,7 +212,7 @@ pub fn machine_config(
     advanced: &AdvancedSettings,
     network: &crate::network::NetworkSettings,
 ) -> Result<MachineConfig, String> {
-    media.validate()?;
+    media.validate_for(hardware.profile)?;
     advanced.validate()?;
     let path = |name: &str| {
         state_dir
@@ -212,6 +252,7 @@ pub fn machine_config(
     };
     config.machine.profile = hardware.profile;
     config.machine.cpu = hardware.cpu;
+    config.machine.cpus = hardware.cpus;
     config.machine.cache = if hardware.newport() {
         advanced.cache
     } else {
@@ -222,15 +263,11 @@ pub fn machine_config(
     } else {
         iris::dev::ng1::vc2_timings::NewportResolution::Guest
     };
-    config.graphics.board = match hardware.profile {
-        MachineProfile::IndyIp24 | MachineProfile::Indigo2Ip22 => Some(GraphicsBoard::Newport),
-        MachineProfile::O2Ip32 => None, // Iris's O2 constructor always supplies integrated GBE.
-        _ => Some(GraphicsBoard::SolidImpact),
-    };
+    config.graphics.board = hardware.graphics_board();
     if hardware.profile == MachineProfile::OctaneIp30 {
         config.octane.flash = Some(path("flash.bin")?);
     }
-    config.graphics.heads = 1;
+    config.graphics.heads = hardware.heads;
     network.apply(&mut config)?;
     config.validate()?;
     Ok(config)
@@ -329,7 +366,7 @@ impl Emulator {
         let has_media = !media.devices.is_empty();
         iris::workstation::set_exit_on_guest_poweroff(false);
         let state_dir = state_dir.to_owned();
-        let frames = FrameSlot::default();
+        let frames = FrameSlot::new(hardware.heads);
         let status = Arc::new(Mutex::new(Status::default()));
         let (commands, receiver) = mpsc::sync_channel(1);
         let stop_requested = Arc::new(AtomicBool::new(false));
@@ -392,9 +429,21 @@ impl Emulator {
                             .get_display()
                             .ok_or("Iris did not create a display")?;
                         *display.renderer_slot().lock() = Some(Box::new(CaptureRenderer::new(
-                            worker_frames,
-                            worker_activity,
+                            worker_frames.clone(),
+                            worker_activity.clone(),
+                            0,
                         )));
+                        if hardware.heads == 2 {
+                            let second = owned
+                                .machine
+                                .get_display_head1()
+                                .ok_or("Iris did not create the second Newport display")?;
+                            *second.renderer_slot().lock() = Some(Box::new(CaptureRenderer::new(
+                                worker_frames,
+                                worker_activity,
+                                1,
+                            )));
+                        }
                         if !worker_stop.load(Ordering::Acquire) {
                             owned.machine.start();
                             // Iris debug builds deliberately leave the CPU parked.
@@ -546,6 +595,7 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iris::config::GraphicsBoard;
     use iris::config::KeyboardLayout;
 
     // Iris has process-wide display/CPU hooks; started machines must not overlap.
@@ -748,10 +798,145 @@ mod tests {
     }
 
     #[test]
+    fn dual_heads_keep_latest_frames_and_handle_independent_mode_changes() {
+        let frames = FrameSlot::new(2);
+        assert!(frames.take().is_none());
+        frames.publish(1, pack_frame(&[0x33], 1, 1, 1));
+        let frame = frames.take().unwrap();
+        assert_eq!((frame.width, frame.height), (2, 1));
+        assert_eq!(frame.rgba, [0, 0, 0, 255, 0x33, 0, 0, 255]);
+        frames.publish(0, pack_frame(&[0x11, 0x22], 1, 2, 1));
+        frames.publish(1, pack_frame(&[0x44, 0x55], 2, 1, 2));
+        frames.publish(1, pack_frame(&[0x66, 0x77], 2, 1, 2));
+        let frame = frames.take().unwrap();
+        assert_eq!((frame.width, frame.height), (3, 2));
+        assert_eq!(
+            frame
+                .rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|p| p[0])
+                .collect::<Vec<_>>(),
+            [0x11, 0x66, 0x77, 0x22, 0, 0]
+        );
+        assert!(frames.take().is_none());
+        frames.publish(0, pack_frame(&[0x88], 1, 1, 1));
+        let frame = frames.take().unwrap();
+        assert_eq!((frame.width, frame.height), (3, 1));
+        assert_eq!(
+            frame
+                .rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|p| p[0])
+                .collect::<Vec<_>>(),
+            [0x88, 0x66, 0x77]
+        );
+    }
+
+    #[test]
+    fn dual_newport_worker_publishes_both_heads_and_stops_cleanly() {
+        let _serial = MACHINE_TEST.lock().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let hardware = MachineSettings {
+            heads: 2,
+            ..Default::default()
+        };
+        let mut emulator = Emulator::spawn(
+            directory.path(),
+            &hardware,
+            &MediaSettings::default(),
+            // The diskless PROM leaves head 1 disabled. Seed both controllers
+            // with a video mode so both refresh threads can present immediately.
+            &AdvancedSettings {
+                resolution: iris::dev::ng1::vc2_timings::NewportResolution::Res1024x768,
+                ..Default::default()
+            },
+            &Default::default(),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let both = loop {
+            let ready = emulator
+                .frames
+                .inner
+                .lock()
+                .unwrap()
+                .frames
+                .iter()
+                .all(Option::is_some);
+            if ready || emulator.finished() || Instant::now() >= deadline {
+                break ready;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        emulator.request_stop();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !emulator.finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(emulator.finished());
+        assert_eq!(emulator.status().phase, Phase::Stopped);
+        assert!(
+            both,
+            "Both actual Iris refresh threads must reach their renderers"
+        );
+    }
+
+    #[test]
+    fn all_extensions_map_to_valid_core_configuration() {
+        for profile in MachineSettings::PROFILES {
+            let mut hardware = MachineSettings {
+                profile,
+                ..Default::default()
+            };
+            hardware.cpu = hardware.cpus()[0];
+            for &board in hardware.graphics_choices() {
+                hardware.graphics = Some(board);
+                hardware.heads = if hardware.newport() { 2 } else { 1 };
+                hardware.cpus = if profile == MachineProfile::OctaneIp30 {
+                    2
+                } else {
+                    1
+                };
+                hardware.ram_mb = *hardware.ram_sizes().last().unwrap();
+                let mut media = MediaSettings::default();
+                for controller in 0..profile.scsi_controllers() {
+                    let slot = controller * 16 + profile.max_scsi_id();
+                    media.devices.insert(
+                        slot,
+                        media::Medium {
+                            kind: media::MediaKind::Disk,
+                            path: format!("disk-{slot}.raw"),
+                        },
+                    );
+                }
+                let config = machine_config(
+                    Path::new("/tmp/unused-prismatic-config"),
+                    &hardware,
+                    &media,
+                    &AdvancedSettings::default(),
+                    &Default::default(),
+                )
+                .unwrap();
+                assert_eq!(config.graphics.board, Some(board));
+                assert_eq!(config.graphics.heads, hardware.heads);
+                assert_eq!(config.machine.cpus, hardware.cpus);
+                assert_eq!(config.banks.iter().sum::<u32>(), hardware.ram_mb);
+                for (&slot, device) in &config.scsi {
+                    assert_eq!(device.placement(slot), (slot / 16, slot % 16));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn slow_consumer_receives_only_latest_frame() {
         let frames = FrameSlot::default();
-        frames.publish(pack_frame(&[0x11], 1, 1, 1));
-        frames.publish(pack_frame(&[0x22], 1, 1, 1));
+        frames.publish(0, pack_frame(&[0x11], 1, 1, 1));
+        frames.publish(0, pack_frame(&[0x22], 1, 1, 1));
         assert_eq!(frames.take().unwrap().rgba[0], 0x22);
         assert!(frames.take().is_none());
     }
@@ -759,7 +944,7 @@ mod tests {
     #[test]
     fn impact_and_gbe_frames_keep_native_pixels_and_monitor_readback() {
         let frames = FrameSlot::default();
-        let mut renderer = CaptureRenderer::new(frames.clone(), Activity::default());
+        let mut renderer = CaptureRenderer::new(frames.clone(), Activity::default(), 0);
         let mut screen = Rex3Screen::new();
         screen.prebuilt = true;
         screen.width = 1280;
@@ -854,8 +1039,8 @@ mod tests {
             std::fs::write(&cd, vec![0x6b; 65536]).unwrap();
             let mut media = MediaSettings::default();
             for (id, path, kind) in [
-                (1, &disk, media::MediaKind::Disk),
-                (6, &cd, media::MediaKind::Cdrom),
+                (16 + profile.max_scsi_id(), &disk, media::MediaKind::Disk),
+                (profile.max_scsi_id(), &cd, media::MediaKind::Cdrom),
             ] {
                 media
                     .devices
@@ -865,6 +1050,11 @@ mod tests {
                 profile,
                 cpu,
                 ..Default::default()
+            };
+            hardware.cpus = if profile == MachineProfile::OctaneIp30 {
+                2
+            } else {
+                1
             };
             hardware.set_prom(Some(rom.to_str().unwrap().into()));
             let mut emulator = Emulator::spawn(

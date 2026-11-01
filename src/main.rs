@@ -84,6 +84,8 @@ Media: raw/CHD hard disks and ISO9660/EFS/CHD CD-ROMs.
 Starts PAUSED; Ctrl+P boots the selected machine. Default media is disconnected.
 Guest audio uses SDL3; General provides saved mute and volume controls.
 Tinker reveals Network: NAT subnet, NFS, TFTP, local port forwards and optional PCAP bridging.
+Tinker reveals Extensions: graphics boards, Newport display heads and Octane CPU count.
+Media selects both SCSI buses where supported and IDs 1-15 on Octane.
 --keyboard overrides the saved keyboard type for this session.
 --smoke-test renders the UI without starting Iris.
 --boot-smoke-test waits for guest display output, captures ten seconds later, and stops.
@@ -94,7 +96,7 @@ Tinker reveals Network: NAT subnet, NFS, TFTP, local port forwards and optional 
 --state-dir overrides Indy NVRAM storage; Indigo2 uses its indigo2 subdirectory.
 --config overrides prismatic.cfg in the per-user application directory.
 --machine-label selects a saved label for this launch; it still starts PAUSED.
-Menu Save persists General, Media, Advanced and display settings to this file."
+Menu Save persists machine, media, Advanced, Network, Extensions and desktop settings."
                     );
                     return Ok(None);
                 }

@@ -47,15 +47,37 @@ pub struct MediaSettings {
     pub devices: BTreeMap<u8, Medium>,
 }
 
+fn slot_label(slot: u8) -> String {
+    format!("SCSI {}:{}", slot / 16, slot % 16)
+}
+
 impl MediaSettings {
     pub fn validate(&self) -> Result<(), String> {
         for (&id, medium) in &self.devices {
-            if !(1..=7).contains(&id) {
-                return Err("Media SCSI IDs must be 1 through 7 on controller 0".into());
+            if id >= 32 || id % 16 == 0 {
+                return Err(
+                    "Media slots must name SCSI targets 1 through 15 on controller 0 or 1".into(),
+                );
             }
             if medium.path.is_empty() || medium.path.contains('\0') {
                 return Err(format!(
-                    "SCSI {id}: choose an image or disconnect the device"
+                    "{}: choose an image or disconnect the device",
+                    slot_label(id)
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate_for(&self, profile: MachineProfile) -> Result<(), String> {
+        self.validate()?;
+        for &slot in self.devices.keys() {
+            if slot / 16 >= profile.scsi_controllers() || slot % 16 > profile.max_scsi_id() {
+                return Err(format!(
+                    "SCSI {}:{} is unavailable on {}; disconnect it in Media or choose another model",
+                    slot / 16,
+                    slot % 16,
+                    profile.label()
                 ));
             }
         }
@@ -81,7 +103,7 @@ impl MediaSettings {
         let mut disks = Vec::new();
         for (&id, medium) in &mut self.devices {
             *medium = Medium::inspect(Path::new(&medium.path), medium.kind)
-                .map_err(|e| format!("SCSI {id}: {e}"))?;
+                .map_err(|e| format!("{}: {e}", slot_label(id)))?;
             if medium.kind == MediaKind::Disk {
                 if disks.contains(&medium.path) {
                     return Err("The same hard disk cannot occupy two SCSI targets".into());
@@ -257,6 +279,8 @@ impl MediaJobs {
         let (sender, receiver) = mpsc::sync_channel(1);
         self.receiver = Some(receiver);
         spawn(sender, move || {
+            settings.machine.validate()?;
+            settings.media.validate_for(settings.machine.profile)?;
             settings
                 .network
                 .validate_runtime(settings.machine.profile)?;
@@ -425,8 +449,10 @@ struct MediaNode {
 impl Drop for MediaNode {
     fn drop(&mut self) {
         if let Err(error) = self.inner.flush() {
-            *self.error.lock().unwrap() =
-                Some(format!("SCSI {}: could not flush media: {error}", self.id));
+            *self.error.lock().unwrap() = Some(format!(
+                "{}: could not flush media: {error}",
+                slot_label(self.id)
+            ));
         }
     }
 }
@@ -506,7 +532,8 @@ pub fn attach(
     let mut validated = settings.clone();
     validated.validate_files()?;
     for (&id, medium) in &validated.devices {
-        let node = open_node(medium).map_err(|e| format!("SCSI {id}: {}: {e}", medium.path))?;
+        let node =
+            open_node(medium).map_err(|e| format!("{}: {}: {e}", slot_label(id), medium.path))?;
         let error = Arc::new(Mutex::new(None));
         errors.0.push(error.clone());
         let node = MediaNode {
@@ -522,8 +549,10 @@ pub fn attach(
             ScsiIdentity::new(b"SGI     ", b"PRISMATIC DISK  ", b"1.0 ")
         };
         let device = ScsiDevice::new(Box::new(node), cd, medium.path.clone(), vec![], identity);
-        with_bus(machine, |bus| bus.attach(id, Box::new(device)))?
-            .map_err(|e| format!("SCSI {id}: {e}"))?;
+        with_bus(machine, id / 16, |bus| {
+            bus.attach(id % 16, Box::new(device))
+        })?
+        .map_err(|e| format!("{}: {e}", slot_label(id)))?;
     }
     Ok(())
 }
@@ -550,36 +579,48 @@ fn open_node(medium: &Medium) -> io::Result<Box<dyn BlockNode>> {
 
 /// Called only after the CPU and device threads stop, before machine teardown.
 pub fn detach(machine: &mut dyn Workstation) {
-    let _ = with_bus(machine, |bus| {
-        bus.with_targets(|targets| {
-            for target in targets {
-                *target = None;
-            }
+    for controller in 0..2 {
+        let _ = with_bus(machine, controller, |bus| {
+            bus.with_targets(|targets| {
+                for target in targets {
+                    *target = None;
+                }
+            });
         });
-    });
+    }
 }
 
-/// The Media menu manages controller 0 on each workstation. Iris exposes the
-/// same target bus through the WD33C93A, AIC7880 and ISP1040 controllers.
+/// Iris exposes a common target bus through WD33C93A, AIC7880 and ISP1040 controllers.
 fn with_bus<R>(
     machine: &mut dyn Workstation,
+    controller: u8,
     f: impl FnOnce(&iris::scsi::ScsiBus) -> R,
 ) -> Result<R, String> {
     let machine = machine.as_any_mut();
     if let Some(machine) = machine.downcast_ref::<iris::machine::Machine>() {
-        Ok(f(machine.hpc3().scsi().bus()))
+        let scsi = if controller == 0 {
+            Some(machine.hpc3().scsi())
+        } else {
+            machine.hpc3().scsi1()
+        }
+        .ok_or("Iris did not create this SCSI controller")?;
+        Ok(f(scsi.bus()))
     } else if let Some(machine) = machine.downcast_ref::<iris::ip32_machine::O2Machine>() {
         let controller = machine
             .bus
             .scsi
             .lock()
             .unwrap()
-            .first()
+            .get(controller as usize)
             .cloned()
             .ok_or("Iris did not create the O2 SCSI controller")?;
         Ok(f(controller.bus()))
     } else if let Some(machine) = machine.downcast_ref::<iris::ip30_machine::OctaneMachine>() {
-        Ok(f(machine.scsi[0].bus()))
+        Ok(f(machine
+            .scsi
+            .get(controller as usize)
+            .ok_or("Iris did not create this SCSI controller")?
+            .bus()))
     } else {
         Err("Unsupported Iris SCSI controller".into())
     }
@@ -594,6 +635,52 @@ mod tests {
         let path = directory.join(name);
         fs::write(&path, vec![0x5a; 65536]).unwrap();
         path
+    }
+
+    #[test]
+    fn slot_validation_is_model_specific_and_maps_both_buses() {
+        for profile in crate::settings::MachineSettings::PROFILES {
+            for slot in 0..=32 {
+                let mut media = MediaSettings::default();
+                media.devices.insert(
+                    slot,
+                    Medium {
+                        kind: MediaKind::Disk,
+                        path: "disk.raw".into(),
+                    },
+                );
+                let valid = slot / 16 < profile.scsi_controllers()
+                    && (1..=profile.max_scsi_id()).contains(&(slot % 16));
+                assert_eq!(
+                    media.validate_for(profile).is_ok(),
+                    valid,
+                    "{profile:?}, slot {slot}"
+                );
+                if valid {
+                    assert_eq!(
+                        media.iris_devices()[&slot].placement(slot),
+                        (slot / 16, slot % 16)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn duplicate_disks_across_controllers_are_rejected_without_creating_overlays() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = raw(dir.path(), "disk.raw");
+        let medium = Medium::inspect(&path, MediaKind::Disk).unwrap();
+        let mut settings = MediaSettings::default();
+        settings.devices.insert(1, medium.clone());
+        settings.devices.insert(17, medium);
+        assert!(
+            settings
+                .validate_files()
+                .unwrap_err()
+                .contains("same hard disk")
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]
@@ -857,7 +944,7 @@ mod tests {
             errors
                 .check()
                 .unwrap_err()
-                .contains("SCSI 7: could not flush media: disk full")
+                .contains("SCSI 0:7: could not flush media: disk full")
         );
     }
 

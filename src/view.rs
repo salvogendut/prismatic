@@ -116,7 +116,7 @@ pub fn draw(
 
     draw_debug(canvas, settings, presentation.debug_lines)?;
     draw_status(canvas, settings, &presentation)?;
-    draw_leds(canvas, &presentation)?;
+    draw_leds(canvas, settings, &presentation)?;
 
     if let Some(session) = &overlay.session {
         draw_overlay(canvas, session, overlay.busy)?;
@@ -306,7 +306,7 @@ fn draw_overlay(
         ],
         Tab::Media => {
             let mut hints = vec!["Hard disks: persistent copy-on-write. CD-ROMs: read-only (ISO9660 or EFS).".into()];
-            if let Some(medium) = session.draft.media.devices.get(&(session.row as u8 + 1)) {
+            if let Some(medium) = session.media_slot().and_then(|slot| session.draft.media.devices.get(&slot)) {
                 let path = short_ascii(&medium.path, 200);
                 hints.extend(path.as_bytes().chunks(100).map(|chunk| std::str::from_utf8(chunk).unwrap().to_owned()));
             }
@@ -314,7 +314,7 @@ fn draw_overlay(
             hints
         }
         Tab::Advanced => vec![match session.row {
-            0 if !session.draft.machine.newport() => "IMPACT and GBE video modes are controlled by the PROM and guest OS.",
+            0 if !session.draft.machine.newport() => "GR2, IMPACT and GBE video modes are controlled by the PROM and guest OS.",
             0 => "Sets the initial Newport video mode; the guest may change it later.",
             1 if !session.draft.machine.newport() => "This machine uses Shadow cache. The Newport model preference is retained.",
             1 => "Auto selects the cache model for this build. Full/Shadow are expert overrides.",
@@ -329,6 +329,11 @@ fn draw_overlay(
             8 => "GIF sampling rate. Changes apply to the next recording; F6 starts or stops.",
             _ => "FFmpeg optionally optimizes after recording; the built-in GIF is kept on failure.",
         }.into(), "Core options require restart. Turning Tinker off keeps the saved values active.".into()],
+        Tab::Extensions => vec![match session.row {
+            0 => "GR2/IMPACT compatibility depends on Iris and the guest OS; Newport is the default on Indy/IP22.",
+            1 => "Two Newport heads appear side by side. Screenshots and GIFs include both heads.",
+            _ => "Octane supports one or two CPUs and up to 8192 MB RAM (set RAM in General).",
+        }.into(), "Hardware changes require restart. Turning Tinker off keeps these settings active.".into()],
         Tab::About => vec![],
         Tab::Network => session.draft.network.hints(session.row),
     };
@@ -377,7 +382,8 @@ fn draw_overlay(
             fill(canvas, Rect::new(10, y, PANEL_WIDTH - 4, 16), SELECTED)?;
         }
         let restart = (session.tab == Tab::General && (index < 4 || index == 7))
-            || (session.tab == Tab::Advanced && index < 5);
+            || (session.tab == Tab::Advanced && index < 5)
+            || session.tab == Tab::Extensions;
         text(canvas, 20, y, label, TEXT)?;
         text(
             canvas,
@@ -588,6 +594,7 @@ const WRITE_LED: Color = Color::RGB(255, 200, 90);
 
 fn draw_leds(
     canvas: &mut WindowCanvas,
+    settings: &Settings,
     presentation: &Presentation<'_>,
 ) -> Result<(), sdl3::Error> {
     let y = (HEIGHT - LED_HEIGHT) as i32;
@@ -600,29 +607,76 @@ fn draw_leds(
     if let Some(label) = presentation.capture_label {
         text(canvas, 8, y + 7, label, Color::RGB(255, 96, 80))?;
     }
-    let mut lamps = vec![
-        ("RUN".to_owned(), presentation.running, false, RUN_LED),
-        (
-            "CPU".into(),
-            presentation.leds & activity::CPU != 0,
+    let mut lamps = vec![("RUN".to_owned(), presentation.running, false, RUN_LED)];
+    for index in 0..settings.machine.cpus as usize {
+        lamps.push((
+            format!("CPU{index}"),
+            presentation.leds & activity::cpu(index) != 0,
             false,
             CPU_LED,
-        ),
-        (
-            "NET".into(),
-            presentation.leds & activity::NET != 0,
-            false,
-            NET_LED,
-        ),
-    ];
+        ));
+    }
+    lamps.push((
+        "NET".into(),
+        presentation.leds & activity::NET != 0,
+        false,
+        NET_LED,
+    ));
+    let non_storage_lamps = lamps.len();
     for (&id, medium) in &presentation.media.devices {
         let disk = medium.kind == MediaKind::Disk;
         lamps.push((
-            format!("{}{id}", if disk { "HD" } else { "CD" }),
+            format!(
+                "{}{}",
+                if disk { "HD" } else { "CD" },
+                if id < 16 {
+                    id.to_string()
+                } else {
+                    format!("{}:{}", id / 16, id % 16)
+                }
+            ),
             presentation.leds & (activity::disk_read(id) | activity::disk_write(id)) != 0,
             presentation.leds & activity::disk_write(id) != 0,
             if disk { DISK_LED } else { CD_LED },
         ));
+    }
+    // Many wide-bus targets cannot all fit in the strip. Group storage lamps
+    // by controller and kind in that case, retaining separate read/write colors.
+    let lamp_width = |lamps: &[(String, bool, bool, LedPalette)]| {
+        lamps
+            .iter()
+            .map(|(label, ..)| 28 + label.len() as i32 * 8)
+            .sum::<i32>()
+    };
+    if lamp_width(&lamps) > WIDTH as i32 - 200 {
+        lamps.truncate(non_storage_lamps);
+        for controller in 0..2 {
+            for kind in [MediaKind::Disk, MediaKind::Cdrom] {
+                let slots: Vec<_> = presentation
+                    .media
+                    .devices
+                    .iter()
+                    .filter(|(slot, medium)| **slot / 16 == controller && medium.kind == kind)
+                    .map(|(&slot, _)| slot)
+                    .collect();
+                if slots.is_empty() {
+                    continue;
+                }
+                let reads = slots
+                    .iter()
+                    .fold(0, |bits, &slot| bits | activity::disk_read(slot));
+                let writes = slots
+                    .iter()
+                    .fold(0, |bits, &slot| bits | activity::disk_write(slot));
+                let disk = kind == MediaKind::Disk;
+                lamps.push((
+                    format!("{}{}:*", if disk { "HD" } else { "CD" }, controller),
+                    presentation.leds & (reads | writes) != 0,
+                    presentation.leds & writes != 0,
+                    if disk { DISK_LED } else { CD_LED },
+                ));
+            }
+        }
     }
     let width: i32 = lamps
         .iter()

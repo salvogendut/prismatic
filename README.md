@@ -19,7 +19,8 @@ scanlines, filtering and saved desktop preferences. SDL keyboard and relative
 mouse input now reach the guest through Iris's PS/2 controller.
 
 **F9 > Media** attaches hard disks and CD-ROMs; bottom LEDs show machine, CPU,
-network and disk activity. **Guest audio plays through SDL3**, with saved mute
+network and disk activity, with a separate white LED for each CPU (`CPU0`,
+and `CPU1` on dual-CPU Octane). **Guest audio plays through SDL3**, with saved mute
 and volume controls in General. Screenshots play the shared Happy Years shutter
 sound independently. With fresh NVRAM and
 no disk, the PROM normally displays "Unable to boot; press any key to continue".
@@ -48,7 +49,7 @@ Dev/
 
 Prismatic uses the local Iris library directly, including the fork's power-off,
 diagnostic routing, bundled O2/Octane firmware and frontend audio support. Use
-Iris branch `xiri` at commit `4aff0d9` or newer and update both checkouts.
+Iris branch `xiri` at commit `43fdfaa` or newer and update both checkouts.
 Always use this branch for Prismatic: it carries the compatibility work for
 NetBSD and other guest operating systems alongside IRIX. Its root Cargo
 manifest also preserves the fork's patched winit and
@@ -135,8 +136,9 @@ input are not implemented. Left, middle and right mouse buttons are forwarded;
 wheel and extra buttons work when the guest enables the corresponding PS/2
 mouse protocol.
 
-Enable **General > Tinker** to expose Advanced, including Iris core options,
-bilinear filtering, debug output and GIF capture settings. Hiding Advanced retains its saved settings. Options
+Enable **General > Tinker** to expose Advanced, Network and Extensions.
+Advanced includes Iris core options, filtering, debug output and GIF capture
+settings; Extensions selects graphics hardware and CPU count. Hiding these tabs retains their saved settings. Options
 are edited in a private draft and applied only after a successful save. Cancelling or discarding leaves the live display
 unchanged. Confirmation dialogs initially select Cancel.
 
@@ -146,7 +148,8 @@ unchanged. Confirmation dialogs initially select Cancel.
 matching 1989. **F6** starts recording; press it again to finish the GIF. These
 shortcuts work while input is captured and while menus are open. Captures contain
 the guest display and guest cursor, without the frontend menus, debug panel,
-scanlines, notifications or bottom bars. A guest frame must have arrived first.
+scanlines, notifications or bottom bars. With two Newport heads, captures include
+both displays side by side at their combined native size. A guest frame must have arrived first.
 
 Successful screenshots play the same embedded shutter sample as 1984/1985/1986.
 If host audio is unavailable, the image still saves and the terminal reports it.
@@ -183,14 +186,15 @@ returns to the draft. Escape from the editor offers Save / Discard / Cancel.
 
 | Machine | CPUs | RAM presets (MB) | Graphics | PROM |
 | --- | --- | --- | --- | --- |
-| Indy IP24 | R4400, R5000 | 32, 64, 128, 256 | Newport | Bundled |
-| Indigo2 IP22 | R4400 | 32, 64, 128, 256, 384, 512 | Newport | Bundled |
-| Indigo2 IMPACT IP28 | R10000 | 32, 64, 128, 256, 384, 512, 768, 1024 | Solid IMPACT | Bundled |
+| Indy IP24 | R4400, R5000 | 32, 64, 128, 256 | Newport, XZ | Bundled |
+| Indigo2 IP22 | R4400 | 32, 64, 128, 256, 384, 512 | Newport, XZ, Extreme, Solid/High/Maximum IMPACT | Bundled |
+| Indigo2 IMPACT IP28 | R10000 | 32, 64, 128, 256, 384, 512, 768, 1024 | Solid/High/Maximum IMPACT | Bundled |
 | O2 IP32 | R5000, R10000 | 32, 64, 128, 256, 384, 512, 768, 1024 | CRIME/GBE | Bundled 4.18; optional external IP32 PROM |
-| Octane IP30 | R10000 (one CPU) | 64, 128, 256, 384, 512, 768, 1024, 1536, 2048 | Solid IMPACT | Bundled 4.9; optional external IP30 PROM |
+| Octane IP30 | R10000 (one or two CPUs) | 64, 128, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192 | Solid/High/Maximum IMPACT | Bundled 4.9; optional external IP30 PROM |
 
-All models offer ANSI, ISO and JIS keyboard layouts. Octane's second CPU,
-additional graphics boards and second SCSI buses are not exposed yet.
+All models offer ANSI, ISO and JIS keyboard layouts. Graphics choices and
+Octane CPU count are in **Extensions**, under Tinker. Newport is the default
+on Indy/IP22; Solid IMPACT is the default on IP28/Octane.
 
 Changing models keeps compatible CPU/RAM choices, selects R4400 when changing
 from an R5000 Indy to Indigo2, and caps RAM at 256 MB when returning to Indy.
@@ -220,7 +224,8 @@ overwritten accidentally. Select an existing label with **General > Machine
 label** or **F2**, then edit its options and Save to update it. Discard changes
 neither the saved labels nor the active machine.
 
-Each label remembers its machine model, CPU, RAM, keyboard, firmware, media,
+Each label remembers its machine model, CPU model/count, RAM, graphics board,
+display heads, keyboard, firmware, media,
 Advanced machine options and Network settings. Desktop preferences, capture
 options and Tinker remain shared. F2 cycles labels alphabetically, and the
 status strip shows the active label and its state. Close Options before using
@@ -343,8 +348,8 @@ startup diagnostics, save Screen or Console before the next launch.
 Startup/storage failures still reach the terminal with debug output Off.
 This setting is separate from guest serial logging and Iris monitor tracing.
 
-On IP28, O2 and Octane, video mode is guest-controlled and the cache is fixed to
-Shadow. O2 and Octane also use their controllers' SCSI timing and host RTC time;
+With GR2, IMPACT or O2 integrated graphics, video mode is guest-controlled and
+the cache is fixed to Shadow. O2 and Octane also use their controllers' SCSI timing and host RTC time;
 those Advanced rows cannot be changed. Saved Newport/cache/clock/SCSI preferences
 are retained for models that support them.
 
@@ -367,15 +372,67 @@ host UTC timestamps. The graphical display is not transcribed. Existing logs
 are preserved, and no log is created merely by editing or discarding a draft.
 An unopenable log is reported as a startup error.
 
+## Extensions
+
+Enable **General > Tinker** and open **Extensions** with Left/Right. Enter cycles
+**Graphics board**, **Display heads** and **CPU count** through the options
+supported for the selected model. These settings belong to the selected machine
+label. Save validates and persists the draft, and asks to restart a running
+machine. Discard has no runtime effect; turning Tinker off keeps the hardware
+settings active.
+
+- Newport on Indy/IP22 supports one or two heads. Two displays appear side by
+  side in the same SDL window, using the guest's shared keyboard and mouse.
+  Each keeps its native resolution; a shorter head has black padding, and an
+  uninitialized head is black.
+  The guest OS must support and enable the second display. The diskless PROM
+  can leave it blank in Guest-controlled mode; a Newport resolution preset
+  initializes both heads.
+- GR2 XZ is selectable on Indy/IP22, and Extreme on IP22. Solid, High and Maximum
+  IMPACT are selectable on IP22, IP28 and Octane. O2 keeps its integrated GBE.
+  These alternate boards use Iris's current emulation; availability in the menu
+  does not guarantee a particular guest OS or graphics workload works.
+- Octane offers one or two R10000 CPUs. General's RAM choices extend to 8192 MB,
+  using up to four 2048 MB banks. Large settings need corresponding host memory;
+  full 8 GiB guest boots are not part of the smoke checks.
+
+Changing models keeps compatible graphics choices and resets incompatible ones
+to the model default. Selecting a board other than Newport resets the head count
+to one; leaving Octane resets the CPU count to one. Existing configurations with
+no new keys retain their previous hardware defaults. The optional `graphics`
+key and `heads`/`cpus` keys live in `[machine]` and each label's machine stanza:
+
+```toml
+[machines."Dual Octane".machine]
+profile = "octane_ip30"
+cpu = "r10000"
+cpus = 2
+ram_mb = 4096
+graphics = "maximpact"
+heads = 1
+```
+
 ## Media and activity LEDs
 
-Open **F9 > Media**, select a SCSI target (controller 0, IDs 1–7), and press
-Enter. Choose **Hard disk**, **CD-ROM**, **Disconnect** or **Cancel**. The
+Open **F9 > Media**, select a SCSI target, and press Enter. Choose **Hard disk**, **CD-ROM**, **Disconnect** or **Cancel**. The
 native file chooser accepts CHD and raw images, including `.img`, `.raw`,
 `.dsk`, `.hdd`, `.iso` and `.efs`. Choose the device type explicitly: an EFS
 CD image may have an `.img` extension. Selection edits the draft; **F9 Save**
 validates the images and asks to restart before applying a media change.
 Cancel retains the draft; Discard leaves the current devices unchanged.
+
+The **SCSI controller** row at the bottom switches between buses where Iris
+supports two controllers: IP22, O2 and Octane. Indy and IP28 currently expose
+one. Each bus offers IDs 1–7, or 1–15 on Octane; ID 0 is reserved for the host
+adapter. The same target ID may be used on different buses. Config keys encode
+`controller * 16 + target`: `[media.devices.17]` is controller 1, target 1,
+and `[machines."Octane".media.devices.31]` is controller 1, target 15 in that
+label. Existing keys 1–7 retain their controller-0 meaning.
+
+Changing models never silently disconnects media. Unsupported assignments stay
+visible as **Unavailable**, including a bus selector when needed to reach them.
+Save reports the incompatibility until you disconnect them or select a compatible
+model. The same writable disk cannot occupy two targets, even across buses.
 
 | Device | Supported storage |
 | --- | --- |
@@ -445,6 +502,13 @@ compact top-left panel, sized to the current section; confirmations are centered
 Idle lamps retain a dim version of their function's color. Disk/CD lamps appear
 only for attached targets. Pulses remain visible briefly even when no new guest
 frame is drawn. Opening an overlay dims both bottom bands consistently.
+
+Each CPU LED follows its own cycle counter and goes idle independently when
+that processor stops executing.
+
+When many targets would overfill the LED strip, storage lamps are grouped by
+controller and device type (for example `HD1:*`). They still show actual reads
+and writes, with separate disk/CD colors and amber writes.
 
 ## Networking
 

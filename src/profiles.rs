@@ -167,7 +167,7 @@ impl Settings {
         for (label, machine) in &self.machines {
             validate_label(label)?;
             machine.machine.validate()?;
-            machine.media.validate()?;
+            machine.media.validate_for(machine.machine.profile)?;
             machine.advanced.validate()?;
             machine.network.validate(machine.machine.profile)?;
         }

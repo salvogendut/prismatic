@@ -1,7 +1,8 @@
 use crate::media::MediaSettings;
 use iris::{
     config::{
-        CacheModel, CpuModel, KeyboardLayout, MAX_BANKS, MachineProfile, RtcOffset, banks_from4,
+        CacheModel, CpuModel, GraphicsBoard, KeyboardLayout, MAX_BANKS, MachineProfile, RtcOffset,
+        banks_from4,
     },
     dev::ng1::vc2_timings::NewportResolution,
 };
@@ -20,6 +21,9 @@ pub struct MachineSettings {
     pub profile: MachineProfile,
     pub cpu: CpuModel,
     pub ram_mb: u32,
+    pub cpus: u8,
+    pub graphics: Option<GraphicsBoard>,
+    pub heads: u8,
     pub keyboard: KeyboardLayout,
     pub o2_prom: Option<String>,
     pub octane_prom: Option<String>,
@@ -31,6 +35,9 @@ impl Default for MachineSettings {
             profile: MachineProfile::IndyIp24,
             cpu: CpuModel::R4400,
             ram_mb: 64,
+            cpus: 1,
+            graphics: None,
+            heads: 1,
             keyboard: KeyboardLayout::Ansi,
             o2_prom: None,
             octane_prom: None,
@@ -54,7 +61,9 @@ impl MachineSettings {
             MachineProfile::Indigo2Ip28 | MachineProfile::O2Ip32 => {
                 &[32, 64, 128, 256, 384, 512, 768, 1024]
             }
-            MachineProfile::OctaneIp30 => &[64, 128, 256, 384, 512, 768, 1024, 1536, 2048],
+            MachineProfile::OctaneIp30 => &[
+                64, 128, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192,
+            ],
         }
     }
 
@@ -69,6 +78,18 @@ impl MachineSettings {
 
     pub fn cycle_profile(&mut self) {
         self.profile = next(self.profile, &Self::PROFILES);
+        if self
+            .graphics
+            .is_some_and(|board| !self.graphics_choices().contains(&board))
+        {
+            self.graphics = None;
+        }
+        if !self.newport() {
+            self.heads = 1;
+        }
+        if self.profile != MachineProfile::OctaneIp30 {
+            self.cpus = 1;
+        }
         if !self.cpus().contains(&self.cpu) {
             self.cpu = self.cpus()[0];
         }
@@ -90,6 +111,23 @@ impl MachineSettings {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if !(1..=2).contains(&self.cpus)
+            || (self.cpus != 1 && self.profile != MachineProfile::OctaneIp30)
+        {
+            return Err("Only Octane supports two CPUs; other models require one CPU".into());
+        }
+        if self
+            .graphics
+            .is_some_and(|board| !self.graphics_choices().contains(&board))
+        {
+            return Err(format!(
+                "Graphics board is not supported on {}",
+                self.profile.label()
+            ));
+        }
+        if !(1..=2).contains(&self.heads) || (self.heads == 2 && !self.newport()) {
+            return Err("Two display heads require Newport graphics".into());
+        }
         if !self.cpus().contains(&self.cpu) {
             return Err(format!(
                 "{} is not supported on {}",
@@ -114,6 +152,7 @@ impl MachineSettings {
         let max_bank = match self.profile {
             MachineProfile::IndyIp24 | MachineProfile::Indigo2Ip22 => 128,
             MachineProfile::O2Ip32 => 256,
+            MachineProfile::OctaneIp30 => 2048,
             _ => 512,
         };
         for bank in &mut banks {
@@ -147,7 +186,8 @@ impl MachineSettings {
             MachineProfile::OctaneIp30 => "Octane",
         };
         let cpu = self.cpu.label().trim_start_matches("MIPS ");
-        format!("{model} / {cpu} / {} MB", self.ram_mb)
+        let processors = if self.cpus == 2 { "2x " } else { "" };
+        format!("{model} / {processors}{cpu} / {} MB", self.ram_mb)
     }
 
     pub fn state_dir(&self, preferences: &Path, override_dir: Option<&Path>) -> PathBuf {
@@ -166,11 +206,40 @@ impl MachineSettings {
         }
     }
 
+    /// Choices that have a usable graphical path for this workstation.
+    pub fn graphics_choices(&self) -> &'static [GraphicsBoard] {
+        use GraphicsBoard::*;
+        match self.profile {
+            MachineProfile::IndyIp24 => &[Newport, Xz],
+            MachineProfile::Indigo2Ip22 => &GraphicsBoard::ALL,
+            MachineProfile::Indigo2Ip28 | MachineProfile::OctaneIp30 => {
+                &[SolidImpact, HighImpact, MaxImpact]
+            }
+            MachineProfile::O2Ip32 => &[], // Integrated GBE, not a selectable board.
+        }
+    }
+
+    pub fn graphics_board(&self) -> Option<GraphicsBoard> {
+        self.graphics.or(match self.profile {
+            MachineProfile::IndyIp24 | MachineProfile::Indigo2Ip22 => Some(GraphicsBoard::Newport),
+            MachineProfile::Indigo2Ip28 | MachineProfile::OctaneIp30 => {
+                Some(GraphicsBoard::SolidImpact)
+            }
+            MachineProfile::O2Ip32 => None,
+        })
+    }
+
+    pub fn cycle_graphics(&mut self) {
+        if let Some(board) = self.graphics_board() {
+            self.graphics = Some(next(board, self.graphics_choices()));
+            if !self.newport() {
+                self.heads = 1;
+            }
+        }
+    }
+
     pub fn newport(&self) -> bool {
-        matches!(
-            self.profile,
-            MachineProfile::IndyIp24 | MachineProfile::Indigo2Ip22
-        )
+        self.graphics_board() == Some(GraphicsBoard::Newport)
     }
 
     pub fn supports_prom_override(&self) -> bool {
@@ -633,7 +702,7 @@ impl Settings {
                     settings.select_machine(&label)?;
                 }
                 settings.machine.validate()?;
-                settings.media.validate()?;
+                settings.media.validate_for(settings.machine.profile)?;
                 settings.advanced.validate()?;
                 settings.gif.validate()?;
                 settings.audio.validate()?;
@@ -657,7 +726,7 @@ impl Settings {
     pub fn save(&self, path: &Path) -> Result<(), String> {
         self.validate_machines()?;
         self.machine.validate()?;
-        self.media.validate()?;
+        self.media.validate_for(self.machine.profile)?;
         self.advanced.validate()?;
         self.gif.validate()?;
         self.audio.validate()?;
@@ -696,6 +765,99 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extensions_migrate_persist_per_label_and_reject_invalid_saves() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prismatic.cfg");
+        fs::write(
+            &path,
+            "[machine]\nprofile = 'indigo2_ip28'\ncpu = 'r10000'\n",
+        )
+        .unwrap();
+        let old = Settings::load(&path).unwrap();
+        assert_eq!(
+            old.machine.graphics_board(),
+            Some(GraphicsBoard::SolidImpact)
+        );
+        assert_eq!((old.machine.cpus, old.machine.heads), (1, 1));
+        let mut settings = Settings::default();
+        settings.machine.heads = 2;
+        settings.save_as_machine("Twin Indy").unwrap();
+        settings.machine = MachineSettings {
+            profile: MachineProfile::OctaneIp30,
+            cpu: CpuModel::R10000,
+            cpus: 2,
+            ram_mb: 8192,
+            graphics: Some(GraphicsBoard::MaxImpact),
+            ..Default::default()
+        };
+        settings.media.devices.insert(
+            31,
+            crate::media::Medium {
+                kind: crate::media::MediaKind::Disk,
+                path: "/tmp/octane.raw".into(),
+            },
+        );
+        settings.save_as_machine("Octane").unwrap();
+        settings.save(&path).unwrap();
+        let mut loaded = Settings::load(&path).unwrap();
+        assert_eq!(loaded.machine.cpus, 2);
+        assert_eq!(loaded.machine.banks().unwrap().iter().sum::<u32>(), 8192);
+        assert_eq!(
+            loaded.machine.graphics_board(),
+            Some(GraphicsBoard::MaxImpact)
+        );
+        assert!(loaded.media.devices.contains_key(&31));
+        loaded.select_machine("Twin Indy").unwrap();
+        assert_eq!(loaded.machine.heads, 2);
+        assert_eq!(
+            loaded.machine.graphics_board(),
+            Some(GraphicsBoard::Newport)
+        );
+        assert!(loaded.media.devices.is_empty());
+        let saved = fs::read(&path).unwrap();
+        loaded.machine.cpus = 2;
+        assert!(loaded.save(&path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), saved);
+        for invalid in [
+            "cpus = 0",
+            "cpus = 3",
+            "heads = 0",
+            "heads = 3",
+            "graphics = 'solidimpact'",
+            "graphics = 'xz'\nheads = 2",
+        ] {
+            fs::write(&path, format!("[machine]\n{invalid}\n")).unwrap();
+            assert!(Settings::load(&path).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn changing_models_and_boards_reconciles_extensions() {
+        let mut machine = MachineSettings {
+            heads: 2,
+            ..Default::default()
+        };
+        machine.cycle_graphics();
+        assert_eq!(machine.graphics_board(), Some(GraphicsBoard::Xz));
+        assert_eq!(machine.heads, 1);
+        machine.cycle_profile();
+        assert_eq!(machine.graphics_board(), Some(GraphicsBoard::Xz));
+        machine.cycle_profile();
+        assert_eq!(machine.graphics_board(), Some(GraphicsBoard::SolidImpact));
+        machine.cycle_profile();
+        assert_eq!(machine.graphics_board(), None);
+        machine.cycle_graphics(); // O2 integrated graphics cannot change.
+        machine.validate().unwrap();
+        machine.cycle_profile();
+        machine.cpus = 2;
+        machine.ram_mb = 8192;
+        machine.cycle_profile();
+        assert_eq!((machine.cpus, machine.ram_mb), (1, 256));
+        assert_eq!(machine.graphics_board(), Some(GraphicsBoard::Newport));
+        machine.validate().unwrap();
+    }
 
     #[test]
     fn audio_defaults_persist_without_restart_and_invalid_volume_preserves_file() {

@@ -17,6 +17,27 @@ impl Frame {
         }
     }
 
+    /// Guest heads share a window and captures. Until one head publishes, reserve
+    /// a black area matching the other head; preserve each head's native pixels.
+    pub fn side_by_side(left: Option<&Self>, right: Option<&Self>) -> Self {
+        let fallback = left.or(right).map_or((640, 480), |f| (f.width, f.height));
+        let size = |frame: Option<&Self>| frame.map_or(fallback, |f| (f.width, f.height));
+        let (lw, lh) = size(left);
+        let (rw, rh) = size(right);
+        let mut result = Self::blank(lw + rw, lh.max(rh));
+        for (frame, x) in [(left, 0), (right, lw)] {
+            if let Some(frame) = frame {
+                for y in 0..frame.height as usize {
+                    let source = y * frame.width as usize * 4;
+                    let dest = (y * result.width as usize + x as usize) * 4;
+                    result.rgba[dest..dest + frame.width as usize * 4]
+                        .copy_from_slice(&frame.rgba[source..source + frame.width as usize * 4]);
+                }
+            }
+        }
+        result
+    }
+
     pub fn preview() -> Self {
         let (width, height) = (640, 480);
         let mut rgba = Vec::with_capacity(width * height * 4);

@@ -50,10 +50,10 @@ Rust toolchain matches Iris. No emulator source is copied into this repository.
 The default is Indy IP24, R4400, 64 MB RAM, one Newport head, and no SCSI
 devices. General selects all five workstation profiles: Indy IP24, Indigo2 IP22,
 Indigo2 IMPACT IP28, O2 IP32 and Octane IP30. Indy supports R4400/R5000, IP22
-R4400, O2 R5000/R10000, and IP28/Octane R10000. Octane uses one CPU. RAM presets
+R4400, O2 R5000/R10000, and IP28/Octane R10000. Octane supports one or two CPUs. RAM presets
 fill up to four banks, largest first, with per-bank limits of 128 MB on Indy/IP22,
-512 MB on IP28/Octane, and 256 MB on O2. Total limits are 256 MB, 512 MB, 1 GiB,
-1 GiB and 2 GiB respectively. Frontend validation checks menu choices and the
+512 MB on IP28, 2048 MB on Octane, and 256 MB on O2. Total limits are 256 MB, 512 MB, 1 GiB,
+1 GiB and 8 GiB respectively. Frontend validation checks menu choices and the
 core validates each generated `MachineConfig`. IP28 avoids 32/128 MB single
 banks, which fail the current core's PROM sizing: 32 MB uses 16+16, 128 MB uses
 64+64, and 384 MB uses 256+64+64. This preserves menu totals without changing
@@ -72,17 +72,24 @@ responsibility. The worker rechecks before construction; a missing external over
 recoverable `Phase::Failed`, so F9 remains available. Relative firmware paths
 resolve against the configuration's directory, as media paths do.
 
-IP28 and Octane explicitly select Solid IMPACT. O2 uses its integrated CRIME/GBE
-path (no graphics-board override). All three pass guest resolution and Shadow
-cache; saved Newport settings remain available on returning to Indy/IP22.
-`CaptureRenderer` uses Iris's `prebuilt` compositor path for IMPACT/GBE and the
+Extensions selects graphics boards, Newport head count and Octane CPU count.
+`MachineSettings.graphics` is optional so old files retain Newport on Indy/IP22,
+Solid IMPACT on IP28/Octane, and integrated GBE on O2. Indy offers Newport/XZ;
+IP22 offers all six graphical boards; IP28/Octane offer the three IMPACT boards.
+O2 has no board override. Non-Newport graphics pass guest resolution and Shadow
+cache; saved Newport settings remain available when selecting Newport again.
+Model/board changes reconcile incompatible graphics, head count and CPU count.
+Validation rejects unsupported hand-edited configurations. These fields are in
+the per-label hardware stanzas and follow the existing draft/save/restart flow.
+`CaptureRenderer` uses Iris's `prebuilt` compositor path for GR2/IMPACT/GBE and the
 existing Newport software compositor otherwise. Frame packing, readback, bounded
 latest-frame delivery, capture and SDL rendering are shared. The worker sets the
 common PS/2 layout before starting any CPU, including O2/Octane constructors that
 do not yet apply `MachineConfig.keyboard` themselves.
 
 Media attaches protected raw/CHD disks and read-only CDs to the common `ScsiBus`
-on controller 0: WD33C93A on Indy/Indigo2, AIC7880 on O2, ISP1040 on Octane.
+on each supported controller: WD33C93A on Indy/Indigo2, AIC7880 on O2, ISP1040
+on Octane. IP22/O2/Octane expose two buses; Indy/IP28 expose one in this core.
 The activity/error adapter is retained on all models. CPU/device threads stop
 before targets are detached and flushed; no frontend constructor uses Iris's
 exit-on-media-error default attachment path.
@@ -214,10 +221,16 @@ using Iris's stride, converts the `0xAABBGGRR` words to RGBA bytes and supplies
 opaque alpha. Iris's old debug/status chrome is omitted. Core readback requests
 also populate `Rex3Screen::rgba` and advance its frame sequence.
 
-A single mutex-protected slot holds the newest pending `Arc<Frame>`. The
-producer replaces an unread frame, so a slow UI never builds a video queue.
-The SDL thread takes the frame, releases the lock, recreates the texture when
-dimensions change, and uploads it. Heartbeat-only frames are skipped unless
+A mutex-protected slot holds the latest `Arc<Frame>` for each of at most two
+heads and a dirty flag. The producer replaces the previous frame, so a slow UI
+never builds a video queue. The worker installs a separate `CaptureRenderer`
+on `get_display()` and, when requested, `get_display_head1()` before starting
+Iris. The SDL thread snapshots the frame references and releases the lock.
+For two heads it combines them side by side at native resolution, padding a
+shorter head with black; before both publish, the absent head reserves an area
+matching the other. It recreates the SDL texture when dimensions change and
+uploads the result. Screenshots/GIFs use the same combined guest frame. Input
+still reaches the shared PS/2 controller through relative mouse motion. Heartbeat-only frames are skipped unless
 Iris requests readback. No SDL renderer or texture crosses threads.
 
 Ctrl+Plus/Minus requests a window size relative to the 960×720 logical view,
@@ -239,7 +252,13 @@ on a window synchronization call, then requests the saved dimensions.
 
 ## Media and activity
 
-Media maps controller 0 targets 1–7 to an explicit disk/CD type and image path.
+Media uses `controller * 16 + target` keys, preserving legacy keys 1–7. It maps
+both buses where supported and IDs 1–15 on Octane (1–7 elsewhere) to explicit
+disk/CD types and paths. Core placement validation and frontend profile checks
+agree. A per-session bus selector changes the visible rows without editing the
+draft. Unsupported assignments remain reachable after a model change, and Save
+rejects them instead of dropping devices. Duplicate writable images across buses
+are rejected before any writable node opens.
 Indy placement conventions use target 1 for the system disk and target 6 for
 installation/recovery CDs; target 0 belongs to the host controller. All Indy
 devices share one bus, including internal and external devices. These placement
@@ -273,8 +292,13 @@ Iris retains its persistent COW sidecar behavior. Draft selection/discard never
 opens a writable node. The probe checks format/readability; a later permission
 or device failure is still reported by machine startup or shutdown.
 
-`CaptureRenderer` records CPU cycle changes and core network heartbeat bits.
-Storage adapters publish per-target read/write bits. The main thread consumes
+`CaptureRenderer` records each CPU's cycle changes (`cycles` and `more_cpus`
+from Iris's `BarStats`) and core network heartbeat bits. CPU0 and CPU1 use
+distinct bits and independent pulse timers; the strip renders one white CPU LED
+per configured processor.
+Storage adapters publish distinct read/write bits for all 30 possible targets
+in a 64-bit atomic word. Dense configurations group lamps by bus and media kind
+to fit the strip; each group combines its members' activity. The main thread consumes
 the atomic bitset and stretches pulses to 150 ms, redrawing when they expire.
 LED timers do not depend on new guest framebuffer output. Function palettes
 follow the siblings: CPU white, network yellow, hard disks green and optical
@@ -494,11 +518,32 @@ and a missing-interface notification. It confirms that localhost forwarding
 starts only after boot and stops with the old machine. Sustained IRIX network
 use and bridging traffic onto a physical LAN remain separate validation work.
 
+Extensions tests cover legacy defaults, per-label round trips, incompatible
+CPU/board/head/media settings, all supported model/board/RAM mappings, Save
+failure without file replacement, and controller selection/disconnection after
+model changes. Frame tests cover independent head updates, different sizes,
+black padding and latest-frame replacement. A real dual-Newport lifecycle test
+seeds both video modes (the diskless PROM may leave head 1 disabled) and checks
+both refresh threads publish before clean shutdown. CPU counter tests verify
+independent activity and pulse expiry, with no overlap among two CPUs, network,
+and all 30 SCSI targets.
+
+Isolated SDL desktop checks exercise Extensions Save/Discard/restart cancellation,
+F2 label isolation, dual-head native PPM/GIF dimensions, and two-CPU Octane PROM
+startup. Pausing each Octane CPU separately confirms that only its own LED goes
+idle; a 30-target fixture checks grouped storage lamps without hiding CPU LEDs. Diskless graphics checks include Indy XZ, IP22 Extreme/High IMPACT,
+IP28 Maximum IMPACT and Octane Maximum IMPACT. Monitor inspection verifies
+second-bus media on IP22/O2/Octane and target 15 on Octane, using disposable
+read-only fixtures. These checks establish frontend integration and PROM output;
+full guest-OS boots with each alternate board, dual-head guest desktops and
+8 GiB Octane configurations remain separate validation work.
+
 ## Next milestones
 
 1. Add device-selection controls and feature boundaries for Iris's existing host backends.
    Validate Linux, Windows and macOS builds and device behavior.
-2. Extend General/Media/Advanced/Network and add Extensions controls.
+2. Extend Advanced/Network/Extensions with media services, performance/debug
+   tools and optional devices; graphics, CPU count and expanded SCSI are wired.
    Classify settings as live, next boot or restart-required. Validate before
    applying and confirm disruptive changes. Add explicit COW management and
    guest-aware media swapping when their core interfaces are ready.

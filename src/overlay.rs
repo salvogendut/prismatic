@@ -24,6 +24,7 @@ pub enum Tab {
     Media,
     Advanced,
     Network,
+    Extensions,
     About,
 }
 
@@ -34,6 +35,7 @@ impl Tab {
             Self::Media => "Media",
             Self::Advanced => "Advanced",
             Self::Network => "Network",
+            Self::Extensions => "Extensions",
             Self::About => "About",
         }
     }
@@ -69,6 +71,7 @@ pub struct Session {
     original: Settings,
     pub tab: Tab,
     pub row: usize,
+    media_controller: u8,
 }
 
 impl Session {
@@ -83,11 +86,39 @@ impl Session {
                 Tab::Media,
                 Tab::Advanced,
                 Tab::Network,
+                Tab::Extensions,
                 Tab::About,
             ]
         } else {
             vec![Tab::General, Tab::Media, Tab::About]
         }
+    }
+
+    fn media_controllers(&self) -> u8 {
+        self.draft.machine.profile.scsi_controllers().max(
+            if self.draft.media.devices.keys().any(|&slot| slot >= 17) {
+                2
+            } else {
+                1
+            },
+        )
+    }
+
+    fn media_targets(&self) -> u8 {
+        self.draft
+            .media
+            .devices
+            .keys()
+            .filter(|&&slot| slot / 16 == self.media_controller)
+            .map(|&slot| slot % 16)
+            .max()
+            .unwrap_or(0)
+            .max(self.draft.machine.profile.max_scsi_id())
+    }
+
+    pub fn media_slot(&self) -> Option<u8> {
+        (self.row < self.media_targets() as usize)
+            .then_some(self.media_controller * 16 + self.row as u8 + 1)
     }
 
     pub fn rows(&self) -> Vec<(&'static str, String)> {
@@ -167,13 +198,87 @@ impl Session {
                 ("GIF frame rate", format!("{} fps", self.draft.gif.fps)),
                 ("GIF encoder", self.draft.gif.encoder.label().into()),
             ],
-            Tab::Media => [
-                "SCSI 0:1", "SCSI 0:2", "SCSI 0:3", "SCSI 0:4", "SCSI 0:5", "SCSI 0:6", "SCSI 0:7",
-            ]
-            .iter()
-            .enumerate()
-            .map(|(index, &label)| (label, self.draft.media.row_value(index as u8 + 1)))
-            .collect(),
+            Tab::Extensions => vec![
+                (
+                    "Graphics board",
+                    self.draft
+                        .machine
+                        .graphics_board()
+                        .map_or("Integrated GBE (fixed)", |board| board.label())
+                        .into(),
+                ),
+                (
+                    "Display heads",
+                    if self.draft.machine.newport() {
+                        self.draft.machine.heads.to_string()
+                    } else {
+                        "1 (fixed)".into()
+                    },
+                ),
+                (
+                    "CPU count",
+                    if self.draft.machine.profile == iris::config::MachineProfile::OctaneIp30 {
+                        self.draft.machine.cpus.to_string()
+                    } else {
+                        "1 (fixed)".into()
+                    },
+                ),
+            ],
+            Tab::Media => {
+                const LABELS: [&str; 32] = [
+                    "",
+                    "SCSI 0:1",
+                    "SCSI 0:2",
+                    "SCSI 0:3",
+                    "SCSI 0:4",
+                    "SCSI 0:5",
+                    "SCSI 0:6",
+                    "SCSI 0:7",
+                    "SCSI 0:8",
+                    "SCSI 0:9",
+                    "SCSI 0:10",
+                    "SCSI 0:11",
+                    "SCSI 0:12",
+                    "SCSI 0:13",
+                    "SCSI 0:14",
+                    "SCSI 0:15",
+                    "",
+                    "SCSI 1:1",
+                    "SCSI 1:2",
+                    "SCSI 1:3",
+                    "SCSI 1:4",
+                    "SCSI 1:5",
+                    "SCSI 1:6",
+                    "SCSI 1:7",
+                    "SCSI 1:8",
+                    "SCSI 1:9",
+                    "SCSI 1:10",
+                    "SCSI 1:11",
+                    "SCSI 1:12",
+                    "SCSI 1:13",
+                    "SCSI 1:14",
+                    "SCSI 1:15",
+                ];
+                let mut rows: Vec<_> = (1..=self.media_targets())
+                    .map(|id| {
+                        let slot = self.media_controller * 16 + id;
+                        let mut value = self.draft.media.row_value(slot);
+                        if self.media_controller >= self.draft.machine.profile.scsi_controllers()
+                            || id > self.draft.machine.profile.max_scsi_id()
+                        {
+                            value = format!("Unavailable: {value}");
+                        }
+                        (LABELS[slot as usize], value)
+                    })
+                    .collect();
+                if self.media_controllers() > 1 {
+                    rows.push((
+                        "SCSI controller",
+                        format!("{} (Enter to switch bus)", self.media_controller),
+                    ));
+                }
+                rows
+            }
             Tab::About => vec![],
             Tab::Network => self.draft.network.rows(),
         }
@@ -429,13 +534,10 @@ impl Overlay {
                     return Effect::Pick { id, kind };
                 }
                 (Dialog::Media { id, choice: 2 }, Key::Enter) => {
-                    self.session
-                        .as_mut()
-                        .unwrap()
-                        .draft
-                        .media
-                        .devices
-                        .remove(&id);
+                    let session = self.session.as_mut().unwrap();
+                    session.draft.media.devices.remove(&id);
+                    session.media_controller %= session.media_controllers();
+                    session.row = session.row.min(session.rows().len().saturating_sub(1));
                     self.dialog = None;
                 }
                 (Dialog::Media { .. }, Key::Enter) => self.dialog = None,
@@ -473,6 +575,7 @@ impl Overlay {
                     original: live.clone(),
                     tab: Tab::General,
                     row: 0,
+                    media_controller: 0,
                 });
                 if key == Key::NextMachine {
                     let session = self.session.as_mut().unwrap();
@@ -488,6 +591,8 @@ impl Overlay {
         match key {
             Key::NextMachine => {
                 session.draft.next_machine();
+                session.media_controller = 0;
+                session.row = 0;
             }
             Key::Options => return Effect::Save(session.draft.clone()),
             Key::Escape if session.dirty() => self.dialog = Some(Dialog::Unsaved { choice: 2 }),
@@ -509,6 +614,7 @@ impl Overlay {
             Key::Enter => match (session.tab, session.row) {
                 (Tab::General, 8) => {
                     session.draft.next_machine();
+                    session.media_controller = 0;
                 }
                 (Tab::General, 9) => {
                     self.text_edit = Some(TextEdit {
@@ -520,6 +626,7 @@ impl Overlay {
                 }
                 (Tab::General, 0) => {
                     session.draft.machine.cycle_profile();
+                    session.media_controller = 0;
                     session
                         .draft
                         .network
@@ -585,11 +692,24 @@ impl Overlay {
                 (Tab::Network, 7) if session.draft.network.mode == iris::config::NetMode::Nat => {
                     self.edit_network(Field::Forwards)
                 }
-                (Tab::Media, row) => {
-                    self.dialog = Some(Dialog::Media {
-                        id: row as u8 + 1,
-                        choice: 3,
-                    })
+                (Tab::Extensions, 0) => session.draft.machine.cycle_graphics(),
+                (Tab::Extensions, 1) if session.draft.machine.newport() => {
+                    session.draft.machine.heads = 3 - session.draft.machine.heads
+                }
+                (Tab::Extensions, 2)
+                    if session.draft.machine.profile
+                        == iris::config::MachineProfile::OctaneIp30 =>
+                {
+                    session.draft.machine.cpus = 3 - session.draft.machine.cpus
+                }
+                (Tab::Media, _) => {
+                    if let Some(id) = session.media_slot() {
+                        self.dialog = Some(Dialog::Media { id, choice: 3 });
+                    } else {
+                        session.media_controller =
+                            (session.media_controller + 1) % session.media_controllers();
+                        session.row = session.media_targets() as usize;
+                    }
                 }
                 _ => {}
             },
@@ -623,6 +743,94 @@ mod tests {
         }
         assert_eq!(overlay.session.as_ref().unwrap().tab, Tab::Network);
         overlay
+    }
+
+    #[test]
+    fn extensions_are_gated_drafted_and_require_restart() {
+        let live = Settings::default();
+        let mut overlay = network_overlay(&live);
+        overlay.key(Key::Right, &live);
+        assert_eq!(overlay.session.as_ref().unwrap().tab, Tab::Extensions);
+        overlay.key(Key::Down, &live);
+        overlay.key(Key::Enter, &live); // Two heads.
+        let Effect::Save(draft) = overlay.key(Key::Options, &live) else {
+            panic!("Save")
+        };
+        assert_eq!(draft.machine.heads, 2);
+        assert_eq!(live.machine.heads, 1);
+        assert!(draft.machine_differs_from(&live));
+        overlay.confirm_restart();
+        overlay.key(Key::Enter, &live); // Cancel retains the draft.
+        assert_eq!(overlay.session.as_ref().unwrap().draft.machine.heads, 2);
+        for key in [Key::Escape, Key::Left, Key::Enter, Key::Options] {
+            overlay.key(key, &live);
+        }
+        assert_eq!(overlay.session.as_ref().unwrap().draft, live);
+        assert!(
+            !overlay
+                .session
+                .as_ref()
+                .unwrap()
+                .tabs()
+                .contains(&Tab::Extensions)
+        );
+    }
+
+    #[test]
+    fn media_bus_selector_handles_wide_targets_and_unavailable_assignments() {
+        let mut live = Settings::default();
+        live.machine.profile = iris::config::MachineProfile::OctaneIp30;
+        live.machine.cpu = iris::config::CpuModel::R10000;
+        live.media.devices.insert(
+            31,
+            Medium {
+                kind: MediaKind::Disk,
+                path: "/tmp/last.raw".into(),
+            },
+        );
+        let mut overlay = Overlay::default();
+        overlay.key(Key::Options, &live);
+        overlay.key(Key::Right, &live);
+        overlay.key(Key::Up, &live); // Controller selector after target 15.
+        overlay.key(Key::Enter, &live);
+        overlay.key(Key::Up, &live);
+        assert_eq!(overlay.session.as_ref().unwrap().media_slot(), Some(31));
+        overlay.key(Key::Enter, &live);
+        overlay.key(Key::Right, &live); // Cancel -> disk.
+        assert_eq!(
+            overlay.key(Key::Enter, &live),
+            Effect::Pick {
+                id: 31,
+                kind: MediaKind::Disk
+            }
+        );
+        overlay.key(Key::Escape, &live); // Cancel picker.
+        overlay.key(Key::Left, &live);
+        overlay.key(Key::Enter, &live); // Octane -> Indy; keep disk in the draft.
+        let draft = &overlay.session.as_ref().unwrap().draft;
+        assert!(draft.media.validate_for(draft.machine.profile).is_err());
+        assert!(draft.media.devices.contains_key(&31));
+        overlay.key(Key::Right, &live);
+        overlay.key(Key::Up, &live); // Selector remains to allow disconnecting bus 1.
+        overlay.key(Key::Enter, &live);
+        overlay.key(Key::Up, &live);
+        let session = overlay.session.as_ref().unwrap();
+        assert_eq!(session.media_slot(), Some(31));
+        assert!(session.rows()[session.row].1.starts_with("Unavailable"));
+        overlay.key(Key::Enter, &live);
+        overlay.key(Key::Left, &live); // Disconnect.
+        overlay.key(Key::Enter, &live);
+        assert!(
+            overlay
+                .session
+                .as_ref()
+                .unwrap()
+                .draft
+                .media
+                .devices
+                .is_empty()
+        );
+        assert!(live.media.devices.contains_key(&31));
     }
 
     #[test]
