@@ -108,6 +108,9 @@ pub fn route_key(
         };
     }
     if modal {
+        if scan == S::A && modifiers.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD) {
+            return KeyRoute::Host(Key::SelectAll);
+        }
         if repeat && !matches!(scan, S::Left | S::Right | S::Up | S::Down) {
             return KeyRoute::Ignore;
         }

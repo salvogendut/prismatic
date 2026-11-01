@@ -218,10 +218,11 @@ overwritten accidentally. Select an existing label with **General > Machine
 label** or **F2**, then edit its options and Save to update it. Discard changes
 neither the saved labels nor the active machine.
 
-Each label remembers its machine model, CPU, RAM, keyboard, firmware, media and
-Advanced machine options. Desktop preferences, capture options and Tinker remain
-shared. F2 cycles labels alphabetically, and the status strip shows the active
-label and its state. Close Options before using Ctrl+P. F5 asks before cold-resetting
+Each label remembers its machine model, CPU, RAM, keyboard, firmware, media,
+Advanced machine options and Network settings. Desktop preferences, capture
+options and Tinker remain shared. F2 cycles labels alphabetically, and the
+status strip shows the active label and its state. Close Options before using
+Ctrl+P. F5 asks before cold-resetting
 an existing guest. It stops and recreates the machine, finalizes any GIF capture,
 and boots again if it was running. A paused machine remains ready for Ctrl+P.
 Pause/resume preserves memory; cold reset discards the guest session.
@@ -443,6 +444,81 @@ Idle lamps retain a dim version of their function's color. Disk/CD lamps appear
 only for attached targets. Pulses remain visible briefly even when no new guest
 frame is drawn. Opening an overlay dims both bottom bands consistently.
 
+## Networking
+
+Enable **General > Tinker**, then open the **Network** tab in F9. Every model
+has Ethernet, using Iris's NAT gateway by default. Network settings belong to
+the selected machine label and are saved in `prismatic.cfg`. Save validates the
+draft and asks before restarting an already booted machine; it returns to
+PAUSED, ready for Ctrl+P. Discard leaves the running network unchanged. Hiding
+Tinker keeps saved network settings active.
+
+| Control | Behavior |
+| --- | --- |
+| Network backend | NAT, optional PCAP bridge, or Off on O2/Octane. Indy/Indigo2 cannot disconnect Ethernet in the current core. |
+| NAT subnet | Enter an IPv4 network/prefix, such as `192.168.5.0/24`. Gateway/DNS is network + 1 and the guest address is network + 2; the menu shows both and the netmask. |
+| PCAP host interface | Choose an enumerated host interface, Automatic, or enter a name/index. Available in PCAP mode. |
+| NFS shared folder | Choose or enter an existing host folder, or Disable. The guest has **read/write** access to this folder. |
+| NFS protocol | Auto, V2 or V3. Auto accepts either; IRIX 5.3 uses v2. |
+| NFS bridge IP | An unused LAN IPv4 address for the built-in NFS server when using PCAP. Required if NFS sharing is enabled in PCAP mode. |
+| TFTP boot folder | Choose an existing folder to serve **read-only** at the NAT gateway, or Disable. |
+| Local port forwards | Enter comma-separated `tcp:HOST:GUEST` or `udp:HOST:GUEST` rules. For example, `tcp:2323:23, tcp:2222:22`. Empty clears the rules. Listeners bind to localhost only. |
+
+Text fields initially select the current value: typing replaces it, Ctrl+A
+selects all, Backspace edits, Enter accepts into the draft and Escape cancels.
+F9 saves the whole draft. Relative folder paths use the directory containing
+`prismatic.cfg`; folder checks run in the background and never create folders.
+Different windows need different host forwarding ports.
+
+Changing the NAT subnet does not rewrite IRIX's saved IP address, route or DNS
+settings. Configure the guest to match the addresses shown in Network. With
+the default subnet, mount an enabled NFS share inside IRIX with:
+
+```sh
+mkdir /shared
+mount 192.168.0.1:/ /shared
+```
+
+Iris serves NFS over UDP. A PCAP guest mounts `<NFS bridge IP>:/` instead.
+For TFTP booting, place the appropriate boot files in the selected folder and
+use the guest PROM's `bootp()` command; for example, O2 accepts
+`boot -f bootp():FILE`. The guest/PROM must have a suitable network address.
+
+PCAP is an optional build feature. On Fedora, build it with:
+
+```sh
+sudo dnf install libpcap-devel
+cargo run --release --locked --features pcap
+```
+
+PCAP requires host capture permission (on Linux, appropriate raw-packet
+capabilities) and uses the LAN's addresses and DNS. Wired interfaces work best;
+many Wi-Fi networks reject an additional guest MAC address. A missing feature
+or failed capture is reported rather than silently switching to NAT. Prismatic
+does not change host permissions. NAT port forwards and TFTP are inactive in
+PCAP mode; their saved settings are retained for switching back. For further
+guest setup, see [our Iris networking guide](https://github.com/salvogendut/iris/blob/xiri/netbsd-newport/NETWORKING.md).
+
+For an unnamed machine, the configuration uses `[network]`; named machines
+use `[machines."LABEL".network]`:
+
+```toml
+[machines."Indy IRIX".network]
+mode = "nat"
+nat_subnet = "192.168.5.0/24"
+nfs_dir = "/path/to/shared"
+nfs_version = "auto"
+tftp_dir = "/path/to/bootfiles"
+
+[[machines."Indy IRIX".network.forwards]]
+protocol = "tcp"
+host_port = 2323
+guest_port = 23
+```
+
+Omitting the folder keys disables those services. PCAP configurations also
+accept `pcap_interface` and, for sharing, `nfs_pcap_ip`.
+
 ## Guest audio
 
 Guest playback is enabled by default for Indy/Indigo2 (HAL2), O2 (MACE) and
@@ -476,7 +552,7 @@ For a configuration in the current directory, run:
 cargo run --release --locked -- --config ./prismatic.cfg
 ```
 
-The file uses human-readable TOML with `[machine]`, `[advanced]`, `[audio]`, `[gif]` and one table per
+The file uses human-readable TOML with `[machine]`, `[advanced]`, `[network]`, `[audio]`, `[gif]` and one table per
 attached device, for example:
 
 ```toml

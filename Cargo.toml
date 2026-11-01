@@ -5,6 +5,9 @@ edition = "2024"
 publish = false
 description = "A Happy Years desktop frontend for the Iris SGI emulator"
 
+[features]
+pcap = ["iris/pcap"]
+
 [dependencies]
 iris = { path = "../iris" }
 # Read-only CHD inspection uses the same library as Iris's storage backend.

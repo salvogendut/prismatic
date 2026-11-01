@@ -34,9 +34,10 @@ including when the hints are hidden.
 | `src/capture.rs` | Asynchronous PPM screenshots, bounded GIF recording, atomic publication and optional FFmpeg optimization |
 | `src/sound.rs` | Embedded Happy Years screenshot shutter through a main-thread SDL audio stream |
 | `src/audio.rs` | Bounded per-machine guest PCM handoff and main-thread SDL3 playback |
+| `src/network.rs` | Per-machine network settings, validation, Iris configuration mapping, Network rows and hints |
 | `src/display.rs` | Packed RGBA frame type, startup/UI-preview pixels and aspect-preserving placement |
 | `src/view.rs` | SDL drawing, status strip, LEDs, options, confirmations and notifications |
-| `src/media.rs` | Native file chooser, asynchronous read-only probes, media settings and Iris block-node adapters |
+| `src/media.rs` | Native file/folder choosers, background validation and interface enumeration, media settings and Iris block-node adapters |
 | `src/activity.rs` | Atomic activity bits and visible LED pulse durations |
 
 ## Core boundary
@@ -107,6 +108,34 @@ mute then unmute retries; a new machine gets a fresh audio inbox and retry
 state. The screenshot shutter uses an independent stream. Host recording,
 device-selection controls and removal of unused host dependencies remain future work.
 
+## Networking
+
+The Tinker-gated Network tab edits per-machine NAT/PCAP/Off mode, subnet,
+NFS folder/version/bridge IP, TFTP folder and localhost TCP/UDP forwarding.
+Settings live under `[network]` and each named machine's `.network` stanza.
+Old files default to NAT with no shares or forwards. Hiding Tinker does not
+disable saved networking. Changing from O2/Octane with Ethernet Off to an
+Indy/Indigo2 selects NAT, matching the core's model restriction.
+
+The frontend maps saved settings into `MachineConfig` before worker startup.
+It uses restart confirmation for all network changes, even where Iris has a
+live-control API, so Save/Discard remain atomic with the rest of the draft.
+CIDR, IP and forwarding checks are pure; folder checks and PCAP enumeration
+use the bounded background job result channel. Selected service directories
+must exist and be readable: validation never creates or exports a directory.
+Paths resolve relative to the config file and normalize before catalog merging.
+The worker checks folders again before constructing the core. NFS has Iris's
+read/write semantics; TFTP is read-only. No host service is opened by a draft.
+
+The optional Cargo `pcap` feature forwards to `iris/pcap`. A non-PCAP build can
+read a catalog containing PCAP labels, but refuses to save/start an active
+PCAP configuration rather than accepting Iris's fallback to NAT. Interface
+enumeration runs on a worker; SDL folder dialogs stay on the main thread.
+The machine worker reports Iris's `PcapStatus`; capture failures produce a
+notification independently of debug logging. PCAP NFS requires an explicit
+virtual LAN IP; NAT-only services remain saved but are not passed to the PCAP
+backend. Prismatic never changes host capture privileges.
+
 ## Machine lifecycle
 
 A worker with a 64 MB stack calls `iris::workstation::build(MachineConfig)`.
@@ -117,7 +146,8 @@ Calls that access a running machine are serialized with Iris's `MachineSlot`
 lock. The lock is released before dropping the machine: Iris's destructor
 acquires it to invalidate the pointer held by its controller.
 
-Shared status reports Starting, Running, Halted, Stopping, Stopped or Failed.
+Shared status reports Starting, Running, Paused, Halted, PoweredOff, Stopping,
+Stopped or Failed, along with the monitor address and PCAP backend status.
 Running follows the core's CPU-running flag. The monitor and serial endpoints
 bind ephemeral loopback ports; the monitor's actual address is printed in the
 terminal. NVRAM lives in Prismatic's machine-state directory, separate from
@@ -450,11 +480,23 @@ visual inspection while keeping the saved Tinker flag off. Unit tests also
 verify old-file defaults, invalid values, the Iris config mapping, append
 preservation, invalid log targets and restart detection independent of UI flags.
 
+Network tests cover config migration, per-label isolation, folder normalization
+and save conflicts, invalid CIDRs/IPs/forwards, missing directories, draft
+discard and cancelled restarts, plus configuration mapping on all five models.
+A packet-level test runs the real Iris NAT backend with frontend settings and
+checks TFTP file contents and NFSv3 mount/lookup against separate temporary
+folders on a custom subnet. Both default and PCAP feature builds are checked.
+An isolated desktop test exercises text editors, missing-folder rejection,
+Save/Discard, restart confirmation, F2 switching, PCAP interface enumeration
+and a missing-interface notification. It confirms that localhost forwarding
+starts only after boot and stops with the old machine. Sustained IRIX network
+use and bridging traffic onto a physical LAN remain separate validation work.
+
 ## Next milestones
 
 1. Add device-selection controls and feature boundaries for Iris's existing host backends.
    Validate Linux, Windows and macOS builds and device behavior.
-2. Extend General/Media/Advanced and add Extensions and Network controls.
+2. Extend General/Media/Advanced/Network and add Extensions controls.
    Classify settings as live, next boot or restart-required. Validate before
    applying and confirm disruptive changes. Add explicit COW management and
    guest-aware media swapping when their core interfaces are ready.

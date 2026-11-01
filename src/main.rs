@@ -7,6 +7,7 @@ mod emulator;
 mod input;
 mod instance;
 mod media;
+mod network;
 mod overlay;
 mod profiles;
 mod settings;
@@ -27,7 +28,7 @@ use sdl3::{
 };
 use settings::Settings;
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -82,6 +83,7 @@ Captures save the guest display as timestamped PPM/GIF files in the working dire
 Media: raw/CHD hard disks and ISO9660/EFS/CHD CD-ROMs.
 Starts PAUSED; Ctrl+P boots the selected machine. Default media is disconnected.
 Guest audio uses SDL3; General provides saved mute and volume controls.
+Tinker reveals Network: NAT subnet, NFS, TFTP, local port forwards and optional PCAP bridging.
 --keyboard overrides the saved keyboard type for this session.
 --smoke-test renders the UI without starting Iris.
 --boot-smoke-test waits for guest display output, captures ten seconds later, and stops.
@@ -271,6 +273,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             &active.machine,
             &active.media,
             &active.advanced,
+            &active.network,
         )?)
     };
     let mouse = sdl.mouse();
@@ -330,8 +333,8 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         }
         let mut ready_save = None;
         let text_input = video.text_input();
-        if overlay.label_edit.is_some() != text_input.is_active(canvas.window()) {
-            if overlay.label_edit.is_some() {
+        if overlay.text_edit.is_some() != text_input.is_active(canvas.window()) {
+            if overlay.text_edit.is_some() {
                 text_input.start(canvas.window());
             } else {
                 text_input.stop(canvas.window());
@@ -342,10 +345,14 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             match result {
                 Ok(Completion::Picked { id, medium }) => overlay.picked(id, medium),
                 Ok(Completion::PromPicked { profile, path }) => overlay.prom_picked(profile, path),
+                Ok(Completion::FolderPicked { folder, path }) => {
+                    overlay.folder_picked(folder, path)
+                }
+                Ok(Completion::Interfaces(choices)) => overlay.interfaces_listed(choices),
                 Ok(Completion::Validated {
                     settings,
                     confirmed,
-                }) => ready_save = Some((settings, confirmed)),
+                }) => ready_save = Some((*settings, confirmed)),
                 Ok(Completion::Cancelled) => overlay.busy = false,
                 Err(error) => {
                     eprintln!("Prismatic: {error}");
@@ -504,6 +511,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                                         &active.machine,
                                         &active.media,
                                         &active.advanced,
+                                        &active.network,
                                     ) {
                                         Ok(machine) => {
                                             emulator = Some(machine);
@@ -603,6 +611,11 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 let confirmed_restart = matches!(effect, Effect::Restart(_));
                 match effect {
                     Effect::None => {}
+                    Effect::ListInterfaces => media_jobs.list_interfaces(),
+                    Effect::PickFolder(folder) => {
+                        let current = folder.path(&overlay.session.as_ref().unwrap().draft.network);
+                        media_jobs.pick_folder(canvas.window(), folder, current);
+                    }
                     Effect::Reset => {
                         if emulator.is_some() {
                             restart = Some(RestartRequest {
@@ -660,7 +673,11 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Effect::Save(draft) | Effect::Restart(draft) => {
                         overlay.busy = true;
-                        media_jobs.validate(draft, confirmed_restart);
+                        media_jobs.validate(
+                            draft,
+                            confirmed_restart,
+                            path.parent().unwrap_or(Path::new(".")),
+                        );
                     }
                 }
             }
@@ -711,6 +728,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 &draft.machine,
                 &draft.media,
                 &draft.advanced,
+                &draft.network,
             ) {
                 eprintln!("Prismatic: {error}");
                 toast = Some((error, Instant::now()));
@@ -769,6 +787,12 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(machine) = &mut emulator {
             let next = machine.status();
             if next != status {
+                if next.pcap != status.pcap
+                    && let Some(message) = network::pcap_message(next.pcap)
+                {
+                    eprintln!("Prismatic: {message}");
+                    toast = Some((message.into(), Instant::now()));
+                }
                 if next.monitor != status.monitor
                     && let Some(address) = next.monitor
                 {
@@ -1114,6 +1138,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                             &next_settings.machine,
                             &next_settings.media,
                             &next_settings.advanced,
+                            &next_settings.network,
                         )
                         .map(Some)
                     } else {

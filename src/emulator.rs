@@ -61,6 +61,7 @@ impl Phase {
 pub struct Status {
     pub phase: Phase,
     pub monitor: Option<SocketAddr>,
+    pub pcap: iris::net::PcapStatus,
 }
 
 impl Default for Status {
@@ -68,6 +69,7 @@ impl Default for Status {
         Self {
             phase: Phase::Starting,
             monitor: None,
+            pcap: iris::net::PcapStatus::Inactive,
         }
     }
 }
@@ -168,6 +170,7 @@ pub fn machine_config(
     hardware: &MachineSettings,
     media: &MediaSettings,
     advanced: &AdvancedSettings,
+    network: &crate::network::NetworkSettings,
 ) -> Result<MachineConfig, String> {
     media.validate()?;
     advanced.validate()?;
@@ -228,6 +231,7 @@ pub fn machine_config(
         config.octane.flash = Some(path("flash.bin")?);
     }
     config.graphics.heads = 1;
+    network.apply(&mut config)?;
     config.validate()?;
     Ok(config)
 }
@@ -311,8 +315,10 @@ impl Emulator {
         hardware: &MachineSettings,
         media: &MediaSettings,
         advanced: &AdvancedSettings,
+        network: &crate::network::NetworkSettings,
     ) -> Result<Self, String> {
-        let mut config = machine_config(state_dir, hardware, media, advanced)?;
+        let mut config = machine_config(state_dir, hardware, media, advanced, network)?;
+        let mut network = network.clone();
         let audio = Arc::new(crate::audio::Inbox::default());
         config.audio.output = Some(audio.clone());
         // Attach explicitly before CPU start: Iris's CLI constructor exits the
@@ -340,6 +346,8 @@ impl Emulator {
             .spawn(move || {
                 let result = catch_unwind(AssertUnwindSafe(|| -> Result<Phase, String> {
                     hardware.validate_prom()?;
+                    network.validate_files()?;
+                    network.apply(&mut config)?;
                     std::fs::create_dir_all(&state_dir)
                         .map_err(|e| format!("Cannot create machine state directory: {e}"))?;
                     let _state_lease =
@@ -422,6 +430,7 @@ impl Emulator {
                             *worker_status.lock().unwrap() = Status {
                                 phase,
                                 monitor: owned.machine.monitor_addr(),
+                                pcap: owned.machine.net_pcap_status(),
                             };
                         }
                         match receiver.recv_timeout(Duration::from_millis(100)) {
@@ -556,6 +565,7 @@ mod tests {
             &hardware,
             &MediaSettings::default(),
             &AdvancedSettings::default(),
+            &Default::default(),
         )
         .unwrap();
         let wait_for = |emulator: &Emulator, phase: Phase| {
@@ -620,6 +630,7 @@ mod tests {
             &MachineSettings::default(),
             &MediaSettings::default(),
             &AdvancedSettings::default(),
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(defaults.graphics.resolution, NewportResolution::Guest);
@@ -639,6 +650,7 @@ mod tests {
             &MachineSettings::default(),
             &MediaSettings::default(),
             &advanced,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(cfg.graphics.resolution, advanced.resolution);
@@ -665,6 +677,7 @@ mod tests {
             &MachineSettings::default(),
             &MediaSettings::default(),
             &advanced,
+            &Default::default(),
         )
         .unwrap();
         let path = dir.path().join("serial.log");
@@ -695,6 +708,7 @@ mod tests {
             &hardware,
             &MediaSettings::default(),
             &AdvancedSettings::default(),
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(config.keyboard, KeyboardLayout::Iso);
@@ -803,6 +817,7 @@ mod tests {
                 &hardware,
                 &MediaSettings::default(),
                 &AdvancedSettings::default(),
+                &Default::default(),
             )
             .unwrap();
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -857,6 +872,7 @@ mod tests {
                 &hardware,
                 &media,
                 &AdvancedSettings::default(),
+                &Default::default(),
             )
             .unwrap();
             let deadline = Instant::now() + Duration::from_secs(10);
@@ -886,6 +902,7 @@ mod tests {
             &MachineSettings::default(),
             &MediaSettings::default(),
             &AdvancedSettings::default(),
+            &Default::default(),
         )
         .unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -912,6 +929,7 @@ mod tests {
                         &hardware,
                         &MediaSettings::default(),
                         &AdvancedSettings::default(),
+                        &Default::default(),
                     )
                     .unwrap();
                     assert_eq!(config.machine.profile, profile);

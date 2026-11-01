@@ -198,6 +198,11 @@ impl Medium {
 }
 
 pub enum Completion {
+    FolderPicked {
+        folder: crate::network::Folder,
+        path: String,
+    },
+    Interfaces(Vec<crate::network::Interface>),
     Picked {
         id: u8,
         medium: Medium,
@@ -207,7 +212,7 @@ pub enum Completion {
         path: String,
     },
     Validated {
-        settings: Settings,
+        settings: Box<Settings>,
         confirmed: bool,
     },
     Cancelled,
@@ -247,17 +252,65 @@ impl MediaJobs {
         self.receiver = None;
         Some(result)
     }
-    pub fn validate(&mut self, mut settings: Settings, confirmed: bool) {
+    pub fn validate(&mut self, mut settings: Settings, confirmed: bool, directory: &Path) {
+        let directory = directory.to_owned();
         let (sender, receiver) = mpsc::sync_channel(1);
         self.receiver = Some(receiver);
         spawn(sender, move || {
+            settings
+                .network
+                .validate_runtime(settings.machine.profile)?;
+            settings.network.resolve_paths(&directory)?;
+            settings.network.validate_files()?;
             settings.machine.validate_prom()?;
             settings.media.validate_files()?;
             Ok(Completion::Validated {
-                settings,
+                settings: Box::new(settings),
                 confirmed,
             })
         });
+    }
+    pub fn list_interfaces(&mut self) {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        self.receiver = Some(receiver);
+        spawn(sender, || {
+            crate::network::interfaces().map(Completion::Interfaces)
+        });
+    }
+    pub fn pick_folder(
+        &mut self,
+        window: &sdl3::video::Window,
+        folder: crate::network::Folder,
+        current: Option<&str>,
+    ) {
+        use sdl3::dialog::{DialogError, show_open_folder_dialog};
+        let (sender, receiver) = mpsc::sync_channel(1);
+        self.receiver = Some(receiver);
+        show_open_folder_dialog(
+            current.map(Path::new),
+            false,
+            window,
+            Box::new(move |result, _| match result {
+                Ok(paths) if paths.len() == 1 => {
+                    let path = paths[0].clone();
+                    spawn(sender.clone(), move || {
+                        Ok(Completion::FolderPicked {
+                            folder,
+                            path: crate::network::inspect_folder(&path)?,
+                        })
+                    });
+                }
+                Err(DialogError::Canceled) => {
+                    let _ = sender.try_send(Ok(Completion::Cancelled));
+                }
+                Err(error) => {
+                    let _ = sender.try_send(Err(error.to_string()));
+                }
+                _ => {
+                    let _ = sender.try_send(Err("Choose one folder".into()));
+                }
+            }),
+        );
     }
     pub fn pick(
         &mut self,
@@ -826,7 +879,7 @@ mod tests {
             .insert(1, Medium::inspect(&disk, MediaKind::Disk).unwrap());
         fs::remove_file(prom).unwrap(); // Disappears after picking, before Save.
         let mut jobs = MediaJobs::default();
-        jobs.validate(settings, false);
+        jobs.validate(settings, false, Path::new("."));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let result = loop {
             if let Some(result) = jobs.poll() {

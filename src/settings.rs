@@ -552,6 +552,7 @@ pub struct Settings {
     pub machine: MachineSettings,
     pub media: MediaSettings,
     pub advanced: AdvancedSettings,
+    pub network: crate::network::NetworkSettings,
 }
 
 impl Default for Settings {
@@ -571,6 +572,7 @@ impl Default for Settings {
             machine: MachineSettings::default(),
             media: MediaSettings::default(),
             advanced: AdvancedSettings::default(),
+            network: crate::network::NetworkSettings::default(),
         }
     }
 }
@@ -596,6 +598,7 @@ impl Settings {
             || self.machine != active.machine
             || self.media != active.media
             || self.advanced != active.advanced
+            || self.network != active.network
     }
     /// Create a complete configuration on first launch, or migrate the previous
     /// default filename. An existing (even invalid) destination is never replaced.
@@ -624,6 +627,7 @@ impl Settings {
                 for saved in settings.machines.values_mut() {
                     saved.media.resolve_paths(parent)?;
                     saved.machine.resolve_prom_paths(parent)?;
+                    saved.network.resolve_paths(parent)?;
                 }
                 if let Some(label) = settings.machine_label.clone() {
                     settings.select_machine(&label)?;
@@ -633,6 +637,8 @@ impl Settings {
                 settings.advanced.validate()?;
                 settings.gif.validate()?;
                 settings.audio.validate()?;
+                settings.network.validate(settings.machine.profile)?;
+                settings.network.resolve_paths(parent)?;
                 settings
                     .media
                     .resolve_paths(path.parent().unwrap_or(Path::new(".")))?;
@@ -655,6 +661,7 @@ impl Settings {
         self.advanced.validate()?;
         self.gif.validate()?;
         self.audio.validate()?;
+        self.network.validate(self.machine.profile)?;
         let parent = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -665,10 +672,12 @@ impl Settings {
             lock_path.push(".lock");
             let _lease = crate::instance::Lease::acquire(Path::new(&lock_path))?;
             let mut saved = self.clone();
+            saved.network.resolve_paths(parent)?;
             saved.remember_machine();
             for machine in saved.machines.values_mut() {
                 machine.media.resolve_paths(parent)?;
                 machine.machine.resolve_prom_paths(parent)?;
+                machine.network.resolve_paths(parent)?;
             }
             let own_catalog = saved.machines.clone();
             saved.merge_machine_catalog(path)?;

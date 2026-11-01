@@ -35,6 +35,7 @@ pub struct NamedMachine {
     pub machine: MachineSettings,
     pub media: MediaSettings,
     pub advanced: AdvancedSettings,
+    pub network: crate::network::NetworkSettings,
 }
 
 pub fn validate_label(label: &str) -> Result<(), String> {
@@ -85,6 +86,7 @@ impl Settings {
             machine: self.machine.clone(),
             media: self.media.clone(),
             advanced: self.advanced.clone(),
+            network: self.network.clone(),
         }
     }
 
@@ -119,6 +121,7 @@ impl Settings {
         self.machine = saved.machine;
         self.media = saved.media;
         self.advanced = saved.advanced;
+        self.network = saved.network;
         Ok(())
     }
 
@@ -166,6 +169,7 @@ impl Settings {
             machine.machine.validate()?;
             machine.media.validate()?;
             machine.advanced.validate()?;
+            machine.network.validate(machine.machine.profile)?;
         }
         if let Some(label) = &self.machine_label
             && !self.machines.contains_key(label)

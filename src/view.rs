@@ -124,27 +124,73 @@ pub fn draw(
     if let Some(dialog) = overlay.dialog {
         draw_dialog(canvas, dialog)?;
     }
-    if let Some(edit) = &overlay.label_edit {
+    if let Some(edit) = &overlay.text_edit {
         shade(canvas, 150)?;
         let x = 120;
         let y = HEIGHT as i32 / 2 - 80;
         panel(canvas, Rect::new(x, y, 720, 160))?;
-        text(canvas, x + 24, y + 20, "Save machine as", TEXT)?;
-        text(canvas, x + 24, y + 52, &format!("{}|", edit.text), TEXT)?;
+        let (title, hint) = match edit.field {
+            crate::overlay::TextField::Label => (
+                "Save machine as",
+                "Use up to 32 ASCII characters. Existing labels are kept.",
+            ),
+            crate::overlay::TextField::Network(field) => (field.title(), field.hint()),
+        };
+        text(canvas, x + 24, y + 20, title, TEXT)?;
+        let visible: String = edit
+            .text
+            .chars()
+            .rev()
+            .take(80)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        if edit.selected {
+            fill(canvas, Rect::new(x + 24, y + 48, 672, 20), SELECTED)?;
+        }
+        text(
+            canvas,
+            x + 24,
+            y + 52,
+            &format!("{}|", short_ascii(&visible, 80)),
+            TEXT,
+        )?;
         text(
             canvas,
             x + 24,
             y + 84,
             edit.error
                 .as_deref()
-                .unwrap_or("Enter accepts label; F9 saves options. Escape cancels."),
+                .map(|s| short_ascii(s, 82))
+                .as_deref()
+                .unwrap_or("Enter accepts; F9 saves options. Ctrl+A selects all. Esc cancels."),
             MUTED,
         )?;
+        text(canvas, x + 24, y + 116, hint, MUTED)?;
+    }
+    if let Some(picker) = &overlay.interfaces {
+        shade(canvas, 150)?;
+        let (x, y) = (100, HEIGHT as i32 / 2 - 150);
+        panel(canvas, Rect::new(x, y, 760, 300))?;
+        text(canvas, x + 24, y + 20, "PCAP host interface", TEXT)?;
+        let labels: Vec<_> = std::iter::once("Automatic".to_owned())
+            .chain(picker.choices.iter().map(|i| i.label.clone()))
+            .chain(std::iter::once("Enter interface name...".to_owned()))
+            .collect();
+        let start = picker.row.saturating_sub(7);
+        for (index, label) in labels.iter().enumerate().skip(start).take(8) {
+            let row_y = y + 56 + (index - start) as i32 * 24;
+            if index == picker.row {
+                fill(canvas, Rect::new(x + 12, row_y - 4, 736, 20), SELECTED)?;
+            }
+            text(canvas, x + 24, row_y, &short_ascii(label, 88), TEXT)?;
+        }
         text(
             canvas,
             x + 24,
-            y + 116,
-            "Use up to 32 ASCII characters. Existing labels are kept.",
+            y + 264,
+            "Up/Down Select   Enter Accept   Esc Cancel",
             MUTED,
         )?;
     }
@@ -284,6 +330,7 @@ fn draw_overlay(
             _ => "FFmpeg optionally optimizes after recording; the built-in GIF is kept on failure.",
         }.into(), "Core options require restart. Turning Tinker off keeps the saved values active.".into()],
         Tab::About => vec![],
+        Tab::Network => session.draft.network.hints(session.row),
     };
     let row_count = if session.tab == Tab::About {
         4
@@ -364,7 +411,7 @@ fn draw_overlay(
         20,
         footer_y,
         if busy {
-            "Choosing media / validating options...   Esc Cancel"
+            "Choosing files / checking options...   Esc Cancel"
         } else {
             "Left/Right Section  Up/Down Select  Enter Change  F9 Save  Esc Close"
         },
@@ -384,6 +431,16 @@ fn shade(canvas: &mut WindowCanvas, alpha: u8) -> Result<(), sdl3::Error> {
 
 fn draw_dialog(canvas: &mut WindowCanvas, dialog: Dialog) -> Result<(), sdl3::Error> {
     let (title, detail, buttons, selected) = match dialog {
+        Dialog::Folder { folder, choice } => (
+            folder.title(),
+            if folder == crate::network::Folder::Nfs {
+                "The guest can read and write files in the selected folder."
+            } else {
+                "Serve boot files read-only through the NAT gateway."
+            },
+            vec!["Choose folder", "Enter path", "Disable", "Cancel"],
+            choice,
+        ),
         Dialog::Reset { confirm } => (
             "Reset this machine?",
             "The current guest session will be lost. Paused machines stay paused.",

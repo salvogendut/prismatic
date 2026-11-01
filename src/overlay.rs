@@ -1,4 +1,5 @@
 use crate::media::{MediaKind, Medium};
+use crate::network::{Field, Folder, Interface};
 use crate::settings::{Settings, WindowScale};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -6,6 +7,7 @@ pub enum Key {
     NextMachine,
     Reset,
     Backspace,
+    SelectAll,
     Options,
     Escape,
     Enter,
@@ -21,6 +23,7 @@ pub enum Tab {
     General,
     Media,
     Advanced,
+    Network,
     About,
 }
 
@@ -30,6 +33,7 @@ impl Tab {
             Self::General => "General",
             Self::Media => "Media",
             Self::Advanced => "Advanced",
+            Self::Network => "Network",
             Self::About => "About",
         }
     }
@@ -43,6 +47,7 @@ pub enum Dialog {
     Media { id: u8, choice: usize },
     Firmware { choice: usize }, // Choose, Clear, Cancel
     Reset { confirm: bool },
+    Folder { folder: Folder, choice: usize },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -55,6 +60,8 @@ pub enum Effect {
     CancelMedia,
     Quit,
     Reset,
+    PickFolder(Folder),
+    ListInterfaces,
 }
 
 pub struct Session {
@@ -71,7 +78,13 @@ impl Session {
 
     pub fn tabs(&self) -> Vec<Tab> {
         if self.draft.tinker {
-            vec![Tab::General, Tab::Media, Tab::Advanced, Tab::About]
+            vec![
+                Tab::General,
+                Tab::Media,
+                Tab::Advanced,
+                Tab::Network,
+                Tab::About,
+            ]
         } else {
             vec![Tab::General, Tab::Media, Tab::About]
         }
@@ -162,6 +175,7 @@ impl Session {
             .map(|(index, &label)| (label, self.draft.media.row_value(index as u8 + 1)))
             .collect(),
             Tab::About => vec![],
+            Tab::Network => self.draft.network.rows(),
         }
     }
 }
@@ -171,15 +185,47 @@ pub struct Overlay {
     pub session: Option<Session>,
     pub dialog: Option<Dialog>,
     pub busy: bool,
-    pub label_edit: Option<LabelEdit>,
+    pub text_edit: Option<TextEdit>,
+    pub interfaces: Option<InterfacePicker>,
 }
 
-pub struct LabelEdit {
+#[derive(Clone, Copy)]
+pub enum TextField {
+    Label,
+    Network(Field),
+}
+
+pub struct TextEdit {
     pub text: String,
     pub error: Option<String>,
+    pub field: TextField,
+    pub selected: bool,
+}
+
+pub struct InterfacePicker {
+    pub choices: Vec<Interface>,
+    pub row: usize,
 }
 
 impl Overlay {
+    pub fn folder_picked(&mut self, folder: Folder, path: String) {
+        if let Some(session) = &mut self.session {
+            folder.set(&mut session.draft.network, Some(path));
+        }
+        self.busy = false;
+    }
+    pub fn interfaces_listed(&mut self, choices: Vec<Interface>) {
+        self.busy = false;
+        self.interfaces = Some(InterfacePicker { choices, row: 0 });
+    }
+    fn edit_network(&mut self, field: Field) {
+        self.text_edit = Some(TextEdit {
+            text: field.value(&self.session.as_ref().unwrap().draft.network),
+            field: TextField::Network(field),
+            error: None,
+            selected: true,
+        });
+    }
     /// A separately saved window preference must survive Save and Discard,
     /// without changing whether the rest of this session has unsaved edits.
     pub fn window_scale_saved(&mut self, scale: WindowScale) {
@@ -216,13 +262,23 @@ impl Overlay {
         self.session = None;
         self.dialog = None;
         self.busy = false;
-        self.label_edit = None;
+        self.text_edit = None;
+        self.interfaces = None;
     }
 
     pub fn text_input(&mut self, text: &str) {
-        if let Some(edit) = &mut self.label_edit {
+        if let Some(edit) = &mut self.text_edit {
+            if edit.selected {
+                edit.text.clear();
+                edit.selected = false;
+            }
             for ch in text.chars() {
-                if edit.text.len() < 32 && (ch.is_ascii_graphic() || ch == ' ') {
+                let label = matches!(edit.field, TextField::Label);
+                let max = if label { 32 } else { 1024 };
+                if edit.text.len() + ch.len_utf8() <= max
+                    && !ch.is_control()
+                    && (!label || ch.is_ascii())
+                {
                     edit.text.push(ch);
                 }
             }
@@ -231,22 +287,61 @@ impl Overlay {
     }
 
     pub fn key(&mut self, key: Key, live: &Settings) -> Effect {
-        if let Some(edit) = &mut self.label_edit {
+        if let Some(picker) = &mut self.interfaces {
+            let count = picker.choices.len() + 2; // Automatic, devices, enter name.
             match key {
-                Key::Escape => self.label_edit = None,
+                Key::Escape => self.interfaces = None,
+                Key::Up => picker.row = (picker.row + count - 1) % count,
+                Key::Down => picker.row = (picker.row + 1) % count,
+                Key::Enter => {
+                    let row = picker.row;
+                    if row == count - 1 {
+                        self.interfaces = None;
+                        self.edit_network(Field::Interface);
+                    } else {
+                        self.session.as_mut().unwrap().draft.network.pcap_interface = if row == 0 {
+                            None
+                        } else {
+                            Some(picker.choices[row - 1].name.clone())
+                        };
+                        self.interfaces = None;
+                    }
+                }
+                Key::Quit => {
+                    self.interfaces = None;
+                    self.dialog = Some(Dialog::Quit { confirm: false });
+                }
+                _ => {}
+            }
+            return Effect::None;
+        }
+        if let Some(edit) = &mut self.text_edit {
+            match key {
+                Key::Escape => self.text_edit = None,
+                Key::SelectAll => edit.selected = true,
+                Key::Left | Key::Right => edit.selected = false,
                 Key::Backspace => {
-                    edit.text.pop();
+                    if edit.selected {
+                        edit.text.clear();
+                    } else {
+                        edit.text.pop();
+                    }
+                    edit.selected = false;
                     edit.error = None;
                 }
                 Key::Enter => {
-                    let label = edit.text.trim();
-                    match self.session.as_mut().unwrap().draft.save_as_machine(label) {
-                        Ok(()) => self.label_edit = None,
+                    let draft = &mut self.session.as_mut().unwrap().draft;
+                    let result = match edit.field {
+                        TextField::Label => draft.save_as_machine(edit.text.trim()),
+                        TextField::Network(field) => field.apply(&mut draft.network, &edit.text),
+                    };
+                    match result {
+                        Ok(()) => self.text_edit = None,
                         Err(error) => edit.error = Some(error),
                     }
                 }
                 Key::Quit => {
-                    self.label_edit = None;
+                    self.text_edit = None;
                     self.dialog = Some(Dialog::Quit { confirm: false });
                 }
                 _ => {}
@@ -266,6 +361,26 @@ impl Overlay {
         if let Some(dialog) = self.dialog {
             match (dialog, key) {
                 (_, Key::Escape) => self.dialog = None,
+                (Dialog::Folder { folder, choice }, Key::Left | Key::Right) => {
+                    self.dialog = Some(Dialog::Folder {
+                        folder,
+                        choice: (choice + if key == Key::Left { 3 } else { 1 }) % 4,
+                    });
+                }
+                (Dialog::Folder { folder, choice: 0 }, Key::Enter) => {
+                    self.dialog = None;
+                    self.busy = true;
+                    return Effect::PickFolder(folder);
+                }
+                (Dialog::Folder { folder, choice: 1 }, Key::Enter) => {
+                    self.dialog = None;
+                    self.edit_network(Field::Directory(folder));
+                }
+                (Dialog::Folder { folder, choice: 2 }, Key::Enter) => {
+                    folder.set(&mut self.session.as_mut().unwrap().draft.network, None);
+                    self.dialog = None;
+                }
+                (Dialog::Folder { .. }, Key::Enter) => self.dialog = None,
                 (Dialog::Unsaved { choice }, Key::Left | Key::Right) => {
                     let step = if key == Key::Left { 2 } else { 1 };
                     self.dialog = Some(Dialog::Unsaved {
@@ -396,12 +511,20 @@ impl Overlay {
                     session.draft.next_machine();
                 }
                 (Tab::General, 9) => {
-                    self.label_edit = Some(LabelEdit {
+                    self.text_edit = Some(TextEdit {
                         text: String::new(),
                         error: None,
+                        field: TextField::Label,
+                        selected: false,
                     })
                 }
-                (Tab::General, 0) => session.draft.machine.cycle_profile(),
+                (Tab::General, 0) => {
+                    session.draft.machine.cycle_profile();
+                    session
+                        .draft
+                        .network
+                        .reconcile_profile(session.draft.machine.profile);
+                }
                 (Tab::General, 1) => session.draft.machine.cycle_ram(),
                 (Tab::General, 2) => session.draft.machine.cycle_cpu(),
                 (Tab::General, 3) => session.draft.machine.cycle_keyboard(),
@@ -432,6 +555,36 @@ impl Overlay {
                 (Tab::Advanced, 7) => session.draft.gif.cycle_width(),
                 (Tab::Advanced, 8) => session.draft.gif.cycle_fps(),
                 (Tab::Advanced, 9) => session.draft.gif.cycle_encoder(),
+                (Tab::Network, 0) => session
+                    .draft
+                    .network
+                    .cycle_mode(session.draft.machine.profile),
+                (Tab::Network, 1) if session.draft.network.mode == iris::config::NetMode::Nat => {
+                    self.edit_network(Field::Subnet)
+                }
+                (Tab::Network, 2) if session.draft.network.mode == iris::config::NetMode::Pcap => {
+                    self.busy = true;
+                    return Effect::ListInterfaces;
+                }
+                (Tab::Network, 3) if session.draft.network.mode != iris::config::NetMode::Off => {
+                    self.dialog = Some(Dialog::Folder {
+                        folder: Folder::Nfs,
+                        choice: 3,
+                    });
+                }
+                (Tab::Network, 4) => session.draft.network.cycle_nfs_version(),
+                (Tab::Network, 5) if session.draft.network.mode == iris::config::NetMode::Pcap => {
+                    self.edit_network(Field::NfsIp)
+                }
+                (Tab::Network, 6) if session.draft.network.mode == iris::config::NetMode::Nat => {
+                    self.dialog = Some(Dialog::Folder {
+                        folder: Folder::Tftp,
+                        choice: 3,
+                    });
+                }
+                (Tab::Network, 7) if session.draft.network.mode == iris::config::NetMode::Nat => {
+                    self.edit_network(Field::Forwards)
+                }
                 (Tab::Media, row) => {
                     self.dialog = Some(Dialog::Media {
                         id: row as u8 + 1,
@@ -450,6 +603,107 @@ impl Overlay {
 mod tests {
     use super::*;
 
+    fn network_overlay(live: &Settings) -> Overlay {
+        let mut overlay = Overlay::default();
+        overlay.key(Key::Options, live);
+        assert!(
+            !overlay
+                .session
+                .as_ref()
+                .unwrap()
+                .tabs()
+                .contains(&Tab::Network)
+        );
+        for _ in 0..6 {
+            overlay.key(Key::Down, live);
+        }
+        overlay.key(Key::Enter, live); // Tinker
+        for _ in 0..3 {
+            overlay.key(Key::Right, live);
+        }
+        assert_eq!(overlay.session.as_ref().unwrap().tab, Tab::Network);
+        overlay
+    }
+
+    #[test]
+    fn network_editor_validates_and_discard_has_no_runtime_effects() {
+        let live = Settings::default();
+        let mut overlay = network_overlay(&live);
+        overlay.key(Key::Down, &live);
+        overlay.key(Key::Enter, &live);
+        overlay.text_input("invalid");
+        overlay.key(Key::Enter, &live);
+        assert!(overlay.text_edit.as_ref().unwrap().error.is_some());
+        assert_eq!(
+            overlay.session.as_ref().unwrap().draft.network,
+            live.network
+        );
+        overlay.key(Key::SelectAll, &live);
+        overlay.text_input("10.23.0.0/24");
+        overlay.key(Key::Enter, &live);
+        assert!(overlay.text_edit.is_none());
+        let Effect::Save(draft) = overlay.key(Key::Options, &live) else {
+            panic!("Expected Save");
+        };
+        assert!(draft.machine_differs_from(&live));
+        assert_eq!(draft.network.nat_subnet, "10.23.0.0/24");
+        overlay.confirm_restart();
+        overlay.key(Key::Enter, &live); // Cancel restart keeps draft.
+        assert!(overlay.session.as_ref().unwrap().dirty());
+        for key in [Key::Escape, Key::Left, Key::Enter, Key::Options] {
+            overlay.key(key, &live);
+        }
+        assert_eq!(overlay.session.as_ref().unwrap().draft, live);
+    }
+
+    #[test]
+    fn network_pickers_only_edit_drafts_and_tinker_does_not_clear_settings() {
+        let live = Settings::default();
+        let mut overlay = network_overlay(&live);
+        overlay.session.as_mut().unwrap().row = 3;
+        overlay.key(Key::Enter, &live);
+        overlay.key(Key::Right, &live); // Cancel -> Choose
+        assert_eq!(
+            overlay.key(Key::Enter, &live),
+            Effect::PickFolder(Folder::Nfs)
+        );
+        overlay.folder_picked(Folder::Nfs, "/tmp/share".into());
+        assert!(live.network.nfs_dir.is_none());
+        overlay.session.as_mut().unwrap().row = 0;
+        overlay.key(Key::Enter, &live); // PCAP
+        overlay.key(Key::Down, &live);
+        overlay.key(Key::Down, &live);
+        assert_eq!(overlay.key(Key::Enter, &live), Effect::ListInterfaces);
+        overlay.interfaces_listed(vec![Interface {
+            name: "eth-test".into(),
+            label: "Test interface".into(),
+        }]);
+        overlay.key(Key::Down, &live);
+        overlay.key(Key::Enter, &live);
+        assert_eq!(
+            overlay
+                .session
+                .as_ref()
+                .unwrap()
+                .draft
+                .network
+                .pcap_interface
+                .as_deref(),
+            Some("eth-test")
+        );
+        for _ in 0..3 {
+            overlay.key(Key::Left, &live);
+        }
+        for _ in 0..6 {
+            overlay.key(Key::Down, &live);
+        }
+        overlay.key(Key::Enter, &live); // Hide Tinker.
+        let session = overlay.session.as_ref().unwrap();
+        assert!(!session.tabs().contains(&Tab::Network));
+        assert_eq!(session.draft.network.nfs_dir.as_deref(), Some("/tmp/share"));
+        assert!(session.draft.machine_differs_from(&live));
+    }
+
     #[test]
     fn naming_and_selecting_machines_are_drafts_until_save() {
         let mut live = Settings::default();
@@ -460,7 +714,7 @@ mod tests {
         overlay.key(Key::Enter, &live);
         overlay.text_input("Original");
         overlay.key(Key::Enter, &live);
-        assert!(overlay.label_edit.as_ref().unwrap().error.is_some());
+        assert!(overlay.text_edit.as_ref().unwrap().error.is_some());
         overlay.key(Key::Escape, &live);
         overlay.key(Key::Enter, &live);
         overlay.text_input("Second");
