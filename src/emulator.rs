@@ -314,8 +314,12 @@ impl OwnedMachine {
         self.stopped = true;
         let _guard = self.slot.lock();
         self.machine.stop();
+        let flushed = self
+            .machine
+            .flush_disks()
+            .map_err(|e| format!("Could not flush disks: {e}"));
         media::detach(self.machine.as_mut());
-        self.media_errors.check()
+        flushed.and(self.media_errors.check())
     }
 }
 
@@ -338,12 +342,17 @@ pub struct Emulator {
     input: Arc<Mutex<Option<Arc<Ps2Controller>>>>,
     pub activity: Activity,
     has_media: bool,
+    network_control: Arc<Mutex<Option<Arc<iris::net::NatControl>>>>,
 }
 
 enum Command {
     Stop,
     Pause,
     Resume,
+    Storage(
+        crate::storage::Action,
+        mpsc::SyncSender<Result<String, String>>,
+    ),
 }
 
 impl Emulator {
@@ -363,10 +372,12 @@ impl Emulator {
         config.scsi.clear();
         let media = media.clone();
         let mut hardware = hardware.clone();
-        let has_media = !media.devices.is_empty();
+        let has_media = !media.devices.is_empty() || media.scratch.slot.is_some();
         iris::workstation::set_exit_on_guest_poweroff(false);
         let state_dir = state_dir.to_owned();
         let frames = FrameSlot::new(hardware.heads);
+        let network_control = Arc::new(Mutex::new(None));
+        let worker_network = network_control.clone();
         let status = Arc::new(Mutex::new(Status::default()));
         let (commands, receiver) = mpsc::sync_channel(1);
         let stop_requested = Arc::new(AtomicBool::new(false));
@@ -421,6 +432,13 @@ impl Emulator {
                         &worker_activity,
                         &mut owned.media_errors,
                     )?;
+                    let _scratch_lease = crate::storage::attach_scratch(
+                        owned.machine.as_mut(),
+                        &media,
+                        &state_dir,
+                        &worker_activity,
+                    )?;
+                    *worker_network.lock().unwrap() = owned.machine.nat_control();
                     owned.machine.register_system_controller();
                     {
                         let _guard = owned.slot.lock();
@@ -484,6 +502,22 @@ impl Emulator {
                         }
                         match receiver.recv_timeout(Duration::from_millis(100)) {
                             Err(mpsc::RecvTimeoutError::Timeout) => {}
+                            Ok(Command::Storage(action, result)) => {
+                                let _guard = owned.slot.lock();
+                                let outcome =
+                                    if owned.machine.status().state == GuestState::PoweredOff {
+                                        Err("Machine powered off before the operation".into())
+                                    } else {
+                                        crate::storage::live(
+                                            owned.machine.as_mut(),
+                                            &action,
+                                            &media,
+                                            &state_dir,
+                                            paused,
+                                        )
+                                    };
+                                let _ = result.try_send(outcome);
+                            }
                             Ok(Command::Pause) => {
                                 // A second keypress can arrive before the UI sees
                                 // Paused. Keep device stop/start pairs balanced.
@@ -515,6 +549,7 @@ impl Emulator {
                     Ok(final_phase)
                 }));
                 *worker_input.lock().unwrap() = None;
+                *worker_network.lock().unwrap() = None;
                 let phase = match result {
                     Ok(Ok(phase)) => phase,
                     Ok(Err(error)) => Phase::Failed(error),
@@ -535,7 +570,23 @@ impl Emulator {
             input,
             activity,
             has_media,
+            network_control,
         })
+    }
+
+    pub fn storage_action(
+        &self,
+        action: crate::storage::Action,
+    ) -> Result<crate::storage::Job, String> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.commands
+            .try_send(Command::Storage(action, tx))
+            .map_err(|_| "Machine is busy; try again")?;
+        Ok(crate::storage::Job::live(rx))
+    }
+
+    pub fn network_control(&self) -> Option<Arc<iris::net::NatControl>> {
+        self.network_control.lock().unwrap().clone()
     }
 
     pub fn status(&self) -> Status {
@@ -600,6 +651,112 @@ mod tests {
 
     // Iris has process-wide display/CPU hooks; started machines must not overlap.
     static MACHINE_TEST: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn worker_storage_actions_use_second_bus_and_preserve_paused_scratch_state() {
+        use crate::storage::{Action, Operation};
+        let _serial = MACHINE_TEST.lock().unwrap();
+        for profile in [
+            MachineProfile::Indigo2Ip22,
+            MachineProfile::O2Ip32,
+            MachineProfile::OctaneIp30,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let cd1 = dir.path().join("one.iso");
+            let cd2 = dir.path().join("two.iso");
+            std::fs::write(&cd1, vec![1; 65536]).unwrap();
+            std::fs::write(&cd2, vec![2; 65536]).unwrap();
+            let mut hardware = MachineSettings {
+                profile,
+                ..Default::default()
+            };
+            hardware.cpu = hardware.cpus()[0];
+            let mut media = MediaSettings::default();
+            let slot = 16 + profile.max_scsi_id();
+            media.devices.insert(
+                slot,
+                media::Medium::inspect(&cd1, media::MediaKind::Cdrom).unwrap(),
+            );
+            media
+                .cd_changers
+                .insert(slot, vec![cd2.to_str().unwrap().into()]);
+            media.scratch.slot = Some(2);
+            let mut emulator = Emulator::spawn(
+                dir.path(),
+                &hardware,
+                &media,
+                &Default::default(),
+                &Default::default(),
+            )
+            .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while emulator.status().phase == Phase::Starting && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(emulator.status().phase, Phase::Running);
+            let execute = |operation, path| {
+                emulator
+                    .storage_action(Action { operation, path })
+                    .unwrap()
+                    .0
+                    .recv_timeout(Duration::from_secs(10))
+                    .unwrap()
+            };
+            assert!(
+                execute(Operation::NextCd(slot), None)
+                    .unwrap()
+                    .contains("two.iso")
+            );
+            assert!(
+                execute(
+                    Operation::LoadCd(slot),
+                    Some(dir.path().join("missing.iso"))
+                )
+                .is_err()
+            );
+            assert!(
+                execute(Operation::Info(slot), None)
+                    .unwrap()
+                    .contains("two.iso")
+            );
+            assert!(
+                execute(Operation::EmptyCd(slot), None)
+                    .unwrap()
+                    .contains("empty")
+            );
+            let payload = dir.path().join("input.bin");
+            std::fs::write(&payload, b"scratch test").unwrap();
+            execute(Operation::ImportScratch, Some(payload.clone())).unwrap();
+            assert_eq!(emulator.status().phase, Phase::Running);
+            emulator.request_pause(true).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while emulator.status().phase != Phase::Paused && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(emulator.status().phase, Phase::Paused);
+            let ps2 = emulator.input().unwrap();
+            let ps2_was_running = iris::traits::Device::is_running(ps2.as_ref());
+            execute(Operation::ImportScratch, Some(payload)).unwrap();
+            thread::sleep(Duration::from_millis(150));
+            assert_eq!(emulator.status().phase, Phase::Paused);
+            // IP22 stops PS/2 on pause; O2 keeps its controller active.
+            // The transfer must preserve the model's peripheral state too.
+            assert_eq!(
+                iris::traits::Device::is_running(ps2.as_ref()),
+                ps2_was_running
+            );
+            let scratch = media.scratch.path(dir.path());
+            let bytes = std::fs::read(&scratch).unwrap();
+            assert_eq!(&bytes[4096..4108], b"scratch test");
+            emulator.request_stop();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !emulator.finished() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(emulator.finished());
+            assert_eq!(emulator.status().phase, Phase::Stopped);
+        }
+    }
 
     #[test]
     fn guest_power_off_finishes_worker_but_monitor_halt_does_not() {

@@ -10,6 +10,13 @@ pub struct Lease {
 }
 
 impl Lease {
+    pub fn disk(path: &Path) -> Result<Self, String> {
+        let base = std::fs::canonicalize(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut name = base.into_os_string();
+        name.push(".prismatic-lock");
+        Self::acquire(Path::new(&name))
+    }
+
     pub fn acquire(path: &Path) -> Result<Self, String> {
         let file = OpenOptions::new()
             .read(true)
@@ -35,13 +42,7 @@ pub fn disks(media: &MediaSettings) -> Result<Vec<Lease>, String> {
         .devices
         .values()
         .filter(|medium| medium.kind == MediaKind::Disk)
-        .map(|medium| {
-            let base =
-                std::fs::canonicalize(&medium.path).map_err(|e| format!("{}: {e}", medium.path))?;
-            let mut name = base.into_os_string();
-            name.push(".prismatic-lock");
-            Lease::acquire(Path::new(&name))
-        })
+        .map(|medium| Lease::disk(Path::new(&medium.path)))
         .collect()
 }
 

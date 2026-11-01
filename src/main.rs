@@ -13,6 +13,7 @@ mod profiles;
 mod settings;
 mod smoke;
 mod sound;
+mod storage;
 mod view;
 
 use emulator::{Emulator, Phase, Status};
@@ -306,6 +307,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let mut guest_frame_received = false;
     let mut first_content: Option<Instant> = None;
     let mut captures = capture::Captures::new(std::env::current_dir()?);
+    let mut storage_job: Option<storage::Job> = None;
     let mut shutter = sound::Shutter::default();
     let mut guest_audio = audio::GuestAudio::default();
     let started = Instant::now();
@@ -333,6 +335,13 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             toast = Some((message, Instant::now()));
             redraw = true;
         }
+        if let Some(result) = storage_job.as_ref().and_then(storage::Job::poll) {
+            storage_job = None;
+            let message = result.unwrap_or_else(|error| format!("Storage failed: {error}"));
+            eprintln!("Prismatic: {message}");
+            overlay.show_report(message);
+            redraw = true;
+        }
         let mut ready_save = None;
         let text_input = video.text_input();
         if overlay.text_edit.is_some() != text_input.is_active(canvas.window()) {
@@ -345,6 +354,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(result) = media_jobs.poll() {
             redraw = true;
             match result {
+                Ok(Completion::Action(action)) => overlay.action_picked(action),
                 Ok(Completion::Picked { id, medium }) => overlay.picked(id, medium),
                 Ok(Completion::PromPicked { profile, path }) => overlay.prom_picked(profile, path),
                 Ok(Completion::FolderPicked { folder, path }) => {
@@ -612,6 +622,86 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 let effect = overlay.key(key, &settings);
                 let confirmed_restart = matches!(effect, Effect::Restart(_));
                 match effect {
+                    Effect::Storage(operation) => {
+                        let session = overlay.session.as_ref().unwrap();
+                        let queue = matches!(operation, storage::Operation::QueueCd(_));
+                        let error = if !queue && session.dirty() {
+                            Some("Save or discard options before storage actions".to_owned())
+                        } else if let storage::Operation::QueueCd(slot) = operation {
+                            if session
+                                .draft
+                                .media
+                                .devices
+                                .get(&slot)
+                                .is_none_or(|m| m.kind != media::MediaKind::Cdrom)
+                            {
+                                Some("Select a CD-ROM as the storage action target".into())
+                            } else {
+                                None
+                            }
+                        } else if operation.offline() && emulator.is_some() {
+                            Some("Shut down and power off the guest before disk commit/reset. Pausing is not enough".into())
+                        } else if !operation.offline() && emulator.is_none() {
+                            Some("Boot the machine before live storage actions".into())
+                        } else {
+                            None
+                        };
+                        if let Some(error) = error {
+                            overlay.show_report(error);
+                        } else if operation.picks_file() {
+                            overlay.busy = true;
+                            if let Err(error) = media_jobs.pick_action(canvas.window(), operation) {
+                                overlay.show_report(error);
+                            }
+                        } else if matches!(operation, storage::Operation::Info(_)) {
+                            match emulator
+                                .as_ref()
+                                .unwrap()
+                                .storage_action(storage::Action::new(operation))
+                            {
+                                Ok(job) => {
+                                    storage_job = Some(job);
+                                    overlay.busy = true;
+                                    overlay.action_busy = true;
+                                }
+                                Err(error) => overlay.show_report(error),
+                            }
+                        } else {
+                            let mut action = storage::Action::new(operation);
+                            if let storage::Operation::Commit(slot)
+                            | storage::Operation::Reset(slot) = operation
+                            {
+                                action.path = settings
+                                    .media
+                                    .devices
+                                    .get(&slot)
+                                    .map(|m| m.path.clone().into());
+                            }
+                            overlay.action_picked(action);
+                        }
+                    }
+                    Effect::RunAction(action) => {
+                        let job = if action.operation.offline() {
+                            if emulator.is_some() {
+                                Err("Power off the machine before disk commit/reset".into())
+                            } else {
+                                storage::Job::offline(action, settings.media.clone())
+                            }
+                        } else {
+                            emulator
+                                .as_ref()
+                                .ok_or_else(|| "No machine is loaded".to_owned())
+                                .and_then(|machine| machine.storage_action(action))
+                        };
+                        match job {
+                            Ok(job) => {
+                                storage_job = Some(job);
+                                overlay.busy = true;
+                                overlay.action_busy = true;
+                            }
+                            Err(error) => overlay.show_report(error),
+                        }
+                    }
                     Effect::None => {}
                     Effect::ListInterfaces => media_jobs.list_interfaces(),
                     Effect::PickFolder(folder) => {
@@ -725,7 +815,22 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 && !(emulator.is_none() && status.phase == Phase::Paused)
                 && (draft.machine_differs_from(&active)
                     || matches!(status.phase, Phase::Failed(_) | Phase::PoweredOff));
-            if let Err(error) = emulator::machine_config(
+            let live_network = if !needs_restart && draft.network != active.network {
+                emulator.as_ref().and_then(Emulator::network_control)
+            } else {
+                None
+            };
+            if !needs_restart
+                && emulator.is_some()
+                && draft.network != active.network
+                && live_network.is_none()
+            {
+                overlay.save_failed();
+                toast = Some((
+                    "Network control is not ready; retry Save after startup".into(),
+                    Instant::now(),
+                ));
+            } else if let Err(error) = emulator::machine_config(
                 &state_dir(&draft),
                 &draft.machine,
                 &draft.media,
@@ -746,6 +851,9 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 match draft.save(&path) {
                     Ok(()) => {
+                        if let Some(control) = live_network {
+                            draft.network.apply_live(&active.network, &control);
+                        }
                         debug_log.set_output(draft.debug_output);
                         settings = draft;
                         overlay.saved();
@@ -763,6 +871,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                             if emulator.is_none() {
                                 active = settings.clone();
                             } else {
+                                active.network = settings.network.clone();
                                 active.machine_label = settings.machine_label.clone();
                                 active.machines = settings.machines.clone();
                             }

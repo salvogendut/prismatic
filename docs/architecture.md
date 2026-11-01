@@ -38,6 +38,7 @@ including when the hints are hidden.
 | `src/display.rs` | Packed RGBA frame type, startup/UI-preview pixels and aspect-preserving placement |
 | `src/view.rs` | SDL drawing, status strip, LEDs, options, confirmations and notifications |
 | `src/media.rs` | Native file/folder choosers, background validation and interface enumeration, media settings and Iris block-node adapters |
+| `src/storage.rs` | CD tray actions, offline COW commit/reset, scratch drive and payload transfers, bounded action results |
 | `src/activity.rs` | Atomic activity bits and visible LED pulse durations |
 
 ## Core boundary
@@ -120,21 +121,31 @@ device-selection controls and removal of unused host dependencies remain future 
 ## Networking
 
 The Tinker-gated Network tab edits per-machine NAT/PCAP/Off mode, subnet,
-NFS folder/version/bridge IP, TFTP folder and localhost TCP/UDP forwarding.
+NFS folder/version/bridge IP, TFTP/RSH folders, MAC and TCP/UDP forwarding with
+localhost or all-interface bind scope.
 Settings live under `[network]` and each named machine's `.network` stanza.
 Old files default to NAT with no shares or forwards. Hiding Tinker does not
 disable saved networking. Changing from O2/Octane with Ethernet Off to an
 Indy/Indigo2 selects NAT, matching the core's model restriction.
 
 The frontend maps saved settings into `MachineConfig` before worker startup.
-It uses restart confirmation for all network changes, even where Iris has a
-live-control API, so Save/Discard remain atomic with the rest of the draft.
+Backend, MAC, service folders and NFS options require restart confirmation.
+Subnet, forwarding rules/bind scope and PCAP interface use the worker's published
+`Arc<NatControl>`. The frontend validates and persists the complete draft before
+requesting live changes; failed saves and Discard do not touch the backend.
+Only changed controls are sent, so editing forwards does not reset the subnet
+and its connections. These are asynchronous core requests; listener errors use
+Iris diagnostics and interface errors use the PCAP status notification. Existing
+Indy/Indigo2 NVRAM can retain its old MAC even after a configured override.
+The fork retains explicit live network choices across peripheral restarts and
+closes old listeners before rebinding or starting a renewed link.
 CIDR, IP and forwarding checks are pure; folder checks and PCAP enumeration
 use the bounded background job result channel. Selected service directories
 must exist and be readable: validation never creates or exports a directory.
 Paths resolve relative to the config file and normalize before catalog merging.
 The worker checks folders again before constructing the core. NFS has Iris's
-read/write semantics; TFTP is read-only. No host service is opened by a draft.
+read/write semantics; TFTP and RSH are read-only. RSH exposes Iris's limited file
+commands, without a host shell. No host service is opened by a draft.
 
 The optional Cargo `pcap` feature forwards to `iris/pcap`. A non-PCAP build can
 read a catalog containing PCAP labels, but refuses to save/start an active
@@ -268,8 +279,8 @@ Native SDL file-dialog callbacks hand results to a bounded channel; file probes
 run on a separate worker. Escape abandons the result without changing the draft.
 Save revalidates all images off the SDL thread, canonicalizes paths, rejects
 duplicate hard disks and then follows the hardware restart confirmation flow.
-Validation is read-only and never creates overlays. Opening the writable
-backend happens only when constructing the selected machine.
+Validation is read-only and never creates overlays. Writable backends open when
+constructing a machine or executing an explicitly confirmed offline COW action.
 
 The Iris CLI constructor exits the process on some media errors. Prismatic
 therefore constructs an empty SCSI configuration, opens the selected block
@@ -282,15 +293,46 @@ modifying or extracting the base. Only an empty, structurally valid legacy
 diff can be bypassed, and it is left intact. The sparse adapter refuses commit
 so raw sector writes can never reach a CHD container. CDs use a read-only raw node
 or `ChdCdNode`. No filesystem decoding lives in the frontend. Snapshot loading
-and media hot swapping are not exposed; the constructor's empty disk-reference
-provenance must be addressed before adding snapshot support.
+is not exposed; the constructor's empty disk-reference provenance must be
+addressed before adding snapshot support.
 
-`MediaNode` delegates the block interface while recording actual reads/writes
-and flushing on drop. After CPU/device stop, the worker detaches targets to
-force these flushes, checks retained errors, and only then reports completion.
+`MediaNode` delegates the disk block interface while recording actual reads/writes
+and flushing on drop. CD and scratch targets use `ActivityTarget`, which observes
+successful SCSI reads/writes outside the block node: CD changer replacement
+therefore retains LED instrumentation. After CPU/device stop, the worker flushes
+all targets, detaches them, checks retained errors and only then reports completion.
 Iris retains its persistent COW sidecar behavior. Draft selection/discard never
 opens a writable node. The probe checks format/readability; a later permission
 or device failure is still reported by machine startup or shutdown.
+
+Saved `media.cd_changers` lists accompany the boot CD on either SCSI bus.
+Editing them follows normal draft validation/restart rules. Explicit live
+insert/next/empty/status actions are serialized on the machine worker and select
+the correct bus's synchronized target table. Insert probes before replacement;
+Next requires two queued discs. The frontend does not unmount guest filesystems
+or rewrite saved boot media after a live action. No guest-specific shell commands
+are injected.
+
+Extensions separates settings from immediate actions. Dirty drafts block live
+actions and disk commit/reset. Confirmations default to Cancel. A single bounded
+result channel returns a scrollable report while SDL continues handling events;
+quit and additional actions wait for completion. Offline COW actions use a worker
+and exclusive lease for only the selected disk, and require no loaded machine.
+They call the existing backend commit/rollback and flush methods. Hashless CHD
+commit stays unsupported, preserving the container; reset is supported.
+
+The optional scratch drive has per-label target/size settings and a persistent
+`scratch-SIZE.raw` in its state directory. Startup atomically creates the SGI
+volume header/payload partition if absent, validates size and partition bounds,
+and holds an exclusive disk lease through teardown. The target is directly
+writable with no overlay. Import/export use `Workstation::with_paused` to stop
+device I/O around bounded streaming file copies and restore CPU running state.
+If Ctrl+P already paused the machine, transfers preserve its peripheral state.
+Import validates the header and payload capacity, writes from byte 4096 and pads
+the last partial sector; trailing data remains. Export publishes a complete
+payload through a temporary file without overwriting existing destinations.
+Guest filesystem handling and meaningful payload length remain the user's
+responsibility. Scratch media participates in the normal shutdown flush wait.
 
 `CaptureRenderer` records each CPU's cycle changes (`cycles` and `more_cpus`
 from Iris's `BarStats`) and core network heartbeat bits. CPU0 and CPU1 use
@@ -511,7 +553,9 @@ and save conflicts, invalid CIDRs/IPs/forwards, missing directories, draft
 discard and cancelled restarts, plus configuration mapping on all five models.
 A packet-level test runs the real Iris NAT backend with frontend settings and
 checks TFTP file contents and NFSv3 mount/lookup against separate temporary
-folders on a custom subnet. Both default and PCAP feature builds are checked.
+folders on a custom subnet. A live-control test verifies forwarding listeners
+appear only after successful persistence and close on a live update, without
+recreating the backend. Both default and PCAP feature builds are checked.
 An isolated desktop test exercises text editors, missing-folder rejection,
 Save/Discard, restart confirmation, F2 switching, PCAP interface enumeration
 and a missing-interface notification. It confirms that localhost forwarding
@@ -538,13 +582,28 @@ read-only fixtures. These checks establish frontend integration and PROM output;
 full guest-OS boots with each alternate board, dual-head guest desktops and
 8 GiB Octane configurations remain separate validation work.
 
+Storage tests cover saved changer/scratch migration and collisions, cancellation
+and draft isolation, raw COW commit/reset and instance exclusion, failed CD loads,
+post-swap LED activity, scratch header preservation, oversized imports and export
+overwrite refusal. Real worker tests on IP22/O2/Octane swap CDs on the second bus
+and import scratch payload while preserving a paused machine. These tests use
+disposable fixtures and do not establish guest filesystem remount behavior.
+
+An isolated SDL desktop check exercises offline Commit confirmation/cancellation,
+scratch creation, CD Status/Next/Empty without replacing the worker or saved boot
+media, and refusal of disk Commit while paused. Network checks cover live subnet,
+forward rules and bind scope, listener retention across pause/resume, and cancelled
+MAC restarts. Final UI, diskless PROM, Media and Advanced smokes and the optional
+PCAP release build use the same `xiri` revision. Two-CPU Octane LED checks also
+pass against the synced core's status source.
+
 ## Next milestones
 
 1. Add device-selection controls and feature boundaries for Iris's existing host backends.
    Validate Linux, Windows and macOS builds and device behavior.
-2. Extend Advanced/Network/Extensions with media services, performance/debug
-   tools and optional devices; graphics, CPU count and expanded SCSI are wired.
+2. Extend Advanced/Network/Extensions with performance/debug tools and optional
+   devices; graphics, CPU count, expanded SCSI and storage/network services are wired.
    Classify settings as live, next boot or restart-required. Validate before
-   applying and confirm disruptive changes. Add explicit COW management and
-   guest-aware media swapping when their core interfaces are ready.
+   applying and confirm disruptive changes. Address snapshot disk provenance
+   before exposing snapshot load/save.
 3. Extend audio validation to sustained IRIX playback and host-device changes on each platform.

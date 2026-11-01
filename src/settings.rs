@@ -667,7 +667,7 @@ impl Settings {
             || self.machine != active.machine
             || self.media != active.media
             || self.advanced != active.advanced
-            || self.network != active.network
+            || self.network.requires_restart(&active.network)
     }
     /// Create a complete configuration on first launch, or migrate the previous
     /// default filename. An existing (even invalid) destination is never replaced.

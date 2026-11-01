@@ -49,7 +49,7 @@ Dev/
 
 Prismatic uses the local Iris library directly, including the fork's power-off,
 diagnostic routing, bundled O2/Octane firmware and frontend audio support. Use
-Iris branch `xiri` at commit `43fdfaa` or newer and update both checkouts.
+Iris branch `xiri` at commit `d3d8a99` or newer and update both checkouts.
 Always use this branch for Prismatic: it carries the compatibility work for
 NetBSD and other guest operating systems alongside IRIX. Its root Cargo
 manifest also preserves the fork's patched winit and
@@ -138,9 +138,12 @@ mouse protocol.
 
 Enable **General > Tinker** to expose Advanced, Network and Extensions.
 Advanced includes Iris core options, filtering, debug output and GIF capture
-settings; Extensions selects graphics hardware and CPU count. Hiding these tabs retains their saved settings. Options
+settings; Extensions selects graphics hardware, CPU count and storage services.
+Hiding these tabs retains their saved settings. Options
 are edited in a private draft and applied only after a successful save. Cancelling or discarding leaves the live display
 unchanged. Confirmation dialogs initially select Cancel.
+Extensions also has explicit storage actions: these have their own confirmation
+and result screens and run independently of settings Save/Discard.
 
 ## Screenshots and GIF capture
 
@@ -412,6 +415,71 @@ graphics = "maximpact"
 heads = 1
 ```
 
+### CD changer and disk actions
+
+In Extensions, cycle **Storage action target** to a configured disk or CD-ROM
+on either SCSI bus. **Add CD to changer** appends an image to that drive's saved
+list; **Clear queued CDs** removes the additional discs. The boot image from
+Media remains first. These are draft settings: Save applies them with the usual
+restart confirmation, and Discard leaves the current drive unchanged.
+
+**Storage actions** opens a separate menu. Save or discard pending options
+before using it:
+
+- **Status** reports the attached drive, overlay or current CD tray and queue.
+- CD drives offer **Insert CD**, **Next CD** and **Empty tray** while the guest
+  is loaded. Unmount the CD inside the guest first. Each action asks for
+  confirmation; a failed load preserves the current disc. Next requires at
+  least two queued discs. These session changes do not rewrite saved boot media;
+  reset or the next boot restores the saved list. Guest media detection/remounting
+  is handled by the guest OS.
+- Hard disks offer **Commit** (merge overlay writes into the base image) and
+  **Reset overlay** (discard those writes). These are permanent, separately
+  confirmed actions available only before boot or after guest power-off.
+  Pausing or halting a loaded guest is insufficient. An exclusive disk lock
+  prevents another Prismatic window from using the selected disk concurrently.
+  Raw disks and hashed CHD disks use Iris's native COW operations. Hashless CHD
+  overlays support Reset but reject Commit without altering the base.
+
+Storage work runs in the background; its result screen supports Up/Down to
+scroll and Enter/Escape to close. Once confirmed, a storage operation must finish
+before another action or quit can proceed.
+
+### Scratch transfer drive
+
+**Scratch target** selects an unused target 1–7 on controller 0, or Off.
+**Scratch size** selects 64, 256 or 1024 MB. Save these per-label settings, then
+boot. Prismatic creates `scratch-SIZE.raw` in that machine's state directory
+with an SGI volume header and a raw payload partition starting at byte 4096.
+It is directly writable, without a COW overlay. Changing size selects a different
+file and preserves the old one; disabling the drive preserves its file too.
+Its green **XFRn** lamp shows reads, with amber writes.
+
+**Import scratch payload** copies a chosen host file to the start of partition
+0, retaining the volume header. It zero-pads the final partial 512-byte sector
+and leaves later payload bytes unchanged. **Export scratch payload** copies the
+entire payload to a new host file; an existing destination is never overwritten.
+Both actions require confirmation and briefly stop the machine's devices for
+the transfer, preserving the previous paused/running state.
+
+This is a raw transfer volume, without filesystem or automatic guest commands.
+Stop guest access first. For example, on IRIX with scratch at target 2, use
+`/dev/rdsk/dks0d2s0` with `dd` to read an imported payload or write data for export.
+Keep track of the meaningful byte count: exports include unused trailing bytes.
+Other guest operating systems use their own raw-device names and partition tools.
+
+The additional settings use `[media.cd_changers]` and `[media.scratch]`, or the
+corresponding stanzas under `machines."LABEL"`:
+
+```toml
+[machines."Indy IRIX".media.cd_changers]
+6 = ["/path/to/disc2.iso", "/path/to/disc3.efs"]
+
+[machines."Indy IRIX".media.scratch]
+slot = 2 # Omit to disable; cannot overlap a normal Media device.
+size_mb = 64
+```
+
 ## Media and activity LEDs
 
 Open **F9 > Media**, select a SCSI target, and press Enter. Choose **Hard disk**, **CD-ROM**, **Disconnect** or **Cancel**. The
@@ -470,16 +538,17 @@ instead. Both CHD paths honor Iris's `IRIS_CHD_DIFF_DIR` override.
 These files hold guest changes across launches;
 keep them with their base images. The image directory must allow creation of
 the sidecars. Do not share writable sidecars between simultaneous instances.
-Prismatic does not expose merge/reset controls yet.
+Extensions exposes confirmed offline Commit/Reset actions (see above).
 
 Older builds could report `InvalidFile` after creating an empty `.diff.chd`
 beside a CHD without a hash. Prismatic checks that this old diff contains no
 allocated hunks, leaves it untouched, and uses the sparse overlay. A damaged or
 nonempty old diff is reported for recovery instead of being ignored. Sparse
-CHD overlays cannot currently be committed through the Iris monitor.
+CHD overlays cannot currently be committed through Iris or Prismatic.
 
-**Shut down the guest OS before restarting, changing media or quitting.**
-Restart is a fresh boot, and media changes are not hot swaps. After stopping
+**Shut down the guest OS before restarting or quitting.**
+Saved Media changes replace the machine; Extensions' explicit CD actions swap
+the live tray after you unmount it in the guest. After stopping
 the CPU and devices, the worker flushes attached storage before replacement
 or exit. With media attached it waits for that flush while SDL keeps pumping
 events; flush failures are reported and prevent a replacement machine.
@@ -497,6 +566,7 @@ compact top-left panel, sized to the current section; confirmations are centered
 | NET | Network activity | Yellow |
 | HD1–HD7 | Hard-disk reads | Green |
 | CD1–CD7 | CD-ROM reads | Cyan |
+| XFR1–XFR7 | Scratch transfer disk | Green; amber on writes |
 | HD write activity | Writes on the corresponding disk LED | Amber |
 
 Idle lamps retain a dim version of their function's color. Disk/CD lamps appear
@@ -515,8 +585,10 @@ and writes, with separate disk/CD colors and amber writes.
 Enable **General > Tinker**, then open the **Network** tab in F9. Every model
 has Ethernet, using Iris's NAT gateway by default. Network settings belong to
 the selected machine label and are saved in `prismatic.cfg`. Save validates the
-draft and asks before restarting an already booted machine; it returns to
-PAUSED, ready for Ctrl+P. Discard leaves the running network unchanged. Hiding
+draft. NAT subnet/port forwards/bind scope and the PCAP interface apply live
+after a successful Save. Backend, MAC and service-folder/protocol changes ask
+before restarting an already booted machine; it returns to PAUSED, ready for
+Ctrl+P. Discard and failed saves leave the running network unchanged. Hiding
 Tinker keeps saved network settings active.
 
 | Control | Behavior |
@@ -528,7 +600,10 @@ Tinker keeps saved network settings active.
 | NFS protocol | Auto, V2 or V3. Auto accepts either; IRIX 5.3 uses v2. |
 | NFS bridge IP | An unused LAN IPv4 address for the built-in NFS server when using PCAP. Required if NFS sharing is enabled in PCAP mode. |
 | TFTP boot folder | Choose an existing folder to serve **read-only** at the NAT gateway, or Disable. |
-| Local port forwards | Enter comma-separated `tcp:HOST:GUEST` or `udp:HOST:GUEST` rules. For example, `tcp:2323:23, tcp:2222:22`. Empty clears the rules. Listeners bind to localhost only. |
+| Port forwards | Enter comma-separated `tcp:HOST:GUEST` or `udp:HOST:GUEST` rules. For example, `tcp:2323:23, tcp:2222:22`. Empty clears the rules. |
+| Forward bind scope | Localhost (default), or all host interfaces to allow LAN access to forwarded ports. Applies to all rules. |
+| Guest Ethernet MAC | Optional unicast MAC, such as `02:00:00:00:00:22`; clear to use Iris's default. Requires restart. Existing Indy/Indigo2 NVRAM can retain its previous station address. |
+| RSH file folder | Existing folder served read-only by Iris's NAT RSH service, or Disable. Supports the core's limited file commands, without executing a host shell. |
 
 Text fields initially select the current value: typing replaces it, Ctrl+A
 selects all, Backspace edits, Enter accepts into the draft and Escape cancels.
@@ -536,7 +611,7 @@ F9 saves the whole draft. Relative folder paths use the directory containing
 `prismatic.cfg`; folder checks run in the background and never create folders.
 Different windows need different host forwarding ports.
 
-Changing the NAT subnet does not rewrite IRIX's saved IP address, route or DNS
+Changing the NAT subnet clears existing NAT connections and does not rewrite the guest's saved IP address, route or DNS
 settings. Configure the guest to match the addresses shown in Network. With
 the default subnet, mount an enabled NFS share inside IRIX with:
 
@@ -561,7 +636,9 @@ PCAP requires host capture permission (on Linux, appropriate raw-packet
 capabilities) and uses the LAN's addresses and DNS. Wired interfaces work best;
 many Wi-Fi networks reject an additional guest MAC address. A missing feature
 or failed capture is reported rather than silently switching to NAT. Prismatic
-does not change host permissions. NAT port forwards and TFTP are inactive in
+does not change host permissions. Live updates are requests to Iris; interface
+failures are reported, and listener failures appear in Console debug output.
+NAT port forwards, TFTP and RSH are inactive in
 PCAP mode; their saved settings are retained for switching back. For further
 guest setup, see [our Iris networking guide](https://github.com/salvogendut/iris/blob/xiri/NETWORKING.md).
 
@@ -575,6 +652,9 @@ nat_subnet = "192.168.5.0/24"
 nfs_dir = "/path/to/shared"
 nfs_version = "auto"
 tftp_dir = "/path/to/bootfiles"
+rsh_dir = "/path/to/read-only-files"
+mac = "02:00:00:00:00:22"
+forward_lan = false
 
 [[machines."Indy IRIX".network.forwards]]
 protocol = "tcp"
@@ -758,7 +838,10 @@ behavior, framebuffer packing/stride, frame replacement, startup failure,
 physical keys, host/modal routing, PS/2 releases, mouse input, high-DPI hit
 testing, configuration migration, COW persistence, CD read-only access,
 invalid media, flush failures, LED pulses, Advanced option mapping, restart
-detection and retained settings when Tinker is hidden. Linux is validated; other platforms still need integration checks.
+detection and retained settings when Tinker is hidden. Storage/network tests cover
+CD changer actions on both buses, COW Commit/Reset, scratch import/export bounds,
+paused transfers and live forwarding after successful Save. Linux is validated;
+other platforms still need integration checks.
 
 ## Acknowledgments
 

@@ -1,6 +1,7 @@
 use crate::media::{MediaKind, Medium};
 use crate::network::{Field, Folder, Interface};
 use crate::settings::{Settings, WindowScale};
+use crate::storage::{Action, Operation};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
@@ -50,6 +51,8 @@ pub enum Dialog {
     Firmware { choice: usize }, // Choose, Clear, Cancel
     Reset { confirm: bool },
     Folder { folder: Folder, choice: usize },
+    Storage { slot: u8, cd: bool, choice: usize },
+    Action { operation: Operation, confirm: bool },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -64,6 +67,8 @@ pub enum Effect {
     Reset,
     PickFolder(Folder),
     ListInterfaces,
+    Storage(Operation),
+    RunAction(Action),
 }
 
 pub struct Session {
@@ -72,6 +77,7 @@ pub struct Session {
     pub tab: Tab,
     pub row: usize,
     media_controller: u8,
+    storage_index: usize,
 }
 
 impl Session {
@@ -119,6 +125,20 @@ impl Session {
     pub fn media_slot(&self) -> Option<u8> {
         (self.row < self.media_targets() as usize)
             .then_some(self.media_controller * 16 + self.row as u8 + 1)
+    }
+
+    pub fn storage_slot(&self) -> Option<u8> {
+        let count = self.draft.media.devices.len();
+        if count == 0 {
+            None
+        } else {
+            self.draft
+                .media
+                .devices
+                .keys()
+                .nth(self.storage_index % count)
+                .copied()
+        }
     }
 
     pub fn rows(&self) -> Vec<(&'static str, String)> {
@@ -223,6 +243,56 @@ impl Session {
                         "1 (fixed)".into()
                     },
                 ),
+                (
+                    "Scratch target",
+                    self.draft.media.scratch.slot.map_or_else(
+                        || "Off".into(),
+                        |slot| format!("SCSI 0:{slot} (must be unused)"),
+                    ),
+                ),
+                (
+                    "Scratch size",
+                    format!("{} MB", self.draft.media.scratch.size_mb),
+                ),
+                (
+                    "Storage action target",
+                    self.storage_slot().map_or_else(
+                        || "No media configured".into(),
+                        |slot| {
+                            format!(
+                                "SCSI {}:{} - {}",
+                                slot / 16,
+                                slot % 16,
+                                self.draft.media.row_value(slot)
+                            )
+                        },
+                    ),
+                ),
+                (
+                    "Add CD to changer...",
+                    "Choose an image for the saved queue".into(),
+                ),
+                (
+                    "Clear queued CDs",
+                    format!(
+                        "{} queued images",
+                        self.storage_slot()
+                            .and_then(|slot| self.draft.media.cd_changers.get(&slot))
+                            .map_or(0, Vec::len)
+                    ),
+                ),
+                (
+                    "Storage actions...",
+                    "Status / CD tray / offline disk commit or reset".into(),
+                ),
+                (
+                    "Import scratch payload...",
+                    "Choose host file (overwrites payload)".into(),
+                ),
+                (
+                    "Export scratch payload...",
+                    "Save full payload to a new host file".into(),
+                ),
             ],
             Tab::Media => {
                 const LABELS: [&str; 32] = [
@@ -292,6 +362,10 @@ pub struct Overlay {
     pub busy: bool,
     pub text_edit: Option<TextEdit>,
     pub interfaces: Option<InterfacePicker>,
+    pub action: Option<Action>,
+    pub action_busy: bool,
+    pub report: Option<Vec<String>>,
+    pub report_offset: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -313,6 +387,48 @@ pub struct InterfacePicker {
 }
 
 impl Overlay {
+    pub fn action_picked(&mut self, action: Action) {
+        self.busy = false;
+        if let Operation::QueueCd(slot) = action.operation {
+            if let Some(session) = &mut self.session
+                && let Some(path) = action.path.and_then(|p| p.to_str().map(str::to_owned))
+            {
+                session
+                    .draft
+                    .media
+                    .cd_changers
+                    .entry(slot)
+                    .or_default()
+                    .push(path);
+            }
+        } else {
+            self.dialog = Some(Dialog::Action {
+                operation: action.operation,
+                confirm: false,
+            });
+            self.action = Some(action);
+        }
+    }
+    pub fn show_report(&mut self, message: String) {
+        self.busy = false;
+        self.action_busy = false;
+        self.action = None;
+        self.dialog = None;
+        self.report = Some(
+            message
+                .lines()
+                .flat_map(|line| {
+                    let chars: Vec<_> = line.chars().collect();
+                    chars
+                        .chunks(96)
+                        .map(|chunk| chunk.iter().collect::<String>())
+                        .collect::<Vec<_>>()
+                })
+                .collect(),
+        );
+        self.report_offset = 0;
+    }
+
     pub fn folder_picked(&mut self, folder: Folder, path: String) {
         if let Some(session) = &mut self.session {
             folder.set(&mut session.draft.network, Some(path));
@@ -342,6 +458,9 @@ impl Overlay {
 
     pub fn picked(&mut self, id: u8, medium: Medium) {
         if let Some(session) = &mut self.session {
+            if medium.kind != MediaKind::Cdrom {
+                session.draft.media.cd_changers.remove(&id);
+            }
             session.draft.media.devices.insert(id, medium);
         }
         self.busy = false;
@@ -369,6 +488,8 @@ impl Overlay {
         self.busy = false;
         self.text_edit = None;
         self.interfaces = None;
+        self.action = None;
+        self.report = None;
     }
 
     pub fn text_input(&mut self, text: &str) {
@@ -392,6 +513,20 @@ impl Overlay {
     }
 
     pub fn key(&mut self, key: Key, live: &Settings) -> Effect {
+        if self.action_busy {
+            return Effect::None;
+        }
+        if let Some(lines) = &self.report {
+            match key {
+                Key::Enter | Key::Escape => self.report = None,
+                Key::Up => self.report_offset = self.report_offset.saturating_sub(1),
+                Key::Down => {
+                    self.report_offset = (self.report_offset + 1).min(lines.len().saturating_sub(1))
+                }
+                _ => {}
+            }
+            return Effect::None;
+        }
         if let Some(picker) = &mut self.interfaces {
             let count = picker.choices.len() + 2; // Automatic, devices, enter name.
             match key {
@@ -465,7 +600,54 @@ impl Overlay {
         }
         if let Some(dialog) = self.dialog {
             match (dialog, key) {
-                (_, Key::Escape) => self.dialog = None,
+                (_, Key::Escape) => {
+                    self.dialog = None;
+                    self.action = None;
+                }
+                (Dialog::Action { operation, confirm }, Key::Left | Key::Right) => {
+                    self.dialog = Some(Dialog::Action {
+                        operation,
+                        confirm: !confirm,
+                    })
+                }
+                (Dialog::Action { confirm: true, .. }, Key::Enter) => {
+                    self.dialog = None;
+                    if let Some(action) = self.action.take() {
+                        return Effect::RunAction(action);
+                    }
+                }
+                (Dialog::Action { .. }, Key::Enter) => {
+                    self.dialog = None;
+                    self.action = None;
+                }
+                (Dialog::Storage { slot, cd, choice }, Key::Left | Key::Right) => {
+                    let count = if cd { 5 } else { 4 };
+                    self.dialog = Some(Dialog::Storage {
+                        slot,
+                        cd,
+                        choice: (choice + if key == Key::Left { count - 1 } else { 1 }) % count,
+                    });
+                }
+                (Dialog::Storage { slot, cd, choice }, Key::Enter) => {
+                    self.dialog = None;
+                    let operations = if cd {
+                        vec![
+                            Operation::Info(slot),
+                            Operation::LoadCd(slot),
+                            Operation::NextCd(slot),
+                            Operation::EmptyCd(slot),
+                        ]
+                    } else {
+                        vec![
+                            Operation::Info(slot),
+                            Operation::Commit(slot),
+                            Operation::Reset(slot),
+                        ]
+                    };
+                    if let Some(&operation) = operations.get(choice) {
+                        return Effect::Storage(operation);
+                    }
+                }
                 (Dialog::Folder { folder, choice }, Key::Left | Key::Right) => {
                     self.dialog = Some(Dialog::Folder {
                         folder,
@@ -536,6 +718,7 @@ impl Overlay {
                 (Dialog::Media { id, choice: 2 }, Key::Enter) => {
                     let session = self.session.as_mut().unwrap();
                     session.draft.media.devices.remove(&id);
+                    session.draft.media.cd_changers.remove(&id);
                     session.media_controller %= session.media_controllers();
                     session.row = session.row.min(session.rows().len().saturating_sub(1));
                     self.dialog = None;
@@ -576,6 +759,7 @@ impl Overlay {
                     tab: Tab::General,
                     row: 0,
                     media_controller: 0,
+                    storage_index: 0,
                 });
                 if key == Key::NextMachine {
                     let session = self.session.as_mut().unwrap();
@@ -702,6 +886,43 @@ impl Overlay {
                 {
                     session.draft.machine.cpus = 3 - session.draft.machine.cpus
                 }
+                (Tab::Extensions, 3) => session.draft.media.scratch.cycle_slot(),
+                (Tab::Extensions, 4) => session.draft.media.scratch.cycle_size(),
+                (Tab::Extensions, 5) => {
+                    session.storage_index = session.storage_index.wrapping_add(1)
+                }
+                (Tab::Extensions, 6) => {
+                    if let Some(slot) = session.storage_slot() {
+                        return Effect::Storage(Operation::QueueCd(slot));
+                    }
+                }
+                (Tab::Extensions, 7) => {
+                    if let Some(slot) = session.storage_slot() {
+                        session.draft.media.cd_changers.remove(&slot);
+                    }
+                }
+                (Tab::Extensions, 8) => {
+                    if let Some(slot) = session.storage_slot() {
+                        let cd = session.draft.media.devices[&slot].kind == MediaKind::Cdrom;
+                        self.dialog = Some(Dialog::Storage {
+                            slot,
+                            cd,
+                            choice: if cd { 4 } else { 3 },
+                        });
+                    }
+                }
+                (Tab::Extensions, 9) => return Effect::Storage(Operation::ImportScratch),
+                (Tab::Extensions, 10) => return Effect::Storage(Operation::ExportScratch),
+                (Tab::Network, 8) => {
+                    session.draft.network.forward_lan = !session.draft.network.forward_lan
+                }
+                (Tab::Network, 9) => self.edit_network(Field::Mac),
+                (Tab::Network, 10) if session.draft.network.mode == iris::config::NetMode::Nat => {
+                    self.dialog = Some(Dialog::Folder {
+                        folder: Folder::Rsh,
+                        choice: 3,
+                    });
+                }
                 (Tab::Media, _) => {
                     if let Some(id) = session.media_slot() {
                         self.dialog = Some(Dialog::Media { id, choice: 3 });
@@ -722,6 +943,62 @@ impl Overlay {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_actions_confirm_separately_from_drafts_and_consume_busy_keys() {
+        let live = Settings::default();
+        let mut overlay = Overlay::default();
+        overlay.key(Key::Options, &live);
+        let action = Action::new(Operation::NextCd(22));
+        overlay.action_picked(action.clone());
+        assert_eq!(overlay.key(Key::Options, &live), Effect::None);
+        assert_eq!(overlay.key(Key::Enter, &live), Effect::None); // Cancel by default.
+        assert!(overlay.action.is_none());
+        assert!(!overlay.session.as_ref().unwrap().dirty());
+        overlay.action_picked(action.clone());
+        overlay.key(Key::Left, &live);
+        assert_eq!(overlay.key(Key::Enter, &live), Effect::RunAction(action));
+        overlay.action_busy = true;
+        for key in [Key::Quit, Key::Escape, Key::Options, Key::Enter] {
+            assert_eq!(overlay.key(key, &live), Effect::None);
+        }
+        overlay.show_report("Disc changed".into());
+        assert!(!overlay.action_busy);
+        assert_eq!(overlay.key(Key::Options, &live), Effect::None);
+        overlay.key(Key::Enter, &live);
+        assert!(overlay.report.is_none());
+        assert!(!overlay.session.as_ref().unwrap().dirty());
+    }
+
+    #[test]
+    fn changer_queue_is_a_saved_draft_and_discard_has_no_actions() {
+        let mut live = Settings::default();
+        live.media.devices.insert(
+            6,
+            Medium {
+                kind: MediaKind::Cdrom,
+                path: "/tmp/boot.iso".into(),
+            },
+        );
+        let mut overlay = Overlay::default();
+        overlay.key(Key::Options, &live);
+        overlay.action_picked(Action {
+            operation: Operation::QueueCd(6),
+            path: Some("/tmp/second.iso".into()),
+        });
+        assert!(overlay.dialog.is_none());
+        let Effect::Save(draft) = overlay.key(Key::Options, &live) else {
+            panic!("Save")
+        };
+        assert_eq!(draft.media.cd_changers[&6], ["/tmp/second.iso"]);
+        assert!(draft.machine_differs_from(&live));
+        overlay.save_failed();
+        for key in [Key::Escape, Key::Left, Key::Enter] {
+            assert_eq!(overlay.key(key, &live), Effect::None);
+        }
+        assert!(overlay.session.is_none());
+        assert!(live.media.cd_changers.is_empty());
+    }
 
     fn network_overlay(live: &Settings) -> Overlay {
         let mut overlay = Overlay::default();
@@ -853,7 +1130,7 @@ mod tests {
         let Effect::Save(draft) = overlay.key(Key::Options, &live) else {
             panic!("Expected Save");
         };
-        assert!(draft.machine_differs_from(&live));
+        assert!(!draft.machine_differs_from(&live));
         assert_eq!(draft.network.nat_subnet, "10.23.0.0/24");
         overlay.confirm_restart();
         overlay.key(Key::Enter, &live); // Cancel restart keeps draft.

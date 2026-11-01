@@ -45,6 +45,8 @@ pub struct Medium {
 #[serde(default, deny_unknown_fields)]
 pub struct MediaSettings {
     pub devices: BTreeMap<u8, Medium>,
+    pub cd_changers: BTreeMap<u8, Vec<String>>,
+    pub scratch: crate::storage::Scratch,
 }
 
 fn slot_label(slot: u8) -> String {
@@ -53,6 +55,26 @@ fn slot_label(slot: u8) -> String {
 
 impl MediaSettings {
     pub fn validate(&self) -> Result<(), String> {
+        if ![64, 256, 1024].contains(&self.scratch.size_mb) {
+            return Err("Scratch size must be 64, 256 or 1024 MB".into());
+        }
+        if let Some(slot) = self.scratch.slot
+            && (!(1..=7).contains(&slot) || self.devices.contains_key(&slot))
+        {
+            return Err("Scratch needs an unused controller-0 target from 1 through 7".into());
+        }
+        for (slot, paths) in &self.cd_changers {
+            if self
+                .devices
+                .get(slot)
+                .is_none_or(|m| m.kind != MediaKind::Cdrom)
+            {
+                return Err("Changer lists require a configured CD-ROM drive".into());
+            }
+            if paths.len() > 16 || paths.iter().any(|p| p.is_empty() || p.contains('\0')) {
+                return Err("A changer may contain up to 16 valid queued image paths".into());
+            }
+        }
         for (&id, medium) in &self.devices {
             if id >= 32 || id % 16 == 0 {
                 return Err(
@@ -85,6 +107,15 @@ impl MediaSettings {
     }
 
     pub fn resolve_paths(&mut self, directory: &Path) -> Result<(), String> {
+        for path in self.cd_changers.values_mut().flatten() {
+            if Path::new(path).is_relative() {
+                *path = std::path::absolute(directory.join(&*path))
+                    .map_err(|e| e.to_string())?
+                    .to_str()
+                    .ok_or("Image paths must be UTF-8")?
+                    .to_owned();
+            }
+        }
         for medium in self.devices.values_mut() {
             if Path::new(&medium.path).is_relative() {
                 medium.path = std::path::absolute(directory.join(&medium.path))
@@ -100,6 +131,11 @@ impl MediaSettings {
     /// Never opens a writable backend or creates overlays while editing a draft.
     pub fn validate_files(&mut self) -> Result<(), String> {
         self.validate()?;
+        for paths in self.cd_changers.values_mut() {
+            for path in paths {
+                *path = Medium::inspect(Path::new(path), MediaKind::Cdrom)?.path;
+            }
+        }
         let mut disks = Vec::new();
         for (&id, medium) in &mut self.devices {
             *medium = Medium::inspect(Path::new(&medium.path), medium.kind)
@@ -127,6 +163,7 @@ impl MediaSettings {
                             MediaKind::Cdrom => ScsiKind::Cdrom,
                         },
                         overlay: m.kind == MediaKind::Disk,
+                        discs: self.cd_changers.get(&id).cloned().unwrap_or_default(),
                         ..Default::default()
                     },
                 )
@@ -135,6 +172,9 @@ impl MediaSettings {
     }
 
     pub fn row_value(&self, id: u8) -> String {
+        if self.scratch.slot == Some(id) {
+            return "Scratch transfer drive (Extensions)".into();
+        }
         self.devices.get(&id).map_or_else(
             || "Not connected".into(),
             |m| {
@@ -220,6 +260,7 @@ impl Medium {
 }
 
 pub enum Completion {
+    Action(crate::storage::Action),
     FolderPicked {
         folder: crate::network::Folder,
         path: String,
@@ -262,6 +303,60 @@ impl MediaJobs {
             })
         });
     }
+    pub fn pick_action(
+        &mut self,
+        window: &sdl3::video::Window,
+        operation: crate::storage::Operation,
+    ) -> Result<(), String> {
+        use crate::storage::{Action, Operation};
+        use sdl3::dialog::{
+            DialogError, DialogFileFilter, show_open_file_dialog, show_save_file_dialog,
+        };
+        let (sender, receiver) = mpsc::sync_channel(1);
+        self.receiver = Some(receiver);
+        let callback: sdl3::dialog::DialogCallback = Box::new(
+            move |result: Result<Vec<PathBuf>, DialogError>, _| match result {
+                Ok(paths) if paths.len() == 1 => {
+                    let path = paths[0].clone();
+                    spawn(sender.clone(), move || {
+                        let path =
+                            if matches!(operation, Operation::LoadCd(_) | Operation::QueueCd(_)) {
+                                PathBuf::from(Medium::inspect(&path, MediaKind::Cdrom)?.path)
+                            } else {
+                                path
+                            };
+                        Ok(Completion::Action(Action {
+                            operation,
+                            path: Some(path),
+                        }))
+                    });
+                }
+                Err(DialogError::Canceled) => {
+                    let _ = sender.try_send(Ok(Completion::Cancelled));
+                }
+                Err(error) => {
+                    let _ = sender.try_send(Err(error.to_string()));
+                }
+                _ => {
+                    let _ = sender.try_send(Err("Choose one file".into()));
+                }
+            },
+        );
+        let filters = [DialogFileFilter {
+            name: "Files",
+            pattern: "*",
+        }];
+        let result = if operation == Operation::ExportScratch {
+            show_save_file_dialog(&filters, None::<&Path>, window, callback)
+        } else {
+            show_open_file_dialog(&filters, None::<&Path>, false, window, callback)
+        };
+        result.map_err(|e| {
+            self.receiver = None;
+            e.to_string()
+        })
+    }
+
     pub fn cancel(&mut self) {
         self.receiver = None;
     }
@@ -548,16 +643,29 @@ pub fn attach(
         } else {
             ScsiIdentity::new(b"SGI     ", b"PRISMATIC DISK  ", b"1.0 ")
         };
-        let device = ScsiDevice::new(Box::new(node), cd, medium.path.clone(), vec![], identity);
-        with_bus(machine, id / 16, |bus| {
-            bus.attach(id % 16, Box::new(device))
-        })?
-        .map_err(|e| format!("{}: {e}", slot_label(id)))?;
+        let device = ScsiDevice::new(
+            Box::new(node),
+            cd,
+            medium.path.clone(),
+            settings.cd_changers.get(&id).cloned().unwrap_or_default(),
+            identity,
+        );
+        let device: Box<dyn iris::scsi::ScsiTarget> = if cd {
+            Box::new(crate::storage::ActivityTarget {
+                device,
+                slot: id,
+                activity: activity.clone(),
+            })
+        } else {
+            Box::new(device)
+        };
+        with_bus(machine, id / 16, |bus| bus.attach(id % 16, device))?
+            .map_err(|e| format!("{}: {e}", slot_label(id)))?;
     }
     Ok(())
 }
 
-fn open_node(medium: &Medium) -> io::Result<Box<dyn BlockNode>> {
+pub(crate) fn open_node(medium: &Medium) -> io::Result<Box<dyn BlockNode>> {
     let path = Path::new(&medium.path);
     if is_chd(path)? {
         return match medium.kind {
@@ -591,7 +699,7 @@ pub fn detach(machine: &mut dyn Workstation) {
 }
 
 /// Iris exposes a common target bus through WD33C93A, AIC7880 and ISP1040 controllers.
-fn with_bus<R>(
+pub(crate) fn with_bus<R>(
     machine: &mut dyn Workstation,
     controller: u8,
     f: impl FnOnce(&iris::scsi::ScsiBus) -> R,
@@ -635,6 +743,35 @@ mod tests {
         let path = directory.join(name);
         fs::write(&path, vec![0x5a; 65536]).unwrap();
         path
+    }
+
+    #[test]
+    fn changer_and_scratch_validation_persistence_and_conflicts() {
+        let dir = tempfile::tempdir().unwrap();
+        let cd = raw(dir.path(), "disc.iso");
+        let next = raw(dir.path(), "next.efs");
+        let mut settings = Settings::default();
+        settings
+            .media
+            .devices
+            .insert(6, Medium::inspect(&cd, MediaKind::Cdrom).unwrap());
+        settings
+            .media
+            .cd_changers
+            .insert(6, vec![next.to_string_lossy().into_owned()]);
+        settings.media.scratch.slot = Some(2);
+        settings.save_as_machine("Transfer").unwrap();
+        let path = dir.path().join("prismatic.cfg");
+        settings.save(&path).unwrap();
+        assert_eq!(Settings::load(&path).unwrap().media, settings.media);
+        settings.media.validate_files().unwrap();
+        assert!(!settings.media.scratch.path(dir.path()).exists());
+        assert_eq!(settings.media.iris_devices()[&6].discs.len(), 1);
+        settings.media.scratch.slot = Some(6);
+        assert!(settings.media.validate().is_err());
+        settings.media.scratch.slot = None;
+        settings.media.devices.get_mut(&6).unwrap().kind = MediaKind::Disk;
+        assert!(settings.media.validate().is_err());
     }
 
     #[test]

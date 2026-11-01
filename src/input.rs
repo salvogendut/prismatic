@@ -674,7 +674,16 @@ mod tests {
         input.motion(0.5, 0.5);
         assert_eq!(drain(&ps2, true), [0x28, 1, 255]); // Screen down => PS/2 negative Y.
         input.motion(300.0, -300.0);
-        assert_eq!(drain(&ps2, true), [0x08, 255, 255, 0x08, 45, 45]);
+        let packets = drain(&ps2, true);
+        assert_eq!(packets.len() % 3, 0);
+        let mut total = (0, 0);
+        for packet in packets.as_chunks::<3>().0 {
+            assert_eq!(packet[0], 0x08); // Positive X/Y, no overflow or buttons.
+            assert!(packet[1] <= 127 && packet[2] <= 127);
+            total.0 += u32::from(packet[1]);
+            total.1 += u32::from(packet[2]);
+        }
+        assert_eq!(total, (300, 300)); // Iris splits large moves without losing motion.
         input.motion(f32::NAN, 1.0);
         assert!(drain(&ps2, true).is_empty());
         input.motion(0.5, 0.5);

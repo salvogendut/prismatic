@@ -18,6 +18,7 @@ struct Backend {
     thread: Option<JoinHandle<()>>,
     rings: Rings,
     route: Ipv4Route,
+    control: Arc<iris::net::NatControl>,
 }
 
 impl Backend {
@@ -33,6 +34,7 @@ impl Backend {
         );
         let mut link = Link::open(&config.network()).unwrap().unwrap();
         let running = link.running();
+        let control = link.nat();
         let mut backend = link.backend().unwrap();
         running.store(true, Ordering::Release);
         let thread = Some(std::thread::spawn(move || backend.run()));
@@ -41,6 +43,7 @@ impl Backend {
             thread,
             rings: link.into_rings(),
             route,
+            control,
         }
     }
 
@@ -132,4 +135,62 @@ fn configured_nat_serves_tftp_and_nfs_from_selected_folders() {
         &backend.udp(69, b"\x00\x01shared.txt\x00octet\x00")[..2],
         b"\x00\x05"
     );
+}
+
+#[test]
+fn live_nat_save_changes_forward_listeners_without_restarting_backend() {
+    use std::net::{TcpListener, TcpStream};
+    let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reservation.local_addr().unwrap().port();
+    drop(reservation);
+    let old = NetworkSettings::default();
+    let backend = Backend::new(&old);
+    let mut edited = old.clone();
+    edited.forwards.push(Forward {
+        protocol: Protocol::Tcp,
+        host_port: port,
+        guest_port: 23,
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("prismatic.cfg");
+    let draft = crate::settings::Settings {
+        network: edited.clone(),
+        ..Default::default()
+    };
+    // No listener while merely editing, or when persistence fails.
+    assert!(TcpStream::connect((Ipv4Addr::LOCALHOST, port)).is_err());
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"preserve").unwrap();
+    assert!(draft.save(&blocker.join("bad")).is_err());
+    assert!(TcpStream::connect((Ipv4Addr::LOCALHOST, port)).is_err());
+    draft.save(&config).unwrap();
+    edited.apply_live(&old, &backend.control);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while TcpStream::connect((Ipv4Addr::LOCALHOST, port)).is_err() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let mut rebound = edited.clone();
+    rebound.forward_lan = true;
+    rebound.forwards[0].guest_port = 22;
+    let draft = crate::settings::Settings {
+        network: rebound.clone(),
+        ..Default::default()
+    };
+    draft.save(&config).unwrap();
+    rebound.apply_live(&edited, &backend.control);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while backend.control.apply_forwards.load(Ordering::Acquire) {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Let the network thread finish binding after consuming the request.
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(TcpStream::connect((Ipv4Addr::LOCALHOST, port)).is_ok());
+    old.apply_live(&rebound, &backend.control);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while TcpStream::connect((Ipv4Addr::LOCALHOST, port)).is_ok() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }

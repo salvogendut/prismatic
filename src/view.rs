@@ -119,10 +119,30 @@ pub fn draw(
     draw_leds(canvas, settings, &presentation)?;
 
     if let Some(session) = &overlay.session {
-        draw_overlay(canvas, session, overlay.busy)?;
+        draw_overlay(canvas, session, overlay.busy, overlay.action_busy)?;
     }
     if let Some(dialog) = overlay.dialog {
-        draw_dialog(canvas, dialog)?;
+        draw_dialog(canvas, dialog, overlay.action.as_ref())?;
+    }
+    if let Some(lines) = &overlay.report {
+        shade(canvas, 180)?;
+        panel(canvas, Rect::new(60, 120, 840, 440))?;
+        text(canvas, 80, 140, "Storage operation", TEXT)?;
+        for (i, line) in lines
+            .iter()
+            .skip(overlay.report_offset)
+            .take(20)
+            .enumerate()
+        {
+            text(
+                canvas,
+                80,
+                170 + i as i32 * 16,
+                &short_ascii(line, 96),
+                TEXT,
+            )?;
+        }
+        text(canvas, 80, 530, "Up/Down Scroll    Enter/Esc Close", MUTED)?;
     }
     if let Some(edit) = &overlay.text_edit {
         shade(canvas, 150)?;
@@ -290,6 +310,7 @@ fn draw_overlay(
     canvas: &mut WindowCanvas,
     session: &crate::overlay::Session,
     busy: bool,
+    action_busy: bool,
 ) -> Result<(), sdl3::Error> {
     const PANEL_WIDTH: u32 = 840;
     const LINE_HEIGHT: i32 = 20;
@@ -332,7 +353,12 @@ fn draw_overlay(
         Tab::Extensions => vec![match session.row {
             0 => "GR2/IMPACT compatibility depends on Iris and the guest OS; Newport is the default on Indy/IP22.",
             1 => "Two Newport heads appear side by side. Screenshots and GIFs include both heads.",
-            _ => "Octane supports one or two CPUs and up to 8192 MB RAM (set RAM in General).",
+            2 => "Octane supports one or two CPUs and up to 8192 MB RAM (set RAM in General).",
+            3 | 4 => "Scratch is a persistent raw transfer drive with an SGI volume header, in this label's state folder.",
+            5 => "Enter cycles the configured disk/CD targets used by the rows below.",
+            6 | 7 => "Changer queue edits are drafts and take effect after Save and restart.",
+            8 => "Save or discard drafts before live actions. Commit/reset require no loaded guest and confirmation.",
+            _ => "Scratch transfers briefly stop devices, then restore CPU state. They do not mount a guest filesystem.",
         }.into(), "Hardware changes require restart. Turning Tinker off keeps these settings active.".into()],
         Tab::About => vec![],
         Tab::Network => session.draft.network.hints(session.row),
@@ -383,7 +409,7 @@ fn draw_overlay(
         }
         let restart = (session.tab == Tab::General && (index < 4 || index == 7))
             || (session.tab == Tab::Advanced && index < 5)
-            || session.tab == Tab::Extensions;
+            || (session.tab == Tab::Extensions && (index < 5 || index == 6 || index == 7));
         text(canvas, 20, y, label, TEXT)?;
         text(
             canvas,
@@ -416,7 +442,9 @@ fn draw_overlay(
         canvas,
         20,
         footer_y,
-        if busy {
+        if action_busy {
+            "Storage operation in progress..."
+        } else if busy {
             "Choosing files / checking options...   Esc Cancel"
         } else {
             "Left/Right Section  Up/Down Select  Enter Change  F9 Save  Esc Close"
@@ -435,14 +463,34 @@ fn shade(canvas: &mut WindowCanvas, alpha: u8) -> Result<(), sdl3::Error> {
     )
 }
 
-fn draw_dialog(canvas: &mut WindowCanvas, dialog: Dialog) -> Result<(), sdl3::Error> {
+fn draw_dialog(
+    canvas: &mut WindowCanvas,
+    dialog: Dialog,
+    action: Option<&crate::storage::Action>,
+) -> Result<(), sdl3::Error> {
     let (title, detail, buttons, selected) = match dialog {
+        Dialog::Action { operation, confirm } => (
+            operation.title(),
+            operation.detail(),
+            vec!["Apply now", "Cancel"],
+            usize::from(!confirm),
+        ),
+        Dialog::Storage { cd, choice, .. } => (
+            "Storage actions",
+            "Live tray actions do not change saved boot media. Disk changes require no loaded guest.",
+            if cd {
+                vec!["Status", "Insert CD", "Next CD", "Empty tray", "Cancel"]
+            } else {
+                vec!["Status", "Commit", "Reset overlay", "Cancel"]
+            },
+            choice,
+        ),
         Dialog::Folder { folder, choice } => (
             folder.title(),
             if folder == crate::network::Folder::Nfs {
                 "The guest can read and write files in the selected folder."
             } else {
-                "Serve boot files read-only through the NAT gateway."
+                "Serve files read-only through the NAT gateway."
             },
             vec!["Choose folder", "Enter path", "Disable", "Cancel"],
             choice,
@@ -497,6 +545,29 @@ fn draw_dialog(canvas: &mut WindowCanvas, dialog: Dialog) -> Result<(), sdl3::Er
     panel(canvas, Rect::new(x, y, width as u32, height as u32))?;
     text(canvas, x + 24, y + 20, title, TEXT)?;
     text(canvas, x + 24, y + 48, detail, MUTED)?;
+    if let Some(action) = action {
+        use crate::storage::Operation;
+        let target = match action.operation {
+            Operation::Info(slot)
+            | Operation::LoadCd(slot)
+            | Operation::NextCd(slot)
+            | Operation::EmptyCd(slot)
+            | Operation::QueueCd(slot)
+            | Operation::Commit(slot)
+            | Operation::Reset(slot) => format!("SCSI {}:{}", slot / 16, slot % 16),
+            _ => "Scratch drive".into(),
+        };
+        let description = action.path.as_ref().map_or(target.clone(), |path| {
+            format!("{target}: {}", path.display())
+        });
+        text(
+            canvas,
+            x + 24,
+            y + 64,
+            &short_ascii(&description, ((width - 48) / 8) as usize),
+            TEXT,
+        )?;
+    }
     let start = x + (width - buttons_width) / 2;
     for (index, label) in buttons.iter().enumerate() {
         let button_x = start + index as i32 * 144;
@@ -622,6 +693,14 @@ fn draw_leds(
         false,
         NET_LED,
     ));
+    if let Some(slot) = settings.media.scratch.slot {
+        lamps.push((
+            format!("XFR{slot}"),
+            presentation.leds & (activity::disk_read(slot) | activity::disk_write(slot)) != 0,
+            presentation.leds & activity::disk_write(slot) != 0,
+            DISK_LED,
+        ));
+    }
     let non_storage_lamps = lamps.len();
     for (&id, medium) in &presentation.media.devices {
         let disk = medium.kind == MediaKind::Disk;

@@ -18,6 +18,9 @@ pub struct NetworkSettings {
     pub nfs_pcap_ip: Option<Ipv4Addr>,
     pub tftp_dir: Option<String>,
     pub forwards: Vec<Forward>,
+    pub forward_lan: bool,
+    pub mac: Option<String>,
+    pub rsh_dir: Option<String>,
 }
 
 impl Default for NetworkSettings {
@@ -31,6 +34,9 @@ impl Default for NetworkSettings {
             nfs_pcap_ip: None,
             tftp_dir: None,
             forwards: Vec::new(),
+            forward_lan: false,
+            mac: None,
+            rsh_dir: None,
         }
     }
 }
@@ -42,7 +48,7 @@ pub enum Protocol {
     Udp,
 }
 
-/// Forwards listen on localhost. LAN exposure requires an explicit future UI.
+/// Forward scope is shared by the rules and defaults to localhost.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Forward {
@@ -70,6 +76,7 @@ impl Forward {
 pub enum Folder {
     Nfs,
     Tftp,
+    Rsh,
 }
 
 impl Folder {
@@ -77,18 +84,21 @@ impl Folder {
         match self {
             Self::Nfs => "NFS shared folder (read/write)",
             Self::Tftp => "TFTP boot folder (read-only)",
+            Self::Rsh => "RSH file folder (read-only)",
         }
     }
     pub fn path(self, settings: &NetworkSettings) -> Option<&str> {
         match self {
             Self::Nfs => settings.nfs_dir.as_deref(),
             Self::Tftp => settings.tftp_dir.as_deref(),
+            Self::Rsh => settings.rsh_dir.as_deref(),
         }
     }
     pub fn set(self, settings: &mut NetworkSettings, value: Option<String>) {
         match self {
             Self::Nfs => settings.nfs_dir = value,
             Self::Tftp => settings.tftp_dir = value,
+            Self::Rsh => settings.rsh_dir = value,
         }
     }
 }
@@ -96,6 +106,7 @@ impl Folder {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Field {
     Subnet,
+    Mac,
     Interface,
     NfsIp,
     Forwards,
@@ -106,14 +117,16 @@ impl Field {
     pub fn title(self) -> &'static str {
         match self {
             Self::Subnet => "NAT subnet",
+            Self::Mac => "Guest Ethernet MAC",
             Self::Interface => "PCAP host interface",
             Self::NfsIp => "NFS virtual address on the bridged LAN",
-            Self::Forwards => "Local port forwards",
+            Self::Forwards => "Port forwards",
             Self::Directory(folder) => folder.title(),
         }
     }
     pub fn hint(self) -> &'static str {
         match self {
+            Self::Mac => "Six hexadecimal octets, e.g. 02:00:00:00:00:01. Empty uses Iris default.",
             Self::Subnet => "IPv4 network/prefix, e.g. 192.168.5.0/24. Gateway .1, guest .2.",
             Self::Interface => "Host interface name or 1-based index. Empty selects automatically.",
             Self::NfsIp => "An unused IPv4 address on your LAN. Required for NFS with PCAP.",
@@ -126,6 +139,7 @@ impl Field {
     pub fn value(self, settings: &NetworkSettings) -> String {
         match self {
             Self::Subnet => settings.nat_subnet.clone(),
+            Self::Mac => settings.mac.clone().unwrap_or_default(),
             Self::Interface => settings.pcap_interface.clone().unwrap_or_default(),
             Self::NfsIp => settings
                 .nfs_pcap_ip
@@ -144,6 +158,12 @@ impl Field {
         let text = text.trim();
         let optional = || (!text.is_empty()).then(|| text.to_owned());
         match self {
+            Self::Mac => {
+                if !text.is_empty() {
+                    validate_mac(text)?;
+                }
+                settings.mac = optional();
+            }
             Self::Subnet => {
                 iris::config::parse_nat_subnet(text)?;
                 settings.nat_subnet = text.into();
@@ -194,6 +214,14 @@ impl Field {
         }
         Ok(())
     }
+}
+
+fn validate_mac(text: &str) -> Result<(), String> {
+    let mac = iris::config::parse_mac(text)?;
+    if mac == [0; 6] {
+        return Err("MAC address cannot be all zeros".into());
+    }
+    Ok(())
 }
 
 fn validate_ip(ip: Ipv4Addr) -> Result<(), String> {
@@ -256,7 +284,10 @@ impl NetworkSettings {
         if let Some(ip) = self.nfs_pcap_ip {
             validate_ip(ip)?;
         }
-        for path in [&self.nfs_dir, &self.tftp_dir].into_iter().flatten() {
+        for path in [&self.nfs_dir, &self.tftp_dir, &self.rsh_dir]
+            .into_iter()
+            .flatten()
+        {
             if path.trim().is_empty() || path.contains('\0') {
                 return Err("Choose a folder or disable the network service".into());
             }
@@ -267,6 +298,9 @@ impl NetworkSettings {
             .is_some_and(|name| name.contains('\0') || name.len() > 1024)
         {
             return Err("Invalid PCAP interface name".into());
+        }
+        if let Some(mac) = &self.mac {
+            validate_mac(mac)?;
         }
         validate_forwards(&self.forwards)
     }
@@ -286,7 +320,7 @@ impl NetworkSettings {
         Ok(())
     }
     pub fn resolve_paths(&mut self, directory: &Path) -> Result<(), String> {
-        for path in [&mut self.nfs_dir, &mut self.tftp_dir]
+        for path in [&mut self.nfs_dir, &mut self.tftp_dir, &mut self.rsh_dir]
             .into_iter()
             .flatten()
         {
@@ -307,16 +341,25 @@ impl NetworkSettings {
         {
             *path = inspect_folder(Path::new(path))?;
         }
-        if self.mode == NetMode::Nat
-            && let Some(path) = &mut self.tftp_dir
-        {
-            *path = inspect_folder(Path::new(path))?;
+        if self.mode == NetMode::Nat {
+            for path in [&mut self.tftp_dir, &mut self.rsh_dir]
+                .into_iter()
+                .flatten()
+            {
+                *path = inspect_folder(Path::new(path))?;
+            }
         }
         Ok(())
     }
     pub fn apply(&self, config: &mut MachineConfig) -> Result<(), String> {
         self.validate_runtime(config.machine.profile)?;
         config.network.mode = self.mode;
+        config.network.mac = self.mac.clone();
+        config.network.rsh_dir = if self.mode == NetMode::Nat {
+            self.rsh_dir.clone()
+        } else {
+            None
+        };
         config.nat_subnet = Some(self.nat_subnet.clone());
         config.network.pcap_interface = self.pcap_interface.clone();
         config.network.nfs_pcap_ip = self.nfs_pcap_ip;
@@ -333,24 +376,58 @@ impl NetworkSettings {
         } else {
             None
         };
-        config.port_forward = if self.mode == NetMode::Nat {
-            self.forwards
-                .iter()
-                .map(|rule| iris::config::PortForwardConfig {
-                    proto: match rule.protocol {
-                        Protocol::Tcp => iris::config::ForwardProto::Tcp,
-                        Protocol::Udp => iris::config::ForwardProto::Udp,
-                    },
-                    host_port: rule.host_port,
-                    guest_port: rule.guest_port,
-                    bind: iris::config::ForwardBind::Localhost,
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+        config.port_forward = self.port_forwards();
         Ok(())
     }
+    pub fn port_forwards(&self) -> Vec<iris::config::PortForwardConfig> {
+        if self.mode != NetMode::Nat {
+            return vec![];
+        }
+        self.forwards
+            .iter()
+            .map(|rule| iris::config::PortForwardConfig {
+                proto: match rule.protocol {
+                    Protocol::Tcp => iris::config::ForwardProto::Tcp,
+                    Protocol::Udp => iris::config::ForwardProto::Udp,
+                },
+                host_port: rule.host_port,
+                guest_port: rule.guest_port,
+                bind: if self.forward_lan {
+                    iris::config::ForwardBind::Any
+                } else {
+                    iris::config::ForwardBind::Localhost
+                },
+            })
+            .collect()
+    }
+
+    pub fn requires_restart(&self, old: &Self) -> bool {
+        let mut live_fields = old.clone();
+        live_fields.nat_subnet = self.nat_subnet.clone();
+        live_fields.forwards = self.forwards.clone();
+        live_fields.forward_lan = self.forward_lan;
+        live_fields.pcap_interface = self.pcap_interface.clone();
+        self != &live_fields
+    }
+
+    /// Call only after successful persistence. The core consumes these requests
+    /// on its network thread; interface failures use its PCAP status reporting.
+    pub fn apply_live(&self, old: &Self, control: &iris::net::NatControl) {
+        if self.mode == NetMode::Nat {
+            if self.nat_subnet != old.nat_subnet
+                && let Ok((gateway, client, mask)) =
+                    iris::config::parse_nat_subnet(&self.nat_subnet)
+            {
+                control.request_subnet(gateway, client, mask);
+            }
+            if self.forwards != old.forwards || self.forward_lan != old.forward_lan {
+                control.set_port_forwards(self.port_forwards());
+            }
+        } else if self.mode == NetMode::Pcap && self.pcap_interface != old.pcap_interface {
+            control.request_pcap_interface(self.pcap_interface.clone());
+        }
+    }
+
     pub fn rows(&self) -> Vec<(&'static str, String)> {
         let nat = self.mode == NetMode::Nat;
         let pcap = self.mode == NetMode::Pcap;
@@ -415,7 +492,7 @@ impl NetworkSettings {
                 },
             ),
             (
-                "Local port forwards",
+                "Port forwards",
                 if nat {
                     if self.forwards.is_empty() {
                         "Off - Enter to edit".into()
@@ -426,6 +503,29 @@ impl NetworkSettings {
                     "NAT only (saved rules retained)".into()
                 },
             ),
+            (
+                "Forward bind scope",
+                if self.forward_lan {
+                    "All host interfaces (LAN exposed)"
+                } else {
+                    "Localhost only"
+                }
+                .into(),
+            ),
+            (
+                "Guest Ethernet MAC",
+                self.mac.clone().unwrap_or_else(|| "Iris default".into()),
+            ),
+            (
+                "RSH file folder",
+                if nat {
+                    self.rsh_dir
+                        .clone()
+                        .unwrap_or_else(|| "Off - Enter to choose".into())
+                } else {
+                    "NAT only (saved value retained)".into()
+                },
+            ),
         ]
     }
     pub fn hints(&self, row: usize) -> Vec<String> {
@@ -434,7 +534,7 @@ impl NetworkSettings {
                 "NAT shares host connectivity. PCAP joins your LAN and needs host capture permission."
             }
             1 => {
-                "IRIX must use this subnet too; changing it does not rewrite guest network configuration."
+                "The guest must use this subnet too; changing it does not rewrite guest network configuration."
             }
             2 => {
                 "Choose a host interface or enter its name. Wired interfaces work best for bridging."
@@ -447,7 +547,16 @@ impl NetworkSettings {
             6 => {
                 "TFTP serves the selected folder READ-ONLY at the NAT gateway for PROM bootp() booting."
             }
-            _ => "Forward host localhost ports to guest services. Example: tcp:2323:23 for Telnet.",
+            8 => {
+                "All interfaces exposes forwarded guest services to the host LAN. Localhost is the default."
+            }
+            9 => {
+                "MAC changes require restart. Existing firmware NVRAM may retain its original station address."
+            }
+            10 => {
+                "Read-only RSH on the NAT gateway supports cat/ls/echo/pwd, without executing host commands."
+            }
+            _ => "Forward host ports to guest services. Example: tcp:2323:23 for Telnet.",
         };
         let address = if self.mode == NetMode::Nat {
             iris::config::parse_nat_subnet(&self.nat_subnet)
@@ -460,7 +569,7 @@ impl NetworkSettings {
         } else {
             "The guest Ethernet cable is unplugged.".into()
         };
-        vec![detail.into(), address, "Network changes apply on Save and require restart. Hiding Tinker keeps saved values active.".into()]
+        vec![detail.into(), address, "Subnet, forwards and PCAP interface apply live on Save; MAC, backend and folders require restart.".into()]
     }
 }
 
@@ -524,6 +633,54 @@ pub fn pcap_message(status: PcapStatus) -> Option<&'static str> {
 mod tests {
     use super::*;
     use crate::settings::{MachineSettings, Settings};
+
+    #[test]
+    fn remaining_network_settings_persist_and_live_fields_are_classified() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prismatic.cfg");
+        let mut settings = Settings::default();
+        let old = settings.network.clone();
+        Field::Mac
+            .apply(&mut settings.network, "02:11:22:33:44:55")
+            .unwrap();
+        settings.network.forward_lan = true;
+        settings.network.rsh_dir = Some(dir.path().to_string_lossy().into_owned());
+        settings.network.forwards.push(Forward {
+            protocol: Protocol::Tcp,
+            host_port: 43210,
+            guest_port: 23,
+        });
+        settings.save_as_machine("Custom network").unwrap();
+        settings.save(&path).unwrap();
+        let loaded = Settings::load(&path).unwrap();
+        assert_eq!(loaded.network, settings.network);
+        assert!(loaded.network.requires_restart(&old));
+        let mut config = MachineConfig::default();
+        loaded.network.apply(&mut config).unwrap();
+        assert_eq!(config.network().mac, [2, 0x11, 0x22, 0x33, 0x44, 0x55]);
+        assert_eq!(config.network.rsh_dir, settings.network.rsh_dir);
+        assert_eq!(config.port_forward[0].bind, iris::config::ForwardBind::Any);
+        for invalid in ["00:00:00:00:00:00", "01:22:33:44:55:66", "bad"] {
+            let before = settings.network.clone();
+            assert!(Field::Mac.apply(&mut settings.network, invalid).is_err());
+            assert_eq!(settings.network, before);
+        }
+        let mut live = old.clone();
+        live.nat_subnet = "10.45.0.0/24".into();
+        live.forward_lan = true;
+        live.forwards = settings.network.forwards.clone();
+        assert!(!live.requires_restart(&old));
+        let control = iris::net::NatControl::new();
+        live.apply_live(&old, &control);
+        use std::sync::atomic::Ordering;
+        assert!(control.apply_subnet.load(Ordering::Acquire));
+        assert!(control.apply_forwards.load(Ordering::Acquire));
+        control.apply_subnet.store(false, Ordering::Release);
+        let mut forward_only = live.clone();
+        forward_only.forward_lan = false;
+        forward_only.apply_live(&live, &control);
+        assert!(!control.apply_subnet.load(Ordering::Acquire)); // Do not drop connections on a forward-only edit.
+    }
 
     #[test]
     fn invalid_edits_leave_the_previous_value_and_saved_file_intact() {
