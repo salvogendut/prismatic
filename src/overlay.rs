@@ -1029,12 +1029,20 @@ impl Overlay {
                             None
                         }
                         (Page::Connections, 0) => Some(ExpertField::Monitor),
-                        (Page::Connections, 1) => Some(ExpertField::SerialA),
-                        (Page::Connections, 2) => Some(ExpertField::SerialB),
-                        (Page::Connections, 3) => Some(ExpertField::Gdb),
-                        (Page::Connections, 4) => Some(ExpertField::Vnc),
-                        (Page::Connections, 5) => Some(ExpertField::VncFps),
-                        (Page::Connections, 6) | (Page::Developer, 4) => {
+                        (Page::Connections, 1) => {
+                            settings.serial_a.cycle();
+                            None
+                        }
+                        (Page::Connections, 2) => Some(ExpertField::SerialA),
+                        (Page::Connections, 3) => {
+                            settings.serial_b.cycle();
+                            None
+                        }
+                        (Page::Connections, 4) => Some(ExpertField::SerialB),
+                        (Page::Connections, 5) => Some(ExpertField::Gdb),
+                        (Page::Connections, 6) => Some(ExpertField::Vnc),
+                        (Page::Connections, 7) => Some(ExpertField::VncFps),
+                        (Page::Connections, 8) | (Page::Developer, 4) => {
                             return Effect::RuntimeStatus;
                         }
                         (Page::Developer, 0) => Some(ExpertField::BootElf),
@@ -1343,6 +1351,69 @@ mod tests {
         }
         assert!(live.advanced.expert.trace_on_boot);
         assert!(live.advanced.expert.jit_cache);
+    }
+
+    #[test]
+    fn serial_routing_and_ports_are_drafts_and_failed_save_keeps_them_open() {
+        use crate::serial::Route;
+        let live = Settings {
+            tinker: true,
+            ..Default::default()
+        };
+        let mut overlay = Overlay::default();
+        for key in [
+            Key::Options,
+            Key::Right,
+            Key::Right,
+            Key::Up,
+            Key::Enter,
+            Key::Enter,
+            Key::Down,
+            Key::Down,
+            Key::Enter,
+        ] {
+            overlay.key(key, &live);
+        }
+        let expected = if cfg!(unix) { Route::Pty } else { Route::Off };
+        assert_eq!(
+            overlay
+                .session
+                .as_ref()
+                .unwrap()
+                .draft
+                .advanced
+                .expert
+                .serial_a,
+            expected
+        );
+        assert_eq!(live.advanced.expert.serial_a, Route::Tcp);
+        overlay.key(Key::Down, &live);
+        overlay.key(Key::Enter, &live);
+        overlay.text_input("12345");
+        overlay.key(Key::Enter, &live);
+        let Effect::Save(draft) = overlay.key(Key::Options, &live) else {
+            panic!("Save expected")
+        };
+        assert_eq!(draft.advanced.expert.serial_port_a, 12345);
+        assert!(draft.machine_differs_from(&live));
+        overlay.confirm_restart();
+        overlay.key(Key::Enter, &live); // Cancel restart.
+        overlay.save_failed();
+        assert_eq!(
+            overlay
+                .session
+                .as_ref()
+                .unwrap()
+                .draft
+                .advanced
+                .expert
+                .serial_a,
+            expected
+        );
+        for key in [Key::Escape, Key::Left, Key::Enter, Key::Options] {
+            overlay.key(key, &live);
+        }
+        assert_eq!(overlay.session.as_ref().unwrap().draft, live);
     }
 
     #[test]

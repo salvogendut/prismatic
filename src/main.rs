@@ -13,6 +13,7 @@ mod media;
 mod network;
 mod overlay;
 mod profiles;
+mod serial;
 mod settings;
 mod smoke;
 mod sound;

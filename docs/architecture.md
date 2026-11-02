@@ -2,9 +2,9 @@
 
 ## Performance build
 
-Prismatic `main` uses the sibling Iris branch `perf/sgiemu-port` at `668911c` or
-newer, with performance base `66f5a59` on the integrated `xiri` revision `087d250`,
-plus the boot/console `prom_env::prepare_environment` API described below.
+Prismatic `main` uses the sibling Iris branch `perf/sgiemu-port`, with performance
+base `66f5a59` on the integrated `xiri` revision `087d250`, plus the boot/console
+`prom_env::prepare_environment` and runtime `MachineConfig.serial_backends` APIs.
 The performance changes stay in Iris: Cranelift SSA copies
 of guest integer registers and cached DS1x86 calendar conversion. The register
 cache keeps architectural state current and excludes FPU/fallback regions.
@@ -22,6 +22,12 @@ compiled during PROM execution. These checks do not measure an OS boot speedup.
 The media attachment/restart smoke test currently reaches the confirmed restart
 but times out waiting for PROM display output within its 240-second limit.
 Media restart validation remains incomplete on this performance build.
+The serial routing restart check similarly reaches an Indy PROM panic after
+switching PTY to TCP in the same performance-build process. The new TCP endpoint
+opens and carries the panic output. The equivalent interpreter check passes,
+and a fresh performance-build process boots the same saved firmware and TCP
+configuration to the PROM menu. The underlying restart issue remains unresolved;
+quit and relaunch after saving routing changes to a running machine.
 
 ## Design baseline
 
@@ -51,6 +57,7 @@ including when the hints are hidden.
 | `src/smoke.rs` | Scripted SDL input and General/Media/Advanced menu and restart smoke tests |
 | `src/overlay.rs` | Draft settings, navigation, modal choices and effects |
 | `src/expert.rs` | Advanced pages, validated performance/connection/developer settings, owned GDB/VNC and boot tracing |
+| `src/serial.rs` | Per-channel TCP/PTY/Off routing, bounded nonblocking PTYs, actual endpoint reports and explicit transport cleanup |
 | `src/settings.rs` | Desktop/hardware/media/Advanced settings, compatibility, RAM banks, state paths and atomic persistence |
 | `src/profiles.rs` | Named machine stanzas, draft selection, state identity and concurrent catalog merging |
 | `src/instance.rs` | Exclusive leases for machine state, writable disks and atomic configuration updates |
@@ -67,9 +74,9 @@ including when the hints are hidden.
 
 ## Core boundary
 
-The root Cargo manifest depends directly on `../iris` on its `xiri` branch,
+The root Cargo manifest depends directly on `../iris` on its `perf/sgiemu-port` branch,
 preserving that fork's winit and block patches at the root where Cargo applies
-them. Development, builds and tests use `xiri` to retain NetBSD and other guest
+them. This branch is based on `xiri` and retains its NetBSD and other guest
 OS compatibility work alongside IRIX support. The nightly
 Rust toolchain matches Iris. No emulator source is copied into this repository.
 The default is Indy IP24, R4400, 64 MB RAM, one Newport head, and no SCSI
@@ -119,8 +126,8 @@ DS1685 NVRAM, separate from the flash records holding boot variables. Iris
 validates all affected images before writing and atomically replaces each file;
 if a later write fails, it attempts to restore earlier files and reports any
 restoration failure. The two Octane files are not a crash-atomic transaction.
-Serial mode uses the existing TCP endpoints (B on Indy/Indigo2, A on O2/Octane).
-It neither opens a terminal inside SDL nor changes the configured port numbers.
+Serial mode uses the selected TCP or PTY endpoint (B on Indy/Indigo2, A on
+O2/Octane). It neither opens a terminal inside SDL nor changes routing preferences.
 
 Extensions selects graphics boards, Newport head count and Octane CPU count.
 `MachineSettings.graphics` is optional so old files retain Newport on Indy/IP22,
@@ -217,9 +224,9 @@ acquires it to invalidate the pointer held by its controller.
 
 Shared status reports Starting, Running, Paused, Halted, PoweredOff, Stopping,
 Stopped or Failed, along with the monitor address and PCAP backend status.
-Running follows the core's CPU-running flag. The monitor and serial endpoints
-bind ephemeral loopback ports; the monitor's actual address is printed in the
-terminal. NVRAM lives in Prismatic's machine-state directory, separate from
+Running follows the core's CPU-running flag. Monitor and serial TCP endpoints
+default to ephemeral loopback ports. Connection status reports actual endpoints,
+including Unix PTY paths. NVRAM lives in Prismatic's machine-state directory, separate from
 the Iris checkout. Each model has a distinct state directory (`indy`, `indigo2`, `indigo2-ip28`,
 `o2`, `octane`); custom `--state-dir` preserves the existing Indy path and nests
 other models under it. O2's `nvram.bin` is its persisted flash. Octane uses
@@ -556,19 +563,45 @@ handles. Both disconnect clients and join their workers before the workstation i
 stopped/dropped, including failures and unwinding. GDB binds synchronously and
 exposes its actual loopback address; VNC uses Iris's primary-display `HostInput`.
 Monitor, GDB and VNC endpoints and trace status are published through the existing
-status mutex; the SDL thread only reads snapshots. Serial automatic addresses
-remain in Iris diagnostics because the library has no serial-address accessor.
+status mutex; the SDL thread only reads snapshots. `serial::Endpoints` creates
+and holds serial transports before workstation construction, reports actual TCP
+ports and PTY paths, and installs them through `MachineConfig.serial_backends`.
+The core keeps log tees and CI fanout around supplied backends. Standalone Iris
+continues using its configured TCP/Unix endpoints when no override is present.
+
+Per-channel `serial_a`/`serial_b` routing defaults to `tcp` for old configurations;
+`pty` (Unix only) and `off` preserve their inactive TCP port preferences. Only
+active TCP ports participate in duplicate-port validation. Both transports must
+open successfully before either is installed, and failure drops the first.
+PTYs use safe nix APIs, raw slave settings and nonblocking, close-on-exec master
+descriptors. A held slave descriptor permits reconnecting without EIO. UART
+callbacks flush a 64 KiB bounded output queue; overflow is counted and displayed,
+never allowed to block the UI or CPU. Kernel buffers provide input back-pressure.
+Each boot allocates new PTYs, without persistent symlinks or saved device paths.
+Pause retains their handles. A revocable transport wrapper explicitly closes
+the underlying endpoint on unload or failed startup, even if Iris retains a
+device/backend reference. Old callbacks then discard output and return WouldBlock
+on input; clients on an old PTY receive hangup.
+
+Focused checks cover raw bidirectional bytes, reconnect/hangup, bounded output,
+automatic TCP ports, occupied-port failures, per-label persistence and draft
+isolation. Live SDL checks boot all five profiles to serial PROM menus over PTYs,
+verify console environment values and pause/quit cleanup, and exercise Indy with
+minicom. The interpreter also passes a live PTY-to-fixed-TCP switch through the
+restart confirmation flow. The performance-build restart limitation is described
+above; cold boots and reconnects pass with that build.
 
 Each boot trace gets a unique reserved file under the label's `traces/` directory;
 it never truncates a previous capture. Stop flushes the recording and retains the
 file. Cleanup also closes monitor-started recordings and tolerates a trace already
 stopped through the monitor. Tracing uses bounded Iris event rings. Remote ports are loopback-only;
 GDB/VNC default off. Fixed-port preflight failures, GDB/VNC bind failures, monitor bind failures and
-invalid ELF files produce recoverable startup failures. A serial bind race after
-preflight can only be reported through Iris diagnostics. The new optional Cargo features forward `idle-pause`, `jitv2`, `perfetto`
-and `developer` to the compatible Iris `xiri` checkout.
+invalid ELF files produce recoverable startup failures. Serial TCP endpoints bind
+once and remain reserved through construction, so failures reach `Phase::Failed`
+before firmware writes or CPU startup. The optional Cargo features forward
+`idle-pause`, `jitv2`, `perfetto` and `developer` to the compatible Iris performance branch.
 
-Serial logging uses Iris's channel-B sink and raw or wall-clock timestamps.
+Serial logging uses Iris's console sink (B on IP2x, A on IP30/IP32) and raw or wall-clock timestamps.
 The path is `serial.log` within the selected machine's state directory. The
 worker checks that this is an appendable regular file before construction,
 because Iris's constructor otherwise logs an open failure only to stderr.

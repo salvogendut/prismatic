@@ -66,6 +66,8 @@ pub struct ExpertSettings {
     pub monitor_port: u16,
     pub serial_port_a: u16,
     pub serial_port_b: u16,
+    pub serial_a: crate::serial::Route,
+    pub serial_b: crate::serial::Route,
     pub gdb_port: Option<u16>,
     pub vnc_port: Option<u16>,
     pub vnc_max_fps: u32,
@@ -88,6 +90,8 @@ impl Default for ExpertSettings {
             monitor_port: 0,
             serial_port_a: 0,
             serial_port_b: 0,
+            serial_a: Default::default(),
+            serial_b: Default::default(),
             gdb_port: None,
             vnc_port: None,
             vnc_max_fps: 30,
@@ -100,6 +104,8 @@ impl Default for ExpertSettings {
 }
 impl ExpertSettings {
     pub fn validate(&self) -> Result<(), String> {
+        self.serial_a.validate()?;
+        self.serial_b.validate()?;
         if !(1..=64).contains(&self.jit_threads) {
             return Err("JIT compiler workers must be 1-64".into());
         }
@@ -109,8 +115,8 @@ impl ExpertSettings {
         let mut ports = std::collections::BTreeSet::new();
         for port in [
             Some(self.monitor_port),
-            Some(self.serial_port_a),
-            Some(self.serial_port_b),
+            self.serial_a.tcp_port(self.serial_port_a),
+            self.serial_b.tcp_port(self.serial_port_b),
             self.gdb_port,
             self.vnc_port,
         ]
@@ -221,12 +227,10 @@ impl ExpertSettings {
         self.validate_files()?;
         // Probe fixed endpoints together before constructors bind. GDB/VNC
         // also report actual bind failures; the core monitor is checked after
-        // start. Serial constructors only report later bind races in diagnostics.
+        // start. Serial endpoints are bound and held by serial::Endpoints.
         let mut probes = Vec::new();
         for (name, port) in [
             ("Monitor", Some(self.monitor_port)),
-            ("Serial A", Some(self.serial_port_a)),
-            ("Serial B", Some(self.serial_port_b)),
             ("GDB", self.gdb_port),
             ("VNC", self.vnc_port),
         ] {
@@ -278,12 +282,23 @@ impl ExpertSettings {
             ],
             Page::Connections => vec![
                 ("Monitor port", port_label(Some(self.monitor_port))),
-                ("Serial A port", port_label(Some(self.serial_port_a))),
-                ("Serial B port", port_label(Some(self.serial_port_b))),
+                ("Serial A routing", self.serial_a.label().into()),
+                (
+                    "Serial A TCP port",
+                    serial_port_label(self.serial_a, self.serial_port_a),
+                ),
+                ("Serial B routing", self.serial_b.label().into()),
+                (
+                    "Serial B TCP port",
+                    serial_port_label(self.serial_b, self.serial_port_b),
+                ),
                 ("GDB port", port_label(self.gdb_port)),
                 ("VNC port", port_label(self.vnc_port)),
                 ("VNC frame limit", format!("{} fps", self.vnc_max_fps)),
-                ("Connection status", "Show active endpoints".into()),
+                (
+                    "Connection status",
+                    "Show active ports and PTY paths".into(),
+                ),
             ],
             Page::Developer => vec![
                 (
@@ -324,6 +339,15 @@ fn port_label(port: Option<u16>) -> String {
         None => "Off".into(),
         Some(0) => "Automatic".into(),
         Some(p) => format!("127.0.0.1:{p}"),
+    }
+}
+
+fn serial_port_label(route: crate::serial::Route, port: u16) -> String {
+    let label = port_label(Some(port));
+    if route == crate::serial::Route::Tcp {
+        label
+    } else {
+        format!("{label} (saved; TCP inactive)")
     }
 }
 
@@ -372,8 +396,11 @@ impl Field {
             Self::JitThreads => {
                 "1-64 workers; experimental jitv2 build required. Without it, Enter restores 1."
             }
-            Self::Monitor | Self::SerialA | Self::SerialB => {
+            Self::Monitor => {
                 "TCP port 1-65535, or 0/auto for automatic. Loopback only; applies after restart."
+            }
+            Self::SerialA | Self::SerialB => {
+                "0/auto or 1-65535. Used with TCP routing; retained with PTY/Off. Applies after restart."
             }
             Self::Gdb | Self::Vnc => {
                 "Blank/off disables; 0/auto chooses a port. Loopback only, without authentication."
@@ -484,10 +511,14 @@ pub fn hint(page: Page, row: usize) -> &'static str {
         (Page::Performance, 7) => {
             "Per-label compiled-page reuse. Requires jitv2; Enter clears the setting when not built."
         }
-        (Page::Connections, 0..=2) => Field::Monitor.hint(),
-        (Page::Connections, 3..=4) => Field::Gdb.hint(),
-        (Page::Connections, 5) => Field::VncFps.hint(),
-        (Page::Connections, 6) | (Page::Developer, 4) => {
+        (Page::Connections, 0) => Field::Monitor.hint(),
+        (Page::Connections, 1 | 3) => {
+            "TCP / Pseudoterminal / Off. Connection status shows the active port or PTY path after boot."
+        }
+        (Page::Connections, 2 | 4) => Field::SerialA.hint(),
+        (Page::Connections, 5..=6) => Field::Gdb.hint(),
+        (Page::Connections, 7) => Field::VncFps.hint(),
+        (Page::Connections, 8) | (Page::Developer, 4) => {
             "Shows the loaded machine, independent of drafts. Services begin on Ctrl+P boot."
         }
         (Page::Developer, 0) => Field::BootElf.hint(),
@@ -574,7 +605,7 @@ impl Services {
     }
     pub fn report(
         &self,
-        settings: &ExpertSettings,
+        serial: &crate::serial::Endpoints,
         monitor: Option<std::net::SocketAddr>,
     ) -> String {
         let addr = |addr: Option<std::net::SocketAddr>| {
@@ -582,9 +613,9 @@ impl Services {
         };
         let mut lines = vec![
             format!("Monitor: {}", addr(monitor)),
-            format!("Serial A: {}", port_label(Some(settings.serial_port_a))),
-            format!("Serial B: {}", port_label(Some(settings.serial_port_b))),
-            "Automatic serial ports are reported by Iris in Debug output.".into(),
+            serial.describe(0),
+            serial.describe(1),
+            "PTY: minicom -o -D PATH -b 9600; disable hardware/software flow control.".into(),
             format!("GDB: {} (CPU 0)", addr(self.gdb.as_ref().map(|s| s.addr()))),
             format!(
                 "VNC: {} (primary display)",
@@ -629,6 +660,43 @@ impl Drop for Services {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn serial_routes_migrate_persist_per_label_and_only_active_tcp_ports_collide() {
+        use crate::serial::Route;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prismatic.cfg");
+        std::fs::write(
+            &path,
+            "[advanced.expert]\nserial_port_a = 8880\nserial_port_b = 8881\n",
+        )
+        .unwrap();
+        let mut settings = crate::settings::Settings::load(&path).unwrap();
+        assert_eq!(settings.advanced.expert.serial_a, Route::Tcp);
+        assert_eq!(settings.advanced.expert.serial_b, Route::Tcp);
+        settings.save_as_machine("TCP").unwrap();
+        settings.advanced.expert.serial_b = if cfg!(unix) { Route::Pty } else { Route::Off };
+        settings.save_as_machine("Terminal").unwrap();
+        settings.save(&path).unwrap();
+        let mut loaded = crate::settings::Settings::load(&path).unwrap();
+        assert_eq!(
+            loaded.advanced.expert.serial_b,
+            settings.advanced.expert.serial_b
+        );
+        loaded.select_machine("TCP").unwrap();
+        assert_eq!(loaded.advanced.expert.serial_b, Route::Tcp);
+        assert_eq!(loaded.advanced.expert.serial_port_b, 8881);
+        let mut draft = loaded.clone();
+        draft.advanced.expert.serial_b = Route::Off;
+        assert!(draft.machine_differs_from(&loaded));
+        Field::SerialB
+            .apply(&mut draft.advanced.expert, "8880")
+            .unwrap();
+        draft.advanced.expert.serial_b = Route::Tcp;
+        assert!(draft.advanced.validate().is_err());
+        std::fs::write(&path, "[advanced.expert]\nserial_a = 'unknown'\n").unwrap();
+        assert!(crate::settings::Settings::load(&path).is_err());
+    }
+
     #[test]
     fn invalid_edits_are_atomic_and_endpoints_cannot_collide() {
         let mut settings = ExpertSettings::default();

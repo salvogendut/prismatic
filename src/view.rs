@@ -357,7 +357,7 @@ fn draw_overlay(
             if session.row == 12 {
                 "Saved per machine label; applies on cold boot/restart. Boot disk and AutoLoad remain unchanged.".into()
             } else if session.row == 13 {
-                "Saved per label; applies on cold boot/restart. Automatic serial ports appear in Debug output.".into()
+                "Saved per label; applies on cold boot/restart. Connection status shows active TCP ports and PTYs.".into()
             } else { "Hardware changes ask to restart when saved. Display and audio options apply on Save.".into() },
         ],
         Tab::Media => {

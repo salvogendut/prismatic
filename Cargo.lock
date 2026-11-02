@@ -2737,6 +2737,7 @@ dependencies = [
  "iris",
  "jiff",
  "libchdman-rs",
+ "nix 0.31.3",
  "sdl3",
  "serde",
  "tempfile",

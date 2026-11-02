@@ -418,6 +418,7 @@ impl Emulator {
                     let _disk_leases = crate::instance::disks(&media)?;
                     prepare_serial_log(&config)?;
                     expert.prepare(&config, &state_dir)?;
+                    let serial = crate::serial::Endpoints::prepare(&mut config, &expert)?;
                     // Iris's Indigo2 fallback also searches the current directory.
                     // Give it the bundled image explicitly so a local ROM cannot
                     // silently change a configured machine's firmware.
@@ -532,7 +533,7 @@ impl Emulator {
                                 phase,
                                 monitor: owned.machine.monitor_addr(),
                                 runtime: format!("{}\nVINO: {} / {} / camera {}\nDaynaPort: {} / {}\nUltra64: {}",
-                                    services.report(&expert, owned.machine.monitor_addr()), owned.machine.as_any_mut().downcast_mut::<iris::machine::Machine>().map_or_else(|| "Unavailable".into(), |m| m.vino_source_status()), if extensions.pal { "PAL" } else { "NTSC" }, extensions.camera_index,
+                                    services.report(&serial, owned.machine.monitor_addr()), owned.machine.as_any_mut().downcast_mut::<iris::machine::Machine>().map_or_else(|| "Unavailable".into(), |m| m.vino_source_status()), if extensions.pal { "PAL" } else { "NTSC" }, extensions.camera_index,
                                     extensions.daynaport.map_or_else(|| "Off".into(), |s| format!("SCSI {}:{}", s / 16, s % 16)), extensions.dayna_subnet,
                                     if extensions.ultra64 { "Enabled (external bridge)" } else { "Off" }),
                                 pcap: owned.machine.net_pcap_status(),
@@ -1349,6 +1350,102 @@ mod tests {
         );
         assert!(emulator.input().is_none());
         assert!(!dir.path().join("nvram.bin").exists());
+    }
+
+    #[test]
+    fn occupied_serial_port_fails_before_constructing_or_writing_firmware() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut advanced = AdvancedSettings::default();
+        advanced.expert.serial_port_b = listener.local_addr().unwrap().port();
+        let dir = tempfile::tempdir().unwrap();
+        let mut emulator = Emulator::spawn(
+            dir.path(),
+            &MachineSettings::default(),
+            &MediaSettings::default(),
+            &advanced,
+            &Default::default(),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !emulator.finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(emulator.finished());
+        assert!(
+            matches!(emulator.status().phase, Phase::Failed(ref error) if error.contains("Serial B"))
+        );
+        assert!(emulator.input().is_none());
+        assert!(!dir.path().join("nvram.bin").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worker_ptys_survive_pause_and_close_when_each_model_is_unloaded() {
+        let _serial = MACHINE_TEST.lock().unwrap();
+        for profile in MachineSettings::PROFILES {
+            let dir = tempfile::tempdir().unwrap();
+            let mut hardware = MachineSettings {
+                profile,
+                ..Default::default()
+            };
+            hardware.cpu = hardware.cpus()[0];
+            let mut advanced = AdvancedSettings::default();
+            advanced.expert.serial_a = crate::serial::Route::Pty;
+            advanced.expert.serial_b = crate::serial::Route::Pty;
+            let mut emulator = Emulator::spawn(
+                dir.path(),
+                &hardware,
+                &MediaSettings::default(),
+                &advanced,
+                &Default::default(),
+            )
+            .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while emulator.status().phase == Phase::Starting && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(emulator.status().phase, Phase::Running, "{profile:?}");
+            let runtime = emulator.status().runtime;
+            let paths: Vec<_> = runtime
+                .lines()
+                .filter(|line| line.starts_with("Serial "))
+                .map(|line| line.split_once(": PTY ").unwrap().1.to_owned())
+                .collect();
+            assert_eq!(paths.len(), 2);
+            assert_ne!(paths[0], paths[1]);
+            let clients: Vec<_> = paths
+                .iter()
+                .map(|p| {
+                    std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(p)
+                        .unwrap()
+                })
+                .collect();
+            emulator.request_pause(true).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while emulator.status().phase != Phase::Paused && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(emulator.status().phase, Phase::Paused);
+            for client in &clients {
+                assert!(nix::sys::termios::tcgetattr(client).is_ok());
+            }
+            emulator.request_stop();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !emulator.finished() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(emulator.finished());
+            drop(emulator);
+            for client in &clients {
+                assert!(
+                    nix::sys::termios::tcgetattr(client).is_err(),
+                    "{profile:?}: PTY stayed open"
+                );
+            }
+        }
     }
 
     #[test]

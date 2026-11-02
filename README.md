@@ -49,8 +49,8 @@ Dev/
 
 Prismatic uses the local Iris library directly, including the fork's power-off,
 diagnostic routing, bundled O2/Octane firmware and frontend audio support.
-Prismatic `main` requires Iris branch `perf/sgiemu-port` at commit `668911c` or
-newer, including the `prom_env::prepare_environment` boot/console embedding API
+Prismatic `main` requires Iris branch `perf/sgiemu-port`, including the
+`prom_env::prepare_environment` and `MachineConfig.serial_backends` embedding APIs
 (performance base `66f5a59`).
 Update both checkouts together. This Iris branch builds on `xiri`, retaining
 the integration and compatibility work for NetBSD
@@ -93,8 +93,8 @@ other models use their named subdirectory under `PATH`. Firmware source files
 are read-only; O2 saves flash in `nvram.bin`, Octane in `flash.bin` alongside its
 `nvram.bin`. Existing flash preserves the guest's firmware and environment.
 The Iris monitor and serial ports default to ephemeral loopback ports.
-Advanced > Connections selects fixed ports and optional GDB/VNC servers;
-Connection status shows the active monitor, GDB and VNC addresses.
+Advanced > Connections selects serial TCP ports or pseudoterminals, plus optional
+GDB/VNC servers. Connection status shows all active addresses and PTY paths.
 Iris also maintains its shared draw-shape cache at
 `~/.iris/rex-jit-profile.bin`; `IRIS_REX_JIT_PROFILE` overrides that cache path.
 
@@ -230,7 +230,7 @@ state produces a startup error; Keep existing allows normal PROM initialization.
 | --- | --- | --- |
 | Keep existing (default) | Unchanged | Retains the stored console choice |
 | Graphics | `console=g` | Guest display and keyboard in the Prismatic window |
-| Serial | `console=d` | First guest serial console over TCP |
+| Serial | `console=d` | First guest serial console using the selected TCP or PTY route |
 
 These are the PROM's [graphics and serial console settings](https://www.netbsd.org/~sborrill/htdocs/sgimips/faq.html).
 F9 saves `prom_console = "keep_existing"`, `"graphics"` or `"serial"` in the
@@ -239,11 +239,11 @@ label's machine stanza. It follows the same cold boot/restart and initial
 choice. Changing the console preserves the OS boot preset, baud rate and other
 existing firmware settings.
 
-For Serial, enable **Tinker**, then set a port in **Advanced > Connections**:
-use **Serial B** on Indy/Indigo2, or **Serial A** on O2/Octane. Connect a terminal
-with `telnet 127.0.0.1 PORT` after booting with Ctrl+P. Ports default to automatic
-allocation; enable **Advanced > Core > Debug output > Console** before boot to
-see the assigned address, or select a fixed port. Use distinct ports for
+For Serial, enable **Tinker**, then select routing in **Advanced > Connections**:
+use **Serial B** on Indy/Indigo2, or **Serial A** on O2/Octane. After booting with
+Ctrl+P, open **Connection status** to find the assigned TCP port or PTY path.
+TCP defaults to automatic allocation; connect with `telnet 127.0.0.1 PORT`, or
+use minicom with the PTY instructions below. Use distinct fixed TCP ports for
 simultaneously running labels. Serial output appears in that terminal; the
 Prismatic guest display may remain blank. The overlay remains available to
 switch back to Graphics.
@@ -418,16 +418,56 @@ Performance exposes the following settings, all saved per machine label:
 | JIT compiler workers | 1–64 workers for the experimental `jitv2` build. The execution engine is selected at build time. |
 | JIT disk cache | Opt-in compiled-page reuse, stored under this label's state directory in `jit-cache/`. |
 
-Connections provides editable **Monitor**, **Serial A/B**, **GDB** and **VNC**
-TCP ports. Monitor and serial ports accept `0`/`auto` for automatic allocation;
+Connections provides **Serial A routing** and **Serial B routing**, plus editable
+**Monitor**, **Serial A/B TCP**, **GDB** and **VNC** ports. Each serial route
+cycles **TCP** (default), **Pseudoterminal** (Unix hosts), and **Off**. Off
+disconnects the host endpoint while leaving the guest UART emulated. Monitor
+and serial TCP ports accept `0`/`auto` for automatic allocation;
 GDB and VNC additionally accept blank/`off` to disable them (the default).
 All bind to **127.0.0.1 without authentication**. Configured fixed ports must
 be distinct and free when booting; use different ports or automatic allocation
 when running labels in separate processes. GDB targets CPU 0; attaching stops
 that CPU. VNC shares the primary guest display and input, with a saved 1–60 fps
 limit (default 30). Connection status describes the loaded machine, independently
-of menu drafts; automatic serial addresses are available in Debug > Console.
+of menu drafts, including the actual automatically allocated serial ports.
 Services start on Ctrl+P boot and close on reset, label switch, power-off or quit.
+
+For minicom, choose **Pseudoterminal** on the desired channel, save with F9,
+and boot with Ctrl+P. For the PROM console, also select **General > PROM console >
+Serial**: use channel B on Indy/Indigo2 and A on O2/Octane. Open
+**Advanced > Connections > Connection status** and copy its PTY path, for example:
+
+```sh
+minicom -o -D /dev/pts/7 -b 9600
+```
+
+Replace `/dev/pts/7` with the displayed path. In minicom, set hardware and software
+flow control to **No**; `-o` skips modem initialization. See the
+[minicom manual](https://man7.org/linux/man-pages/man1/minicom.1.html).
+Use one terminal reader per PTY, running as the same user in the same host/container
+as Prismatic. The PTY remains available while paused and supports disconnecting
+and reconnecting. Its path can change after each boot; only the routing choice
+and TCP port preference are saved, not the temporary device path.
+
+The PTY uses raw bytes with a bounded 64 KiB output queue in addition to the
+kernel buffer. An absent or slow reader can eventually lose output; Connection
+status reports dropped bytes. Serial logging remains available for a transcript.
+Selecting PTY or Off retains the TCP port preference but does not bind it. All
+connection changes are saved per label and require a restart when running:
+
+```toml
+[machines."Serial Indy".advanced.expert]
+serial_a = "off"
+serial_port_a = 0
+serial_b = "pty"
+serial_port_b = 8881
+```
+
+The current performance build can reach a PROM panic when restarting an Indy
+inside the same Prismatic process after changing routing. Configure the channels
+before the first Ctrl+P boot, or quit and relaunch after saving changes to a
+running machine. The saved routes work on a fresh launch; the equivalent
+in-process PTY-to-TCP switch passes with the interpreter build.
 
 Developer provides **Boot ELF**, **Trace on boot**, trace categories and the
 trace timeline. Boot ELF accepts a static, big-endian MIPS ELF32 executable on
@@ -489,7 +529,7 @@ fixed date. The menu uses five-year presets; `clock_offset_years` in the file
 also accepts individual whole years from −30 through 0. Iris clamps RTC dates
 to the emulated chip's supported range (1970–2039).
 
-Serial logging appends channel-B console output to **`serial.log`** beside the
+Serial logging appends console output (B on Indy/Indigo2, A on O2/Octane) to **`serial.log`** beside the
 selected machine's NVRAM: normally `~/.local/share/prismatic/indy/serial.log` or
 `~/.local/share/prismatic/indigo2/serial.log`. `--state-dir` moves the log with the
 machine state. Raw preserves serial bytes; Timestamped prefixes lines with
@@ -931,6 +971,8 @@ jit_cache = false
 monitor_port = 0        # Automatic loopback port.
 serial_port_a = 0
 serial_port_b = 0
+serial_a = "tcp"
+serial_b = "tcp"
 # gdb_port = 1234       # Omit to disable; 0 chooses an automatic port.
 # vnc_port = 5900
 vnc_max_fps = 30

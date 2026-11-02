@@ -76,10 +76,10 @@ impl PromConsole {
             }
             Self::Serial => match profile {
                 MachineProfile::O2Ip32 | MachineProfile::OctaneIp30 => {
-                    "On boot: console=d. Connect a terminal to Serial A; ports are in Advanced > Connections."
+                    "On boot: console=d. Use Serial A; routing and endpoints are in Advanced > Connections."
                 }
                 _ => {
-                    "On boot: console=d. Connect a terminal to Serial B; ports are in Advanced > Connections."
+                    "On boot: console=d. Use Serial B; routing and endpoints are in Advanced > Connections."
                 }
             },
         }
