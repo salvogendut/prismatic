@@ -27,6 +27,55 @@ pub struct MachineSettings {
     pub keyboard: KeyboardLayout,
     pub o2_prom: Option<String>,
     pub octane_prom: Option<String>,
+    pub prom_boot: PromBoot,
+}
+
+/// A per-machine PROM preset; old configurations retain their firmware settings.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PromBoot {
+    #[default]
+    KeepExisting,
+    Irix,
+    Netbsd,
+}
+
+impl PromBoot {
+    pub fn cycle(&mut self) {
+        *self = match self {
+            Self::KeepExisting => Self::Irix,
+            Self::Irix => Self::Netbsd,
+            Self::Netbsd => Self::KeepExisting,
+        };
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::KeepExisting => "Keep existing",
+            Self::Irix => "IRIX",
+            Self::Netbsd => "NetBSD",
+        }
+    }
+
+    pub fn environment(self) -> Option<(&'static str, &'static str, &'static str)> {
+        match self {
+            Self::KeepExisting => None,
+            Self::Irix => Some(("sash", "/unix", "auto")),
+            Self::Netbsd => Some(("boot", "netbsd.boot", "auto")),
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            Self::KeepExisting => {
+                "Leaves the current PROM environment unchanged, including any previously applied preset."
+            }
+            Self::Irix => "On boot: OSLoader=sash, OSLoadFilename=/unix, OSLoadOptions=auto.",
+            Self::Netbsd => {
+                "On boot: OSLoader=boot, OSLoadFilename=netbsd.boot, OSLoadOptions=auto."
+            }
+        }
+    }
 }
 
 impl Default for MachineSettings {
@@ -41,6 +90,7 @@ impl Default for MachineSettings {
             keyboard: KeyboardLayout::Ansi,
             o2_prom: None,
             octane_prom: None,
+            prom_boot: PromBoot::default(),
         }
     }
 }
@@ -785,6 +835,45 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prom_boot_presets_migrate_and_roundtrip_per_machine() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prismatic.cfg");
+        fs::write(&path, "[machine]\nram_mb = 64\n").unwrap();
+        let mut settings = Settings::load(&path).unwrap();
+        assert_eq!(settings.machine.prom_boot, PromBoot::KeepExisting);
+        settings.machine.prom_boot = PromBoot::Irix;
+        settings.save_as_machine("IRIX Indy").unwrap();
+        settings.machine.prom_boot = PromBoot::Netbsd;
+        settings.machine.cycle_profile();
+        settings.save_as_machine("NetBSD Indigo2").unwrap();
+        settings.save(&path).unwrap();
+        let mut loaded = Settings::load(&path).unwrap();
+        assert_eq!(loaded.machine.prom_boot, PromBoot::Netbsd);
+        loaded.select_machine("IRIX Indy").unwrap();
+        assert_eq!(loaded.machine.prom_boot, PromBoot::Irix);
+        assert_eq!(loaded.machine.profile, MachineProfile::IndyIp24);
+        let mut draft = loaded.clone();
+        draft.machine.prom_boot = PromBoot::Netbsd;
+        assert!(draft.machine_differs_from(&loaded));
+        draft.machine.prom_boot = PromBoot::KeepExisting;
+        assert!(draft.machine_differs_from(&loaded));
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("prom_boot = \"irix\""));
+        assert!(text.contains("prom_boot = \"netbsd\""));
+        fs::write(&path, "[machine]\nprom_boot = 'unknown'\n").unwrap();
+        assert!(Settings::load(&path).is_err());
+        assert_eq!(PromBoot::KeepExisting.environment(), None);
+        assert_eq!(
+            PromBoot::Irix.environment(),
+            Some(("sash", "/unix", "auto"))
+        );
+        assert_eq!(
+            PromBoot::Netbsd.environment(),
+            Some(("boot", "netbsd.boot", "auto"))
+        );
+    }
 
     #[test]
     fn optional_device_stanzas_roundtrip_per_label_and_force_network_restart() {

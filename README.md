@@ -49,7 +49,9 @@ Dev/
 
 Prismatic uses the local Iris library directly, including the fork's power-off,
 diagnostic routing, bundled O2/Octane firmware and frontend audio support.
-Prismatic `main` uses Iris branch `perf/sgiemu-port` at commit `66f5a59`.
+Prismatic `main` requires Iris branch `perf/sgiemu-port` at commit `c97ab52` or
+newer, including the `prom_env::prepare_boot_environment` embedding API
+(performance base `66f5a59`).
 Update both checkouts together. This Iris branch builds on `xiri`, retaining
 the integration and compatibility work for NetBSD
 and other guest operating systems alongside IRIX. Keep using this Iris branch
@@ -197,6 +199,30 @@ In **F9 > General**, select a row with Up/Down and press Enter to cycle its
 value. F9 saves. Hardware changes ask for **Restart / Cancel** before they are
 saved and applied; choose Restart with Left/Right, then Enter. Cancel or Escape
 returns to the draft. Escape from the editor offers Save / Discard / Cancel.
+
+**General > PROM boot** selects a boot preset for the current machine label:
+
+| Choice | OSLoader | OSLoadFilename | OSLoadOptions |
+| --- | --- | --- | --- |
+| Keep existing (default) | Unchanged | Unchanged | Unchanged |
+| IRIX | `sash` | `/unix` | `auto` |
+| NetBSD | `boot` | `netbsd.boot` | `auto` |
+
+F9 saves the choice in that label's `[machines."Label".machine]` stanza as
+`prom_boot = "keep_existing"`, `"irix"` or `"netbsd"`. The preset applies before
+each cold boot or confirmed restart. When the machine is still waiting in its
+initial PAUSED state, Save leaves it ready for **Ctrl+P**. Discard and failed
+configuration saves do not modify firmware state.
+
+Boot partitions, AutoLoad, network addresses and other PROM settings are preserved.
+Keep existing stops applying a preset; it retains the values already stored in
+the PROM, including an earlier preset. These choices set boot variables, so the
+selected disk must already contain the matching loader and kernel. The NetBSD
+preset uses your `netbsd.boot` filename; other installations may use a different
+name (see the [NetBSD boot manual](https://man.netbsd.org/sgimips/boot.8)).
+All five machine profiles have firmware-storage support; this does not imply
+that either guest OS boots on every model. Unrecognized or damaged firmware
+state produces a startup error; Keep existing allows normal PROM initialization.
 
 | Machine | CPUs | RAM presets (MB) | Graphics | PROM |
 | --- | --- | --- | --- | --- |

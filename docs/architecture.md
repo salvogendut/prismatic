@@ -2,9 +2,10 @@
 
 ## Performance build
 
-Prismatic `main` uses the sibling Iris branch `perf/sgiemu-port` at
-`66f5a59`, based on the integrated `xiri` revision `087d250`. Its frontend-facing
-APIs are unchanged. The performance changes stay in Iris: Cranelift SSA copies
+Prismatic `main` uses the sibling Iris branch `perf/sgiemu-port` at `c97ab52` or
+newer, with performance base `66f5a59` on the integrated `xiri` revision `087d250`,
+plus the PROM environment embedding API described below. The performance changes
+stay in Iris: Cranelift SSA copies
 of guest integer registers and cached DS1x86 calendar conversion. The register
 cache keeps architectural state current and excludes FPU/fallback regions.
 
@@ -14,8 +15,8 @@ binary omits it. Default-feature checks still exercise the interpreter build;
 checks and PROM smoke runs with the performance feature set exercise the JIT.
 The performance integration requires no Prismatic UI or configuration schema changes.
 
-Validation against `66f5a59` passes formatting, strict frontend Clippy, 136
-default-feature tests and 137 tests with the performance feature set. The release
+The performance base was validated against `66f5a59` with formatting, strict
+frontend Clippy, default-feature and performance-feature tests. The release
 binary passes dummy SDL, diskless PROM and guest-input smoke tests, with JIT pages
 compiled during PROM execution. These checks do not measure an OS boot speedup.
 The media attachment/restart smoke test currently reaches the confirmed restart
@@ -95,6 +96,19 @@ through 1 MiB), without writing flash/NVRAM. Content compatibility is the caller
 responsibility. The worker rechecks before construction; a missing external override is a
 recoverable `Phase::Failed`, so F9 remains available. Relative firmware paths
 resolve against the configuration's directory, as media paths do.
+
+`MachineSettings.prom_boot` is saved per label and defaults to `keep_existing`
+for old configurations. General cycles Keep existing, IRIX (`sash`, `/unix`,
+`auto`) and NetBSD (`boot`, `netbsd.boot`, `auto`). It participates in the normal
+machine-change restart comparison and checkpoint compatibility metadata.
+After taking the machine-state lease, the worker calls Iris's
+`prom_env::prepare_boot_environment` before constructing the workstation.
+The core atomically updates only OSLoader, OSLoadFilename and OSLoadOptions in
+the model's persistent storage: Indy DS1386 NVRAM, Indigo2 EEPROM, O2 environment
+flash segment or Octane persistent flash records. Validation and draft edits do
+not write firmware state. Existing non-boot settings survive; invalid formats,
+checksums, insufficient space and I/O failures report `Phase::Failed`. Presets
+are reapplied on cold boots, while Keep existing preserves the current values.
 
 Extensions selects graphics boards, Newport head count and Octane CPU count.
 `MachineSettings.graphics` is optional so old files retain Newport on Indy/IP22,

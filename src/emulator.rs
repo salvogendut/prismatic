@@ -438,6 +438,13 @@ impl Emulator {
                     } else {
                         None
                     };
+                    // Apply only saved settings, with the state lease held and
+                    // the old workstation gone. Iris owns the firmware formats.
+                    if let Some((loader, filename, options)) = hardware.prom_boot.environment() {
+                        iris::prom_env::prepare_boot_environment(
+                            &config, loader, filename, options,
+                        )?;
+                    }
                     let mut owned = OwnedMachine::new(iris::workstation::build(config)?);
                     // O2/Octane constructors currently use a default PS/2 layout.
                     // Set the shared controller before any CPU thread can query it.
@@ -710,6 +717,84 @@ mod tests {
 
     // Iris has process-wide display/CPU hooks; started machines must not overlap.
     static MACHINE_TEST: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn prom_boot_preparation_is_offline_atomic_and_errors_reach_the_ui() {
+        use crate::settings::PromBoot;
+        let dir = tempfile::tempdir().unwrap();
+        for profile in MachineSettings::PROFILES {
+            let state = dir.path().join(format!("{profile:?}"));
+            std::fs::create_dir(&state).unwrap();
+            let mut hardware = MachineSettings {
+                profile,
+                prom_boot: PromBoot::Netbsd,
+                ..Default::default()
+            };
+            hardware.cpu = hardware.cpus()[0];
+            let config = machine_config(
+                &state,
+                &hardware,
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+            )
+            .unwrap();
+            // Validation/config construction must not touch firmware files.
+            assert_eq!(std::fs::read_dir(&state).unwrap().count(), 0);
+            let (loader, filename, options) = hardware.prom_boot.environment().unwrap();
+            iris::prom_env::prepare_boot_environment(&config, loader, filename, options).unwrap();
+            let path = match profile {
+                MachineProfile::Indigo2Ip22 | MachineProfile::Indigo2Ip28 => &config.nveeprom,
+                MachineProfile::OctaneIp30 => config.octane.flash.as_ref().unwrap(),
+                _ => &config.nvram,
+            };
+            let saved = std::fs::read(path).unwrap();
+            assert!(
+                saved
+                    .windows(b"netbsd.boot\0".len())
+                    .any(|bytes| bytes == b"netbsd.boot\0"),
+                "{profile:?}"
+            );
+            iris::prom_env::prepare_boot_environment(&config, loader, filename, options).unwrap();
+            assert_eq!(std::fs::read(path).unwrap(), saved);
+            assert!(
+                iris::prom_env::prepare_boot_environment(&config, "sash", "bad\0name", "auto")
+                    .is_err()
+            );
+            assert_eq!(std::fs::read(path).unwrap(), saved);
+            std::fs::write(path, b"malformed firmware state").unwrap();
+            assert!(
+                iris::prom_env::prepare_boot_environment(&config, loader, filename, options)
+                    .is_err()
+            );
+            assert_eq!(std::fs::read(path).unwrap(), b"malformed firmware state");
+        }
+        let hardware = MachineSettings {
+            prom_boot: PromBoot::Netbsd,
+            ..Default::default()
+        };
+        std::fs::write(dir.path().join("nvram.bin"), b"bad state").unwrap();
+        let mut emulator = Emulator::spawn(
+            dir.path(),
+            &hardware,
+            &Default::default(),
+            &Default::default(),
+            &Default::default(),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !emulator.finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(emulator.finished());
+        assert!(
+            matches!(emulator.status().phase, Phase::Failed(error) if error.contains("PROM state"))
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("nvram.bin")).unwrap(),
+            b"bad state"
+        );
+    }
 
     #[test]
     fn native_checkpoint_restores_cpu_and_cow_disk_and_stays_paused() {
