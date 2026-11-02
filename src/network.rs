@@ -277,6 +277,11 @@ impl NetworkSettings {
     }
     /// Syntax only: inactive labels can retain PCAP settings in a non-PCAP build.
     pub fn validate(&self, profile: MachineProfile) -> Result<(), String> {
+        if self.mode == NetMode::Stream {
+            return Err(
+                "Stream networking is not configured by Prismatic; choose NAT, PCAP or Off".into(),
+            );
+        }
         iris::config::parse_nat_subnet(&self.nat_subnet).map_err(|e| format!("NAT subnet: {e}"))?;
         if self.mode == NetMode::Off && !Self::supports_off(profile) {
             return Err("Ethernet Off is only supported on O2 and Octane".into());
@@ -439,6 +444,7 @@ impl NetworkSettings {
                     NetMode::Pcap if !cfg!(feature = "pcap") => "PCAP (unavailable in this build)",
                     NetMode::Pcap => "PCAP (LAN bridge)",
                     NetMode::Off => "Off (unplugged)",
+                    NetMode::Stream => "Stream (not configured)",
                 }
                 .into(),
             ),
@@ -631,6 +637,18 @@ pub fn pcap_message(status: PcapStatus) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stream_configuration_is_rejected_before_startup() {
+        let settings = super::NetworkSettings {
+            mode: iris::config::NetMode::Stream,
+            ..Default::default()
+        };
+        let error = settings
+            .validate(iris::config::MachineProfile::OctaneIp30)
+            .unwrap_err();
+        assert!(error.contains("Stream") && error.contains("not configured"));
+    }
+
     use super::*;
     use crate::settings::{MachineSettings, Settings};
 

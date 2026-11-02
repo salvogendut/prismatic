@@ -56,6 +56,11 @@ Update both checkouts together. This Iris branch builds on `xiri`, retaining
 the integration and compatibility work for NetBSD
 and other guest operating systems alongside IRIX. Keep using this Iris branch
 until its performance changes are integrated into `xiri`.
+
+The Odyssey integration is on `feature/odyssey-vpro` in both repositories,
+based on `perf/sgiemu-port`. It incorporates Iris's existing `xiri` Odyssey
+implementation and Prismatic's newer `main` boot/console/serial fixes. Use
+the paired branches: the frontend consumes Iris's shared Octane graphics list.
 The root Cargo manifest preserves the fork's patched winit
 and block dependencies. Install Rust through rustup; `rust-toolchain.toml`
 selects `nightly-2026-10-28`, the toolchain used for the Iris performance work.
@@ -254,7 +259,17 @@ switch back to Graphics.
 | Indigo2 IP22 | R4400 | 32, 64, 128, 256, 384, 512 | Newport, XZ, Extreme, Solid/High/Maximum IMPACT | Bundled |
 | Indigo2 IMPACT IP28 | R10000 | 32, 64, 128, 256, 384, 512, 768, 1024 | Solid/High/Maximum IMPACT | Bundled |
 | O2 IP32 | R5000, R10000 | 32, 64, 128, 256, 384, 512, 768, 1024 | CRIME/GBE | Bundled 4.18; optional external IP32 PROM |
-| Octane IP30 | R10000 (one or two CPUs) | 64, 128, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192 | Solid/High/Maximum IMPACT | Bundled 4.9; optional external IP30 PROM |
+| Octane IP30 | R10000 (one or two CPUs) | 64, 128, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192 | Solid/High/Maximum IMPACT; VPro V6/V8/V10/V12 | Bundled 4.9; optional external IP30 PROM |
+
+For Odyssey, choose **Octane IP30** in General, enable **Tinker**, then select
+**Extensions > Graphics board > VPro V6, V8, V10 or V12**, save, and boot. The selected card is saved per machine label and
+changing it follows the usual restart confirmation. V6/V10 have 32 MB of
+graphics memory; V8/V12 have 128 MB. Iris presents the newer Crossbow revision
+for V10/V12. The bundled PROM 4.9 meets all four cards' firmware requirement.
+Existing persistent flash can retain an older PROM; V6/V8 require 4.0 or later,
+and V10/V12 require 4.5 or later. The guest OS also needs an Odyssey driver.
+The current core models one 1280x1024 display; this selector does not enable
+DCD or dual-head VPro. VPro machine snapshots remain unsupported by Iris.
 
 All models offer ANSI, ISO and JIS keyboard layouts. Graphics choices and
 Octane CPU count are in **Extensions**, under Tinker. Newport is the default

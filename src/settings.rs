@@ -319,9 +319,8 @@ impl MachineSettings {
         match self.profile {
             MachineProfile::IndyIp24 => &[Newport, Xz],
             MachineProfile::Indigo2Ip22 => &GraphicsBoard::ALL,
-            MachineProfile::Indigo2Ip28 | MachineProfile::OctaneIp30 => {
-                &[SolidImpact, HighImpact, MaxImpact]
-            }
+            MachineProfile::Indigo2Ip28 => &[SolidImpact, HighImpact, MaxImpact],
+            MachineProfile::OctaneIp30 => &GraphicsBoard::OCTANE,
             MachineProfile::O2Ip32 => &[], // Integrated GBE, not a selectable board.
         }
     }
@@ -1057,6 +1056,53 @@ mod tests {
         ] {
             fs::write(&path, format!("[machine]\n{invalid}\n")).unwrap();
             assert!(Settings::load(&path).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn octane_vpro_selections_cycle_persist_and_stay_on_octane() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prismatic.cfg");
+        let mut settings = Settings::default();
+        settings.machine.profile = MachineProfile::OctaneIp30;
+        settings.machine.cpu = CpuModel::R10000;
+        let choices = settings.machine.graphics_choices().to_vec();
+        for board in [
+            GraphicsBoard::V6,
+            GraphicsBoard::V8,
+            GraphicsBoard::V10,
+            GraphicsBoard::V12,
+        ] {
+            assert!(choices.contains(&board));
+            for _ in 0..choices.len() {
+                if settings.machine.graphics_board() == Some(board) {
+                    break;
+                }
+                settings.machine.cycle_graphics();
+            }
+            assert_eq!(settings.machine.graphics_board(), Some(board));
+            settings.save(&path).unwrap();
+            let loaded = Settings::load(&path).unwrap();
+            assert_eq!(loaded.machine.graphics_board(), Some(board));
+            let saved = fs::read(&path).unwrap();
+            settings.machine.heads = 2;
+            assert!(settings.save(&path).is_err());
+            assert_eq!(fs::read(&path).unwrap(), saved);
+            settings.machine.heads = 1;
+            for profile in MachineSettings::PROFILES {
+                if profile == MachineProfile::OctaneIp30 {
+                    continue;
+                }
+                let mut other = settings.machine.clone();
+                other.profile = profile;
+                other.cpu = other.cpus()[0];
+                assert!(!other.graphics_choices().contains(&board));
+                assert!(other.validate().is_err());
+            }
+            let mut moved = loaded.machine;
+            moved.cycle_profile(); // Octane wraps to Indy and selects Newport.
+            assert_eq!(moved.graphics_board(), Some(GraphicsBoard::Newport));
+            moved.validate().unwrap();
         }
     }
 

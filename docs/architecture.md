@@ -74,6 +74,18 @@ including when the hints are hidden.
 
 ## Core boundary
 
+The `feature/odyssey-vpro` integration branches start from `perf/sgiemu-port`
+and incorporate the existing Iris `xiri` Odyssey engine. Prismatic also keeps
+the four newer `main` commits for boot presets, console presets and serial
+routing. Octane's selector uses `GraphicsBoard::OCTANE` from Iris so both
+frontends expose the same IMPACT and VPro cards. The existing `Workstation`
+display/renderer interface carries Odyssey frames without a special frontend
+rasterizer. Settings reject VPro on other profiles and reject a second head;
+per-label persistence and restart confirmation use the existing machinery.
+The core currently models one 1280x1024 Odyssey scanout and refuses VPro
+snapshots. Hardware mode limits, DCD and physical-board validation are outside
+this frontend integration.
+
 The root Cargo manifest depends directly on `../iris` on its `perf/sgiemu-port` branch,
 preserving that fork's winit and block patches at the root where Cargo applies
 them. This branch is based on `xiri` and retains its NetBSD and other guest
