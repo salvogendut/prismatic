@@ -259,7 +259,7 @@ switch back to Graphics.
 | Indigo2 IP22 | R4400 | 32, 64, 128, 256, 384, 512 | Newport, XZ, Extreme, Solid/High/Maximum IMPACT | Bundled |
 | Indigo2 IMPACT IP28 | R10000 | 32, 64, 128, 256, 384, 512, 768, 1024 | Solid/High/Maximum IMPACT | Bundled |
 | O2 IP32 | R5000, R10000 | 32, 64, 128, 256, 384, 512, 768, 1024 | CRIME/GBE | Bundled 4.18; optional external IP32 PROM |
-| Octane IP30 | R10000 (one or two CPUs) | 64, 128, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192 | Solid/High/Maximum IMPACT; VPro V6/V8/V10/V12 | Bundled 4.9; optional external IP30 PROM |
+| Octane IP30 | R10000, R12000, R14000 (one or two CPUs) | 64, 128, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192 | Solid/High/Maximum IMPACT; VPro V6/V8/V10/V12 | Bundled 4.9; optional external IP30 PROM |
 
 For Odyssey, choose **Octane IP30** in General, enable **Tinker**, then select
 **Extensions > Graphics board > VPro V6, V8, V10 or V12**, save, and boot. The selected card is saved per machine label and
@@ -573,7 +573,10 @@ settings active.
   IMPACT are selectable on IP22, IP28 and Octane. O2 keeps its integrated GBE.
   These alternate boards use Iris's current emulation; availability in the menu
   does not guarantee a particular guest OS or graphics workload works.
-- Octane offers one or two R10000 CPUs. General's RAM choices extend to 8192 MB,
+- Octane offers one or two R10000, R12000 or R14000 CPUs in General. Default
+  nominal clocks are 195, 300 and 600 MHz respectively; R12000/R14000 have
+  2 MB secondary caches. These are functional models; pipeline timing is not
+  simulated. General's RAM choices extend to 8192 MB,
   using up to four 2048 MB banks. Large settings need corresponding host memory;
   full 8 GiB guest boots are not part of the smoke checks.
 

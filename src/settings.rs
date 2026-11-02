@@ -179,7 +179,8 @@ impl MachineSettings {
             MachineProfile::IndyIp24 => &[CpuModel::R4400, CpuModel::R5000],
             MachineProfile::Indigo2Ip22 => &[CpuModel::R4400],
             MachineProfile::O2Ip32 => &[CpuModel::R5000, CpuModel::R10000],
-            MachineProfile::Indigo2Ip28 | MachineProfile::OctaneIp30 => &[CpuModel::R10000],
+            MachineProfile::Indigo2Ip28 => &[CpuModel::R10000],
+            MachineProfile::OctaneIp30 => &CpuModel::OCTANE,
         }
     }
 
@@ -1056,6 +1057,46 @@ mod tests {
         ] {
             fs::write(&path, format!("[machine]\n{invalid}\n")).unwrap();
             assert!(Settings::load(&path).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn octane_cpu_choices_persist_and_reject_other_machines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prismatic.cfg");
+        let mut settings = Settings::default();
+        settings.machine.profile = MachineProfile::OctaneIp30;
+        settings.machine.cpu = CpuModel::R10000;
+        for cpu in [CpuModel::R12000, CpuModel::R14000, CpuModel::R10000] {
+            settings.machine.cycle_cpu();
+            assert_eq!(settings.machine.cpu, cpu);
+            for count in [1, 2] {
+                settings.machine.cpus = count;
+                settings.save(&path).unwrap();
+                let loaded = Settings::load(&path).unwrap();
+                assert_eq!(loaded.machine.cpu, cpu);
+                assert_eq!(loaded.machine.cpus, count);
+            }
+            if cpu == CpuModel::R10000 {
+                continue;
+            }
+            let saved = fs::read(&path).unwrap();
+            for profile in MachineSettings::PROFILES {
+                if profile == MachineProfile::OctaneIp30 {
+                    continue;
+                }
+                let mut other = settings.clone();
+                other.machine.profile = profile;
+                other.machine.cpus = 1;
+                assert!(!other.machine.cpus().contains(&cpu));
+                assert!(other.save(&path).is_err());
+                assert_eq!(fs::read(&path).unwrap(), saved);
+            }
+            let mut moved = settings.machine.clone();
+            moved.cycle_profile();
+            assert_eq!(moved.cpu, CpuModel::R4400);
+            assert_eq!(moved.cpus, 1);
+            moved.validate().unwrap();
         }
     }
 

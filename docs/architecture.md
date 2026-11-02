@@ -94,7 +94,10 @@ Rust toolchain matches Iris. No emulator source is copied into this repository.
 The default is Indy IP24, R4400, 64 MB RAM, one Newport head, and no SCSI
 devices. General selects all five workstation profiles: Indy IP24, Indigo2 IP22,
 Indigo2 IMPACT IP28, O2 IP32 and Octane IP30. Indy supports R4400/R5000, IP22
-R4400, O2 R5000/R10000, and IP28/Octane R10000. Octane supports one or two CPUs. RAM presets
+R4400, O2 R5000/R10000, IP28 R10000, and Octane R10000/R12000/R14000.
+Octane supports one or two identical CPUs. Iris owns their identification,
+cache geometry and default Count rates (97.5/150/300 MHz); Prismatic persists
+the selected CPU and rejects the new models on other machines. RAM presets
 fill up to four banks, largest first, with per-bank limits of 128 MB on Indy/IP22,
 512 MB on IP28, 2048 MB on Octane, and 256 MB on O2. Total limits are 256 MB, 512 MB, 1 GiB,
 1 GiB and 8 GiB respectively. Frontend validation checks menu choices and the
