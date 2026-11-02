@@ -18,6 +18,7 @@ struct Backend {
     thread: Option<JoinHandle<()>>,
     rings: Rings,
     route: Ipv4Route,
+    #[cfg(iris_live_network)]
     control: Arc<iris::net::NatControl>,
 }
 
@@ -34,6 +35,7 @@ impl Backend {
         );
         let mut link = Link::open(&config.network()).unwrap().unwrap();
         let running = link.running();
+        #[cfg(iris_live_network)]
         let control = link.nat();
         let mut backend = link.backend().unwrap();
         running.store(true, Ordering::Release);
@@ -43,6 +45,7 @@ impl Backend {
             thread,
             rings: link.into_rings(),
             route,
+            #[cfg(iris_live_network)]
             control,
         }
     }
@@ -138,6 +141,7 @@ fn configured_nat_serves_tftp_and_nfs_from_selected_folders() {
 }
 
 #[test]
+#[cfg(iris_live_network)]
 fn live_nat_save_changes_forward_listeners_without_restarting_backend() {
     use std::net::{TcpListener, TcpStream};
     let reservation = TcpListener::bind("127.0.0.1:0").unwrap();

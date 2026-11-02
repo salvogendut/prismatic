@@ -12,7 +12,6 @@ use iris::{
     dev::ng1::rex3::Renderer,
     dev::ps2::Ps2Controller,
     disp::{BarStats, FB_MAX_H, FB_STRIDE, Rex3Screen, StatusBar, StatusBarTexture},
-    machine_state::GuestState,
     workstation::{MachineSlot, Workstation},
 };
 use std::{
@@ -231,7 +230,7 @@ pub fn machine_config(
         nveeprom: path("nveeprom.bin")?,
         banks: hardware.banks()?,
         scsi: media.iris_devices().into_iter().collect(),
-        no_audio: false,
+        no_audio: !crate::compat::AUDIO,
         headless: false,
         keyboard: hardware.keyboard,
         rtc_offset: advanced.rtc_offset(),
@@ -253,7 +252,7 @@ pub fn machine_config(
         ..MachineConfig::default()
     };
     config.machine.profile = hardware.profile;
-    config.machine.cpu = hardware.cpu;
+    config.machine.cpu = hardware.cpu.iris()?;
     config.machine.cpus = hardware.cpus;
     config.machine.cache = if hardware.newport() {
         advanced.cache
@@ -378,16 +377,20 @@ impl Emulator {
         let mut checkpoint_context =
             crate::checkpoints::Context::new(hardware, media, advanced, network);
         let mut network = network.clone();
-        let expert = advanced.expert.clone();
-        let extensions = advanced.extensions.clone();
+        let expert = advanced.expert.effective();
+        let extensions = advanced.extensions.effective();
         let audio = Arc::new(crate::audio::Inbox::default());
-        config.audio.output = Some(audio.clone());
+        #[cfg(iris_audio)]
+        {
+            config.audio.output = Some(audio.clone());
+        }
         // Attach explicitly before CPU start: Iris's CLI constructor exits the
         // process on media errors. The frontend must report them in the window.
         config.scsi.clear();
         let media = media.clone();
         let mut hardware = hardware.clone();
         let has_media = !media.devices.is_empty() || media.scratch.slot.is_some();
+        #[cfg(iris_poweroff)]
         iris::workstation::set_exit_on_guest_poweroff(false);
         let state_dir = state_dir.to_owned();
         let frames = FrameSlot::new(hardware.heads);
@@ -441,6 +444,7 @@ impl Emulator {
                     };
                     // Apply only saved settings, with the state lease held and
                     // the old workstation gone. Iris owns the firmware formats.
+                    #[cfg(iris_prom)]
                     iris::prom_env::prepare_environment(
                         &config,
                         hardware.prom_boot.environment().map(|(loader, filename, options)| [loader, filename, options]),
@@ -519,7 +523,7 @@ impl Emulator {
                             let _guard = owned.slot.lock();
                             // A monitor pause also stops the CPU. Only the core's
                             // completed power-off event may end the worker here.
-                            if owned.machine.status().state == GuestState::PoweredOff {
+                            if crate::compat::powered_off(owned.machine.as_ref()) {
                                 break Phase::PoweredOff;
                             }
                             let phase = if owned.machine.cpu_is_running() {
@@ -533,7 +537,7 @@ impl Emulator {
                                 phase,
                                 monitor: owned.machine.monitor_addr(),
                                 runtime: format!("{}\nVINO: {} / {} / camera {}\nDaynaPort: {} / {}\nUltra64: {}",
-                                    services.report(&serial, owned.machine.monitor_addr()), owned.machine.as_any_mut().downcast_mut::<iris::machine::Machine>().map_or_else(|| "Unavailable".into(), |m| m.vino_source_status()), if extensions.pal { "PAL" } else { "NTSC" }, extensions.camera_index,
+                                    services.report(&serial, owned.machine.monitor_addr()), crate::compat::vino_status(owned.machine.as_mut()), if extensions.pal { "PAL" } else { "NTSC" }, extensions.camera_index,
                                     extensions.daynaport.map_or_else(|| "Off".into(), |s| format!("SCSI {}:{}", s / 16, s % 16)), extensions.dayna_subnet,
                                     if extensions.ultra64 { "Enabled (external bridge)" } else { "Off" }),
                                 pcap: owned.machine.net_pcap_status(),
@@ -544,7 +548,7 @@ impl Emulator {
                             Ok(Command::Checkpoint(operation, name, network, reply)) => {
                                 let _guard = owned.slot.lock();
                                 checkpoint_context.set_network(*network);
-                                let (result, fatal) = if owned.machine.status().state == GuestState::PoweredOff {
+                                let (result, fatal) = if crate::compat::powered_off(owned.machine.as_ref()) {
                                     (Err("Machine powered off before the operation".into()), false)
                                 } else {
                                     crate::checkpoints::execute(owned.machine.as_mut(), &checkpoint_context, &state_dir, &name, operation, &mut paused)
@@ -556,7 +560,7 @@ impl Emulator {
                             Ok(Command::Storage(action, result)) => {
                                 let _guard = owned.slot.lock();
                                 let outcome =
-                                    if owned.machine.status().state == GuestState::PoweredOff {
+                                    if crate::compat::powered_off(owned.machine.as_ref()) {
                                         Err("Machine powered off before the operation".into())
                                     } else {
                                         crate::storage::live(
@@ -574,7 +578,7 @@ impl Emulator {
                                 // Paused. Keep device stop/start pairs balanced.
                                 if !paused {
                                     let _guard = owned.slot.lock();
-                                    if owned.machine.status().state != GuestState::PoweredOff {
+                                    if !crate::compat::powered_off(owned.machine.as_ref()) {
                                         owned.machine.stop();
                                         paused = true;
                                     }
@@ -584,7 +588,7 @@ impl Emulator {
                                 let _guard = owned.slot.lock();
                                 // Never undo a guest power-off that arrived while
                                 // waiting for a command. The next tick handles it.
-                                if owned.machine.status().state != GuestState::PoweredOff {
+                                if !crate::compat::powered_off(owned.machine.as_ref()) {
                                     owned.machine.start_guest()?;
                                     paused = false;
                                 }
@@ -720,6 +724,7 @@ mod tests {
     static MACHINE_TEST: Mutex<()> = Mutex::new(());
 
     #[test]
+    #[cfg(iris_prom)]
     fn console_preparation_is_optional_and_validates_all_octane_files_before_writing() {
         use iris::prom_env::{Console, prepare_environment};
         let dir = tempfile::tempdir().unwrap();
@@ -800,6 +805,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(iris_prom)]
     fn prom_boot_preparation_is_offline_atomic_and_errors_reach_the_ui() {
         use crate::settings::PromBoot;
         let dir = tempfile::tempdir().unwrap();
@@ -878,6 +884,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(iris_checkpoints)]
     fn native_checkpoint_restores_cpu_and_cow_disk_and_stays_paused() {
         use crate::checkpoints::{Context, Operation, execute};
         use iris::scsi::{ScsiDataLength, ScsiRequest, scsi_cmd};
@@ -1079,6 +1086,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(iris_devices)]
     fn optional_devices_attach_and_vino_releases_on_machine_drop() {
         let _serial = MACHINE_TEST.lock().unwrap();
         for _ in 0..2 {
@@ -1199,6 +1207,7 @@ mod tests {
 
     #[cfg(feature = "perfetto")]
     #[test]
+    #[cfg(iris_trace)]
     fn boot_traces_flush_and_each_boot_creates_a_separate_file() {
         let _serial = MACHINE_TEST.lock().unwrap();
         let directory = tempfile::tempdir().unwrap();
@@ -1245,6 +1254,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(iris_gdb, iris_vnc))]
     fn remote_services_disconnect_clients_and_release_ports_on_label_change() {
         use std::{
             io::Read,
@@ -1331,7 +1341,7 @@ mod tests {
         let _serial = MACHINE_TEST.lock().unwrap();
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let mut advanced = AdvancedSettings::default();
-        advanced.expert.gdb_port = Some(listener.local_addr().unwrap().port());
+        advanced.expert.monitor_port = listener.local_addr().unwrap().port();
         let dir = tempfile::tempdir().unwrap();
         let mut emulator = Emulator::spawn(
             dir.path(),
@@ -1346,7 +1356,7 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(
-            matches!(emulator.status().phase, Phase::Failed(ref error) if error.contains("GDB port"))
+            matches!(emulator.status().phase, Phase::Failed(ref error) if error.contains("Monitor port"))
         );
         assert!(emulator.input().is_none());
         assert!(!dir.path().join("nvram.bin").exists());
@@ -1380,6 +1390,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[cfg(all(iris_serial, iris_firmware))]
     fn worker_ptys_survive_pause_and_close_when_each_model_is_unloaded() {
         let _serial = MACHINE_TEST.lock().unwrap();
         for profile in MachineSettings::PROFILES {
@@ -1495,6 +1506,13 @@ mod tests {
                 ..Default::default()
             };
             hardware.cpu = hardware.cpus()[0];
+            if hardware.supports_prom_override() && !crate::compat::FIRMWARE {
+                let rom = dir.path().join("loop.bin");
+                let mut bytes = vec![0; 512 * 1024];
+                bytes[..4].copy_from_slice(&0x1000ffff_u32.to_be_bytes());
+                std::fs::write(&rom, bytes).unwrap();
+                hardware.set_prom(Some(rom.to_str().unwrap().into()));
+            }
             let mut media = MediaSettings::default();
             let slot = 16 + profile.max_scsi_id();
             media.devices.insert(
@@ -1583,6 +1601,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(iris_poweroff)]
     fn guest_power_off_finishes_worker_but_monitor_halt_does_not() {
         use std::{io::Read, net::TcpStream};
         let _serial = MACHINE_TEST.lock().unwrap();
@@ -1753,7 +1772,7 @@ mod tests {
         assert_eq!(config.machine.profile, MachineProfile::IndyIp24);
         assert_eq!(config.graphics.board, Some(GraphicsBoard::Newport));
         assert!(!config.headless);
-        assert!(!config.no_audio);
+        assert_eq!(config.no_audio, !crate::compat::AUDIO);
         assert_eq!(config.monitor_port, Some(0));
         assert!(config.port_forward.is_empty());
         assert!(config.nfs.is_none());
@@ -1973,7 +1992,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let mut hardware = MachineSettings {
                 profile,
-                cpu: iris::config::CpuModel::R10000,
+                cpu: crate::compat::CpuModel::R10000,
                 ..Default::default()
             };
             hardware.set_prom(Some(
@@ -2006,9 +2025,9 @@ mod tests {
         // A MIPS branch-to-self checks construction, SCSI attachment, PS/2 and
         // teardown with a deterministic guest program instead of waiting for PROM boot.
         for (profile, cpu) in [
-            (MachineProfile::O2Ip32, iris::config::CpuModel::R5000),
-            (MachineProfile::O2Ip32, iris::config::CpuModel::R10000),
-            (MachineProfile::OctaneIp30, iris::config::CpuModel::R10000),
+            (MachineProfile::O2Ip32, crate::compat::CpuModel::R5000),
+            (MachineProfile::O2Ip32, crate::compat::CpuModel::R10000),
+            (MachineProfile::OctaneIp30, crate::compat::CpuModel::R10000),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let mut prom = vec![0; 512 * 1024];
@@ -2092,7 +2111,7 @@ mod tests {
                 profile,
                 ..Default::default()
             };
-            for &cpu in hardware.cpus() {
+            for &cpu in hardware.cpus().iter().filter(|cpu| cpu.iris().is_ok()) {
                 for &ram_mb in hardware.ram_sizes() {
                     hardware.cpu = cpu;
                     hardware.ram_mb = ram_mb;
@@ -2105,7 +2124,7 @@ mod tests {
                     )
                     .unwrap();
                     assert_eq!(config.machine.profile, profile);
-                    assert_eq!(config.machine.cpu, cpu);
+                    assert_eq!(config.machine.cpu, cpu.iris().unwrap());
                     if !hardware.newport() {
                         assert_eq!(
                             config.graphics.resolution,

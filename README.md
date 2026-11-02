@@ -47,20 +47,38 @@ Dev/
   prismatic/
 ```
 
-Prismatic uses the local Iris library directly, including the fork's power-off,
-diagnostic routing, bundled O2/Octane firmware and frontend audio support.
-Prismatic `main` requires Iris branch `perf/sgiemu-port`, including the
-`prom_env::prepare_environment` and `MachineConfig.serial_backends` embedding APIs
-(performance base `66f5a59`).
-Update both checkouts together. This Iris branch builds on `xiri`, retaining
-the integration and compatibility work for NetBSD
-and other guest operating systems alongside IRIX. Keep using this Iris branch
-until its performance changes are integrated into `xiri`.
+Prismatic builds against our Iris fork's **`main`**, **`xiri`**, and
+**`perf/sgiemu-port`** branches. The default development checkout remains
+`perf/sgiemu-port`, based on `xiri` with NetBSD and other guest OS compatibility
+work alongside IRIX. Each binary links the Iris checkout present when built;
+rebuild Prismatic after changing that checkout.
 
-The Odyssey integration is on `feature/odyssey-vpro` in both repositories,
-based on `perf/sgiemu-port`. It incorporates Iris's existing `xiri` Odyssey
-implementation and Prismatic's newer `main` boot/console/serial fixes. Use
-the paired branches: the frontend consumes Iris's shared Octane graphics list.
+`build.rs` detects optional embedding APIs from the Iris sources, independently
+of branch names. Missing features are greyed out in the overlays, with a reason
+in the hint strip. Saved preferences remain in `prismatic.cfg` and machine
+stanzas; rebuilding against a core that provides the APIs enables them again.
+If the performance work merges into `xiri`, those APIs will be detected without
+another Prismatic branch-specific change.
+
+The current `main` core lacks several frontend hooks: SDL guest audio,
+diagnostic routing, PROM boot/console presets, PTY/Off serial routing, owned
+GDB/VNC services, per-machine affinity/cache controls, optional-device lifecycle
+support and paused checkpoint saving. Saved PTY/Off routes fall back to TCP at their saved port (0 for automatic);
+choose distinct ports if previously inactive ports conflict. TCP serial ports, normal graphics,
+raw disks, CDs, network services and supported CPU/JIT options remain usable.
+Protected CHD hard disks require the fork's CHD COW API; unavailable builds
+reject them before startup and accept raw images instead. `main` also requires
+external O2/Octane PROMs selected in General. Diagnostics stay on the console;
+guest audio is disabled when no SDL PCM hook exists. Network changes require
+restart on cores without persistent live-network overrides.
+
+On the current `xiri` revision, most embedding hooks are present; PROM presets,
+PTY/Off routing and the newer Octane CPU selections await their corresponding
+merges. General cycles only CPUs available in the linked core. A label saved
+with an unavailable CPU still loads, but boot asks you to select a supported
+CPU rather than silently replacing the hardware. **Connection status** lists
+which optional capabilities are unavailable in the current build.
+
 The root Cargo manifest preserves the fork's patched winit
 and block dependencies. Install Rust through rustup; `rust-toolchain.toml`
 selects `nightly-2026-10-28`, the toolchain used for the Iris performance work.
@@ -68,8 +86,16 @@ On a Fedora development system, install the native build dependencies:
 
 ```sh
 sudo dnf install gcc gcc-c++ make pkgconf-pkg-config sdl3-devel alsa-lib-devel clang-devel libpcap-devel
+# Iris perf/sgiemu-port:
 cargo run --release --locked --features pcap,idle-pause,perfetto,jitv2
+# Current Iris main/xiri (or omit --features for the interpreter):
+cargo run --release --locked --features pcap,idle-pause,jitv2
 ```
+
+The current `main`/`xiri` Odyssey code fails to compile with Iris's `perfetto` feature
+(missing `events::cfifo`/`events::swap` references); the performance branch carries
+the correction. Omit `perfetto` on affected checkouts. Tracing controls are grey
+when not built or when the owned tracing API is absent.
 
 The performance build enables Iris's experimental CPU JIT and its new integer
 register cache, alongside the RTC calendar cache. Keep `developer` disabled:
@@ -79,15 +105,16 @@ are workload-dependent; the branch's bare-metal results do not establish a
 Prismatic desktop or OS boot speedup.
 
 The current Iris library still compiles its winit/glutin, CPAL and camera
-modules. Prismatic uses its own SDL window and audio output; Iris's CPAL output
-is bypassed through a per-machine PCM handoff. libclang is needed to build the
+modules. Prismatic uses its own SDL window. Guest audio uses a per-machine PCM handoff
+when that API is available; otherwise it is disabled without opening CPAL. libclang is needed to build the
 Linux camera bindings.
 SDL is linked dynamically through the [`sdl3` Rust bindings](https://github.com/vhspace/sdl3-rs).
 SDL_ttf and a separate widget toolkit are not required. Linux is the first
 validated platform; Windows and macOS integration builds remain to be checked.
 
-All five models have bundled PROM firmware in our Iris fork; O2 and Octane also
-accept external overrides in General (see below). The default is diskless; only images
+With Iris bundled-firmware support, all five models include PROMs; otherwise
+O2 and Octane require external PROM files. General accepts these files or
+overrides (see below). The default is diskless; only images
 selected in Prismatic are attached. It does not read `iris.toml`, `prom.bin`,
 or default SCSI image paths from either checkout. Normal machine state is kept under
 SDL's per-user application directory, normally
@@ -359,11 +386,15 @@ avoid the core's alternate ROM search in the working directory. IMPACT and GBE
 use Iris's software-composed framebuffer through the same SDL display and capture
 path; F4/F6 retain the guest's native dimensions.
 
+The feature descriptions below apply when the linked Iris core exposes the
+required APIs. Greyed controls show their availability reason in the hint strip.
+
 ### O2 and Octane firmware
 
-Our Iris fork embeds O2 4.18 and Octane 4.9 as Rust byte arrays, just like its
-Indy and Indigo2 PROMs. Select the machine and leave **PROM firmware** at
-**Bundled with Iris**; no separate download or file selection is needed.
+The `xiri` and performance cores embed O2 4.18 and Octane 4.9 as Rust byte arrays,
+just like their Indy and Indigo2 PROMs. With that capability, leave **PROM
+firmware** at **Bundled with Iris**. On cores without it (currently `main`),
+**Use bundled** is greyed out and an external PROM is required before boot.
 
 To override the bundled image, use **General > PROM firmware > Choose file**.
 Choose the extracted `.bin` image, press F9, and confirm any requested restart.
@@ -498,10 +529,10 @@ Runtime status shows the active trace path and build features. Open the trace
 with the Perfetto UI. The `developer` feature also enables Iris's existing
 monitor device/GPU tracing commands; see the fork's `debug.md` for those commands.
 
-Optional controls show **Not built** and their saved value when unavailable.
-Enter restores the default JIT worker count or disables saved cache/tracing options
-when that feature is missing, so a configuration can be reused with a simpler build.
-Build flags are explicit:
+Unavailable controls are grey and retain their saved values. Enter and Backspace
+have no effect on those rows; the runtime uses supported defaults without rewriting
+the configuration. Build flags remain explicit (the Perfetto examples require a
+core with working Perfetto support):
 
 ```sh
 cargo run --release --locked --features pcap,idle-pause,perfetto

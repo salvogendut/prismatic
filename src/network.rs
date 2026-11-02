@@ -407,6 +407,9 @@ impl NetworkSettings {
     }
 
     pub fn requires_restart(&self, old: &Self) -> bool {
+        if !crate::compat::LIVE_NETWORK && self != old {
+            return true;
+        }
         let mut live_fields = old.clone();
         live_fields.nat_subnet = self.nat_subnet.clone();
         live_fields.forwards = self.forwards.clone();
@@ -575,7 +578,15 @@ impl NetworkSettings {
         } else {
             "The guest Ethernet cable is unplugged.".into()
         };
-        vec![detail.into(), address, "Subnet, forwards and PCAP interface apply live on Save; MAC, backend and folders require restart.".into()]
+        vec![
+            detail.into(),
+            address,
+            if crate::compat::LIVE_NETWORK {
+                "Subnet, forwards and PCAP interface apply live on Save; MAC, backend and folders require restart.".into()
+            } else {
+                "This Iris build requires restart for network changes; saved settings remain per label.".into()
+            },
+        ]
     }
 }
 
@@ -687,7 +698,7 @@ mod tests {
         live.nat_subnet = "10.45.0.0/24".into();
         live.forward_lan = true;
         live.forwards = settings.network.forwards.clone();
-        assert!(!live.requires_restart(&old));
+        assert_eq!(live.requires_restart(&old), !crate::compat::LIVE_NETWORK);
         let control = iris::net::NatControl::new();
         live.apply_live(&old, &control);
         use std::sync::atomic::Ordering;

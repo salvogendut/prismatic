@@ -1,7 +1,8 @@
+use crate::compat::CpuModel;
 use crate::media::MediaSettings;
 use iris::{
     config::{
-        CacheModel, CpuModel, GraphicsBoard, KeyboardLayout, MAX_BANKS, MachineProfile, RtcOffset,
+        CacheModel, GraphicsBoard, KeyboardLayout, MAX_BANKS, MachineProfile, RtcOffset,
         banks_from4,
     },
     dev::ng1::vc2_timings::NewportResolution,
@@ -58,6 +59,7 @@ impl PromConsole {
         }
     }
 
+    #[cfg(iris_prom)]
     pub fn environment(self) -> Option<iris::prom_env::Console> {
         match self {
             Self::KeepExisting => None,
@@ -113,6 +115,7 @@ impl PromBoot {
         }
     }
 
+    #[cfg(any(iris_prom, test))]
     pub fn environment(self) -> Option<(&'static str, &'static str, &'static str)> {
         match self {
             Self::KeepExisting => None,
@@ -212,7 +215,13 @@ impl MachineSettings {
         self.ram_mb = next(self.ram_mb, self.ram_sizes());
     }
     pub fn cycle_cpu(&mut self) {
-        self.cpu = next(self.cpu, self.cpus());
+        let available: Vec<_> = self
+            .cpus()
+            .iter()
+            .copied()
+            .filter(|cpu| cpu.iris().is_ok())
+            .collect();
+        self.cpu = next(self.cpu, &available);
     }
     pub fn cycle_keyboard(&mut self) {
         self.keyboard = next(self.keyboard, &KeyboardLayout::ALL);
@@ -321,7 +330,7 @@ impl MachineSettings {
             MachineProfile::IndyIp24 => &[Newport, Xz],
             MachineProfile::Indigo2Ip22 => &GraphicsBoard::ALL,
             MachineProfile::Indigo2Ip28 => &[SolidImpact, HighImpact, MaxImpact],
-            MachineProfile::OctaneIp30 => &GraphicsBoard::OCTANE,
+            MachineProfile::OctaneIp30 => &[SolidImpact, HighImpact, MaxImpact, V6, V8, V10, V12],
             MachineProfile::O2Ip32 => &[], // Integrated GBE, not a selectable board.
         }
     }
@@ -374,7 +383,13 @@ impl MachineSettings {
 
     pub fn prom_label(&self) -> String {
         self.prom_path().map_or_else(
-            || "Bundled with Iris".into(),
+            || {
+                if self.supports_prom_override() && !crate::compat::FIRMWARE {
+                    "External PROM required".into()
+                } else {
+                    "Bundled with Iris".into()
+                }
+            },
             |path| {
                 Path::new(path)
                     .file_name()
@@ -386,6 +401,9 @@ impl MachineSettings {
     }
 
     pub fn validate_prom(&mut self) -> Result<(), String> {
+        if self.supports_prom_override() && !crate::compat::FIRMWARE && self.prom_path().is_none() {
+            return Err("This Iris build requires an external PROM; select it in General".into());
+        }
         if let Some(path) = self.prom_path() {
             let path = inspect_prom(self.profile, Path::new(path))?;
             self.set_prom(Some(path));
@@ -922,9 +940,12 @@ mod tests {
         assert!(draft.machine_differs_from(&loaded));
         fs::write(&path, "[machine]\nprom_console = 'unknown'\n").unwrap();
         assert!(Settings::load(&path).is_err());
-        assert_eq!(PromConsole::KeepExisting.environment(), None);
-        assert_eq!(PromConsole::Graphics.environment().unwrap().value(), "g");
-        assert_eq!(PromConsole::Serial.environment().unwrap().value(), "d");
+        #[cfg(iris_prom)]
+        {
+            assert_eq!(PromConsole::KeepExisting.environment(), None);
+            assert_eq!(PromConsole::Graphics.environment().unwrap().value(), "g");
+            assert_eq!(PromConsole::Serial.environment().unwrap().value(), "d");
+        }
     }
 
     #[test]
@@ -1061,6 +1082,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(iris_octane_cpus)]
     fn octane_cpu_choices_persist_and_reject_other_machines() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("prismatic.cfg");
@@ -1563,8 +1585,13 @@ mod tests {
         for profile in [MachineProfile::O2Ip32, MachineProfile::OctaneIp30] {
             loaded.profile = profile;
             loaded.set_prom(None);
-            loaded.validate_prom().unwrap();
-            assert_eq!(loaded.prom_label(), "Bundled with Iris");
+            if crate::compat::FIRMWARE {
+                loaded.validate_prom().unwrap();
+                assert_eq!(loaded.prom_label(), "Bundled with Iris");
+            } else {
+                assert!(loaded.validate_prom().is_err());
+                assert_eq!(loaded.prom_label(), "External PROM required");
+            }
         }
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), saved_files);
         assert!(inspect_prom(MachineProfile::O2Ip32, &octane).is_err());

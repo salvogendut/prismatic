@@ -4,7 +4,7 @@ use crate::{
     settings::Settings,
 };
 use iris::{
-    block_node::{BlockNode, BlockStatus, ChdCdNode, CowNode, RawNode, open_chd_cow},
+    block_node::{BlockNode, BlockStatus, ChdCdNode, CowNode, RawNode},
     config::{MachineProfile, ScsiDeviceConfig, ScsiKind},
     scsi::{ScsiDevice, ScsiIdentity},
     workstation::Workstation,
@@ -209,6 +209,9 @@ impl Medium {
         if is_chd(&path).map_err(|e| e.to_string())? {
             match kind {
                 MediaKind::Disk => {
+                    if !cfg!(iris_chd_cow) {
+                        return Err("CHD hard disks require Iris protected CHD support; use a raw image with this build".into());
+                    }
                     let chd = libchdman_rs::Chd::open(name, false, None)
                         .map_err(|e| format!("Cannot read CHD: {e:?}"))?;
                     let geometry = libchdman_rs::hd::read_geometry(&chd)
@@ -675,7 +678,7 @@ pub(crate) fn open_node(medium: &Medium) -> io::Result<Box<dyn BlockNode>> {
     let path = Path::new(&medium.path);
     if is_chd(path)? {
         return match medium.kind {
-            MediaKind::Disk => open_chd_cow(&medium.path),
+            MediaKind::Disk => crate::compat::open_chd_cow(&medium.path),
             MediaKind::Cdrom => Ok(Box::new(ChdCdNode::open(&medium.path)?)),
         };
     }
@@ -906,6 +909,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(iris_chd_cow)]
     fn compressed_chd_disk_writes_persist_without_changing_base() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("disk.chd");
@@ -926,6 +930,7 @@ mod tests {
         write_and_reopen(&medium);
     }
 
+    #[cfg(iris_chd_cow)]
     fn hashless_chd(path: &Path) {
         let mut chd =
             libchdman_rs::Chd::create(path.to_str().unwrap(), 65536, 4096, 512, [0; 4]).unwrap();
@@ -941,6 +946,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(iris_chd_cow)]
     fn hashless_chd_writes_persist_and_rollback_without_changing_base() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("disk.chd");
@@ -972,6 +978,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(iris_chd_cow)]
     fn hashless_chd_recovers_after_legacy_empty_diff_failure() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("disk.chd");
@@ -984,6 +991,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(iris_chd_cow)]
     fn hashless_chd_never_bypasses_damaged_or_written_diffs() {
         for damaged in [false, true] {
             let dir = tempfile::tempdir().unwrap();
@@ -1099,7 +1107,7 @@ mod tests {
         let disk = raw(dir.path(), "disk.raw");
         let mut settings = Settings::default();
         settings.machine.profile = MachineProfile::O2Ip32;
-        settings.machine.cpu = iris::config::CpuModel::R5000;
+        settings.machine.cpu = crate::compat::CpuModel::R5000;
         settings.machine.set_prom(Some(
             crate::settings::inspect_prom(MachineProfile::O2Ip32, &prom).unwrap(),
         ));

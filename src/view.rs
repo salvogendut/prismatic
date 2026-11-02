@@ -282,7 +282,7 @@ fn short_ascii(value: &str, max: usize) -> String {
 }
 
 pub fn debug_rect(settings: &Settings) -> Option<Rect> {
-    if settings.debug_output != DebugOutput::Screen {
+    if !crate::compat::DIAGNOSTICS || settings.debug_output != DebugOutput::Screen {
         return None;
     }
     let bottom = HEIGHT - LED_HEIGHT - if settings.show_status { HINT_HEIGHT } else { 0 };
@@ -344,13 +344,15 @@ fn draw_overlay(
     let rows = session.rows();
     let hints: Vec<String> = match session.tab {
         Tab::General => vec![
-            if session.row == 12 {
+            if session.row == 2 && session.draft.machine.cpu.iris().is_err() {
+                "The saved CPU is unavailable in this Iris build. Enter chooses a supported CPU; other labels are preserved.".into()
+            } else if session.row == 12 {
                 session.draft.machine.prom_boot.hint().into()
             } else if session.row == 13 {
                 session.draft.machine.prom_console.hint(session.draft.machine.profile).into()
             } else if session.row == 7 {
                 session.draft.machine.prom_path().map(|p| short_ascii(p, 100)).unwrap_or_else(||
-                    "All models include bundled firmware. O2 and Octane also accept external PROMs.".into())
+                    if crate::compat::FIRMWARE { "All models include bundled firmware. O2 and Octane also accept external PROMs.".into() } else { "This Iris build needs external O2/Octane PROMs. Choose file to select one.".into() })
             } else if session.row >= 10 {
                 "Audio and volume apply on Save without restarting. Enter cycles volume down by 10%.".into()
             } else { "Machine changes keep compatible CPU/RAM choices; other values are adjusted.".into() },
@@ -418,6 +420,9 @@ fn draw_overlay(
         Tab::About => vec![],
         Tab::Network => session.draft.network.hints(session.row),
     };
+    let hints = session
+        .unavailable(session.row)
+        .map_or(hints, |reason| vec![reason.into()]);
     let hints: Vec<String> = hints
         .iter()
         .flat_map(|hint| wrap_ascii(hint, 100))
@@ -471,7 +476,7 @@ fn draw_overlay(
                 && match session.advanced_page {
                     crate::expert::Page::Core => index < 5,
                     crate::expert::Page::Performance => index < 8,
-                    crate::expert::Page::Connections => index < 6,
+                    crate::expert::Page::Connections => index < 8,
                     crate::expert::Page::Developer => index < 4,
                 })
             || (session.tab == Tab::Extensions
@@ -480,15 +485,27 @@ fn draw_overlay(
                     crate::extensions::Page::Devices => index < 7,
                     crate::extensions::Page::Checkpoints => false,
                 });
-        text(canvas, 20, y, label, TEXT)?;
+        let disabled = session.unavailable(index).is_some();
+        let grey = Color::RGB(116, 125, 138);
+        text(canvas, 20, y, label, if disabled { grey } else { TEXT })?;
         text(
             canvas,
             250,
             y,
             &short_ascii(value, if restart { 44 } else { 72 }),
-            Color::RGB(255, 208, 128),
+            if disabled
+                || (session.tab == Tab::General
+                    && index == 2
+                    && session.draft.machine.cpu.iris().is_err())
+            {
+                grey
+            } else {
+                Color::RGB(255, 208, 128)
+            },
         )?;
-        if restart {
+        if disabled {
+            text(canvas, 620, y, "Unavailable", grey)?;
+        } else if restart {
             text(canvas, 620, y, "Requires restart", MUTED)?;
         }
     }
@@ -573,7 +590,11 @@ fn draw_dialog(
         ),
         Dialog::Firmware { choice } => (
             "Choose PROM firmware for this machine",
-            "Choose an external ROM or use the firmware bundled with Iris. Extract ZIPs first.",
+            if crate::compat::FIRMWARE {
+                "Choose an external ROM or use the firmware bundled with Iris. Extract ZIPs first."
+            } else {
+                "This Iris build requires an external ROM. Bundled firmware is unavailable. Extract ZIPs first."
+            },
             vec!["Choose file", "Use bundled", "Cancel"],
             choice,
         ),
@@ -657,7 +678,11 @@ fn draw_dialog(
             button_x + (136 - label.len() as i32 * 8) / 2,
             y + 88,
             label,
-            TEXT,
+            if matches!(dialog, Dialog::Firmware { .. }) && index == 1 && !crate::compat::FIRMWARE {
+                Color::RGB(116, 125, 138)
+            } else {
+                TEXT
+            },
         )?;
     }
     text(

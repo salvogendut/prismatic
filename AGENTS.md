@@ -6,11 +6,16 @@
   them; read its `AGENTS.md` before editing the fork.
 - Prismatic `main` uses the user-requested `perf/sgiemu-port` branch of
   `../iris` (based on `xiri`) after integrating the performance build. Keep this
-  Iris branch until its performance changes are integrated into `xiri`.
+  Iris branch as the default until its performance changes are integrated into `xiri`.
   Build with `pcap,idle-pause,perfetto,jitv2`, without `developer`: developer
   instrumentation disables the new GPR cache. Check the Iris branch before
-  working; do not substitute upstream
-  `main` or the former `xiri/netbsd-newport` branch. Preserve NetBSD and other
+  working. Prismatic also supports the fork's `main` and `xiri` branches:
+  detect optional embedding APIs from the checked-out sources in `build.rs`,
+  never from the branch name. A future merge of performance work into `xiri`
+  must enable the corresponding capabilities automatically after rebuilding.
+  Grey out unavailable controls, preserve saved preferences, and test all three
+  branches in isolated checkouts. Do not switch the active Iris checkout merely
+  for compatibility tests or use the former `xiri/netbsd-newport` branch. Preserve NetBSD and other
   guest OS compatibility when integrating changes; do not assume IRIX-only use.
 - Match the native Happy Years UI conventions in `../1984`, `../1985`,
   `../1986`, and especially `../1989`: emulator-first window, F9 overlay,

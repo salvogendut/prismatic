@@ -58,6 +58,14 @@ impl Default for ExtensionsSettings {
     }
 }
 impl ExtensionsSettings {
+    pub fn effective(&self) -> Self {
+        if crate::compat::DEVICES {
+            self.clone()
+        } else {
+            Self::default()
+        }
+    }
+
     pub fn dayna_config(&self) -> ScsiDeviceConfig {
         ScsiDeviceConfig {
             kind_field: ScsiKind::Daynaport,
@@ -107,19 +115,21 @@ impl ExtensionsSettings {
         Ok(())
     }
     pub fn apply(&self, config: &mut MachineConfig) {
-        config.vino.source = match self.vino {
+        let effective = self.effective();
+        let this = &effective;
+        config.vino.source = match this.vino {
             Source::Off => VinoSource::Off,
             Source::Camera => VinoSource::Camera,
             Source::Black => VinoSource::Black,
             Source::TestPattern => VinoSource::TestPattern,
         };
-        config.vino.standard = if self.pal {
+        config.vino.standard = if this.pal {
             VinoStandard::Pal
         } else {
             VinoStandard::Ntsc
         };
-        config.vino.camera_index = self.camera_index;
-        config.ultra64.enabled = self.ultra64;
+        config.vino.camera_index = this.camera_index;
+        config.ultra64.enabled = this.ultra64;
     }
     pub fn attach(
         &self,
@@ -129,6 +139,7 @@ impl ExtensionsSettings {
             .as_any_mut()
             .downcast_mut::<iris::machine::Machine>()
         {
+            #[cfg(iris_devices)]
             if self.ultra64 && !machine.has_ultra64() {
                 return Err("Ultra64 bridge could not initialize (already in use or unavailable); enable Console debug for details".into());
             }

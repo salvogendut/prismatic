@@ -1,5 +1,35 @@
 # Frontend and Iris integration
 
+## Iris compatibility
+
+`build.rs` examines the sibling Iris sources for individual public embedding
+APIs and emits checked `iris_*` cfgs. It watches each relevant source (or its
+parent if a module is absent), so changing branches reruns detection. It does
+not inspect branch names: merging performance/embedding work into `xiri`
+automatically exposes the new capabilities on the next rebuild. Supported
+baselines are `main` at `2eb811f`, `xiri` at `e049373`, and `perf/sgiemu-port`
+at `59c2f16`. Older arbitrary Iris revisions are not a supported API contract.
+
+`compat` centralizes capability flags and small adapters. The native audio,
+diagnostic and serial implementations are selected only when their APIs exist.
+Legacy serial uses Iris's own TCP listeners and console port reporting; no PTY
+or Off route is emulated. Legacy diagnostics stay on the console and guest
+audio is disabled. Protected CHD disks fail validation without the COW API.
+Older Iris needs external O2/Octane PROM files; the bundled choice is disabled.
+A safe startup re-exec sets Iris's documented power-off environment override
+when the embedding setter is absent. Such cores report guest shutdown as halted
+rather than the fork's distinct powered-off state.
+
+Overlay row availability is shared by rendering and keyboard dispatch. Disabled
+rows stay selectable for their explanation but ignore Enter/Backspace. Numeric
+editors and runtime actions cannot be opened through those rows. Saved settings
+are not rewritten to defaults: expert/device settings have a separate runtime
+projection. The frontend owns its saved CPU enum, so unavailable newer CPUs
+round-trip across builds; boot refuses them and General cycles supported choices.
+Safe paused checkpoints, owned remote services and per-machine affinity/JIT cache
+management require their corresponding lifecycle APIs. Live network changes
+fall back to restart confirmation on cores without persistent runtime overrides.
+
 ## Performance build
 
 Prismatic `main` uses the sibling Iris branch `perf/sgiemu-port`, with performance
@@ -51,6 +81,7 @@ including when the hints are hidden.
 
 | Module | Responsibility |
 | --- | --- |
+| `build.rs`, `src/compat.rs` | Source API detection, compatibility adapters and runtime capability report |
 | `src/main.rs` | CLI, SDL lifecycle, events, texture uploads, asynchronous shutdown, smoke runs |
 | `src/emulator.rs` | Validated Iris configuration and media attachment, worker ownership, bundled firmware, frame capture, latest-frame slot, machine status |
 | `src/input.rs` | Host/modal key routing, physical scancode mapping, held guest input, PS/2 delivery |
@@ -74,11 +105,9 @@ including when the hints are hidden.
 
 ## Core boundary
 
-The `feature/odyssey-vpro` integration branches start from `perf/sgiemu-port`
-and incorporate the existing Iris `xiri` Odyssey engine. Prismatic also keeps
-the four newer `main` commits for boot presets, console presets and serial
-routing. Octane's selector uses `GraphicsBoard::OCTANE` from Iris so both
-frontends expose the same IMPACT and VPro cards. The existing `Workstation`
+The Odyssey integration incorporates Iris's existing `xiri` engine. Octane's
+selector uses the IMPACT and VPro enum variants shared by all three supported
+cores, without requiring the newer `GraphicsBoard::OCTANE` convenience constant. The existing `Workstation`
 display/renderer interface carries Odyssey frames without a special frontend
 rasterizer. Settings reject VPro on other profiles and reject a second head;
 per-label persistence and restart confirmation use the existing machinery.

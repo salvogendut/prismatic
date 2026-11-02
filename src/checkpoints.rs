@@ -91,6 +91,9 @@ pub fn capability(
     media: &MediaSettings,
     advanced: &AdvancedSettings,
 ) -> Result<(), String> {
+    if !crate::compat::CHECKPOINTS {
+        return Err("Paused checkpoints are unavailable in this Iris build".into());
+    }
     if !matches!(
         hardware.profile,
         MachineProfile::IndyIp24 | MachineProfile::Indigo2Ip22
@@ -106,7 +109,8 @@ pub fn capability(
     if media.scratch.slot.is_some() || media.devices.values().any(|m| m.kind != MediaKind::Disk) {
         return Err("Only raw COW hard disks or diskless machines; detach CDs and scratch".into());
     }
-    if advanced.expert.gdb_port.is_some() || advanced.expert.trace_on_boot {
+    let expert = advanced.expert.effective();
+    if expert.gdb_port.is_some() || expert.trace_on_boot {
         return Err("Disable GDB and boot tracing for checkpoints".into());
     }
     Ok(())
@@ -284,8 +288,8 @@ pub fn execute(
                     .prefix(".saving-")
                     .tempdir_in(&root)
                     .map_err(|e| e.to_string())?;
-                native.set_snapshot_context(temporary.path().into(), disks.clone());
-                native.save_snapshot_paused("state")?;
+                crate::compat::snapshot_context(native, temporary.path().into(), disks.clone());
+                crate::compat::save_snapshot(native, "state")?;
                 let manifest = Manifest {
                     version: 1,
                     build: hash(&std::env::current_exe().map_err(|e| e.to_string())?)?,
@@ -301,9 +305,9 @@ pub fn execute(
                 fs::rename(temporary.path(), &destination).map_err(|e| e.to_string())?;
                 Ok(format!("Saved checkpoint {name}"))
             } else {
-                native.set_snapshot_context(destination.clone(), disks.clone());
+                crate::compat::snapshot_context(native, destination.clone(), disks.clone());
                 fatal = true;
-                native.load_snapshot_paused("state")?;
+                crate::compat::load_snapshot(native, "state")?;
                 fatal = false;
                 Ok(format!(
                     "Restored {name}. PAUSED - Ctrl+P resumes. Network connections and audio may need restarting."
@@ -315,7 +319,7 @@ pub fn execute(
             .as_any_mut()
             .downcast_mut::<iris::machine::Machine>()
         {
-            native.set_snapshot_context(state.join("monitor-saves"), disks);
+            crate::compat::snapshot_context(native, state.join("monitor-saves"), disks);
         }
         if operation == Operation::Save && running {
             machine.start_guest()?;
@@ -341,7 +345,11 @@ mod tests {
             &Default::default(),
             &Default::default(),
         );
-        context.capability().unwrap();
+        assert_eq!(context.capability().is_ok(), crate::compat::CHECKPOINTS);
+        if !crate::compat::TRACE {
+            context.advanced.expert.trace_on_boot = true;
+            assert_eq!(context.capability().is_ok(), crate::compat::CHECKPOINTS);
+        }
         context.hardware.heads = 2;
         assert!(context.capability().is_err());
     }

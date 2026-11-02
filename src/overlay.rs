@@ -203,6 +203,69 @@ impl Session {
         }
     }
 
+    /// One policy for drawing and input: unavailable rows remain navigable so
+    /// their explanation is visible, but cannot change drafts or launch actions.
+    pub fn unavailable(&self, row: usize) -> Option<&'static str> {
+        use crate::compat as c;
+        match (self.tab, row) {
+            (Tab::General, 10 | 11) if !c::AUDIO => Some(
+                "This Iris build has no frontend audio output API. Saved audio preferences are retained.",
+            ),
+            (Tab::General, 12 | 13) if !c::PROM => Some(
+                "This Iris build has no PROM preset API. Use the PROM command monitor; saved presets are retained.",
+            ),
+            (Tab::Advanced, 6) if self.advanced_page == Page::Core && !c::DIAGNOSTICS => Some(
+                "This Iris build writes diagnostics directly to the console; screen/off routing is unavailable.",
+            ),
+            (Tab::Advanced, row) if self.advanced_page == Page::Performance => match row {
+                1 if !iris::build_features::IDLE_PAUSE => {
+                    Some("Idle parking requires an Iris build with idle-pause.")
+                }
+                2..=5 if !c::AFFINITY => Some(
+                    "This Iris build has no per-machine host affinity API. Saved core preferences are retained.",
+                ),
+                6 if !iris::build_features::JITV2 => {
+                    Some("JIT compiler workers require a build with jitv2.")
+                }
+                7 if !c::JIT_CACHE => {
+                    Some("JIT disk caching requires jitv2 and Iris's per-machine cache API.")
+                }
+                _ => None,
+            },
+            (Tab::Advanced, row) if self.advanced_page == Page::Connections => match row {
+                1 | 3 if !c::SERIAL => Some(
+                    "This Iris build supports TCP serial only. PTY/Off preferences are retained; unsupported routes use TCP at the saved ports (0 for automatic).",
+                ),
+                5 if !c::GDB => Some(
+                    "This Iris build has no owned GDB service API, or was built with lightning.",
+                ),
+                6 | 7 if !c::VNC => Some(
+                    "This Iris build has no VNC service lifecycle API suitable for embedded machines.",
+                ),
+                _ => None,
+            },
+            (Tab::Advanced, 1..=3) if self.advanced_page == Page::Developer && !c::TRACE => {
+                Some("Boot tracing requires perfetto and Iris's owned tracing lifecycle API.")
+            }
+            (Tab::Extensions, 0..=6)
+                if self.extensions_page == ExtensionsPage::Devices && !c::DEVICES =>
+            {
+                Some(
+                    "This Iris build lacks the optional-device lifecycle APIs needed by Prismatic.",
+                )
+            }
+            (Tab::Extensions, 2 | 3)
+                if self.extensions_page == ExtensionsPage::Checkpoints && !c::CHECKPOINTS =>
+            {
+                Some("This Iris build has no safe paused checkpoint API.")
+            }
+            (Tab::Network, 2 | 5) if !cfg!(feature = "pcap") => {
+                Some("PCAP interfaces require a build with the pcap feature.")
+            }
+            _ => None,
+        }
+    }
+
     pub fn rows(&self) -> Vec<(&'static str, String)> {
         let on_off = |value| if value { "On".into() } else { "Off".into() };
         match self.tab {
@@ -211,7 +274,17 @@ impl Session {
                 ("RAM", format!("{} MB", self.draft.machine.ram_mb)),
                 (
                     "CPU",
-                    if self.draft.machine.cpus().len() == 1 {
+                    if self.draft.machine.cpu.iris().is_err() {
+                        format!("{} (unavailable)", self.draft.machine.cpu.label())
+                    } else if self
+                        .draft
+                        .machine
+                        .cpus()
+                        .iter()
+                        .filter(|cpu| cpu.iris().is_ok())
+                        .count()
+                        == 1
+                    {
                         format!("{} (fixed)", self.draft.machine.cpu.label())
                     } else {
                         self.draft.machine.cpu.label().into()
@@ -899,6 +972,7 @@ impl Overlay {
                     self.busy = true;
                     return Effect::PickProm;
                 }
+                (Dialog::Firmware { choice: 1 }, Key::Enter) if !crate::compat::FIRMWARE => {}
                 (Dialog::Firmware { choice: 1 }, Key::Enter) => {
                     self.session.as_mut().unwrap().draft.machine.set_prom(None);
                     self.dialog = None;
@@ -963,6 +1037,7 @@ impl Overlay {
                     session.row = (session.row + step) % count;
                 }
             }
+            Key::Enter | Key::Backspace if session.unavailable(session.row).is_some() => {}
             Key::Enter => match (session.tab, session.row) {
                 (Tab::General, 8) => {
                     session.draft.next_machine();
@@ -1257,6 +1332,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(all(iris_devices, iris_checkpoints))]
     fn optional_devices_are_drafts_and_checkpoint_restore_requires_confirmation() {
         let live = Settings {
             tinker: true,
@@ -1310,7 +1386,7 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_saved_features_can_be_cleared_without_editing_the_file() {
+    fn unavailable_rows_ignore_enter_and_backspace_without_losing_saved_preferences() {
         let mut live = Settings {
             tinker: true,
             ..Default::default()
@@ -1318,42 +1394,46 @@ mod tests {
         live.advanced.expert.jit_threads = 4;
         live.advanced.expert.jit_cache = true;
         live.advanced.expert.trace_on_boot = true;
+        live.advanced.expert.serial_b = crate::serial::Route::Pty;
+        live.machine.prom_boot = crate::settings::PromBoot::Netbsd;
         let mut overlay = Overlay::default();
         overlay.key(Key::Options, &live);
-        if !iris::build_features::JITV2 {
-            let session = overlay.session.as_mut().unwrap();
-            session.tab = Tab::Advanced;
-            session.advanced_page = Page::Performance;
-            session.row = 6;
-            overlay.key(Key::Enter, &live);
-            overlay.key(Key::Down, &live);
-            overlay.key(Key::Enter, &live);
-            let draft = &overlay.session.as_ref().unwrap().draft.advanced.expert;
-            assert_eq!(draft.jit_threads, 1);
-            assert!(!draft.jit_cache);
+        for tab in [Tab::General, Tab::Advanced, Tab::Extensions, Tab::Network] {
+            for page in [
+                Page::Core,
+                Page::Performance,
+                Page::Connections,
+                Page::Developer,
+            ] {
+                for extension in [
+                    ExtensionsPage::Hardware,
+                    ExtensionsPage::Devices,
+                    ExtensionsPage::Checkpoints,
+                ] {
+                    let session = overlay.session.as_mut().unwrap();
+                    session.tab = tab;
+                    session.advanced_page = page;
+                    session.extensions_page = extension;
+                    let count = session.rows().len();
+                    for row in 0..count {
+                        let session = overlay.session.as_mut().unwrap();
+                        session.row = row;
+                        if session.unavailable(row).is_none() {
+                            continue;
+                        }
+                        assert_eq!(overlay.key(Key::Enter, &live), Effect::None);
+                        assert_eq!(overlay.key(Key::Backspace, &live), Effect::None);
+                        assert!(overlay.text_edit.is_none());
+                        assert!(overlay.dialog.is_none());
+                        assert_eq!(overlay.session.as_ref().unwrap().draft, live);
+                    }
+                }
+            }
         }
-        if !cfg!(feature = "perfetto") {
-            let session = overlay.session.as_mut().unwrap();
-            session.tab = Tab::Advanced;
-            session.advanced_page = Page::Developer;
-            session.row = 1;
-            overlay.key(Key::Enter, &live);
-            assert!(
-                !overlay
-                    .session
-                    .as_ref()
-                    .unwrap()
-                    .draft
-                    .advanced
-                    .expert
-                    .trace_on_boot
-            );
-        }
-        assert!(live.advanced.expert.trace_on_boot);
-        assert!(live.advanced.expert.jit_cache);
     }
 
     #[test]
+    #[cfg(iris_serial)]
     fn serial_routing_and_ports_are_drafts_and_failed_save_keeps_them_open() {
         use crate::serial::Route;
         let live = Settings {
@@ -1590,7 +1670,7 @@ mod tests {
     fn media_bus_selector_handles_wide_targets_and_unavailable_assignments() {
         let mut live = Settings::default();
         live.machine.profile = iris::config::MachineProfile::OctaneIp30;
-        live.machine.cpu = iris::config::CpuModel::R10000;
+        live.machine.cpu = crate::compat::CpuModel::R10000;
         live.media.devices.insert(
             31,
             Medium {
@@ -1663,7 +1743,10 @@ mod tests {
         let Effect::Save(draft) = overlay.key(Key::Options, &live) else {
             panic!("Expected Save");
         };
-        assert!(!draft.machine_differs_from(&live));
+        assert_eq!(
+            draft.machine_differs_from(&live),
+            !crate::compat::LIVE_NETWORK
+        );
         assert_eq!(draft.network.nat_subnet, "10.23.0.0/24");
         overlay.confirm_restart();
         overlay.key(Key::Enter, &live); // Cancel restart keeps draft.
@@ -1675,6 +1758,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "pcap")]
     fn network_pickers_only_edit_drafts_and_tinker_does_not_clear_settings() {
         let live = Settings::default();
         let mut overlay = network_overlay(&live);
@@ -1806,6 +1890,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(iris_audio)]
     fn audio_edits_are_drafts_and_do_not_require_a_machine_restart() {
         let live = Settings::default();
         let mut overlay = Overlay::default();
@@ -1830,6 +1915,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(iris_prom)]
     fn prom_console_is_a_restart_draft_and_discard_preserves_live_settings() {
         use crate::settings::PromConsole;
         let live = Settings::default();
@@ -1865,6 +1951,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(iris_prom)]
     fn prom_boot_is_a_restart_draft_and_survives_save_failure() {
         use crate::settings::PromBoot;
         let live = Settings::default();
@@ -1902,10 +1989,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg(iris_firmware)]
     fn bundled_firmware_selection_stays_in_the_draft_until_saved() {
         let mut live = Settings::default();
         live.machine.profile = iris::config::MachineProfile::OctaneIp30;
-        live.machine.cpu = iris::config::CpuModel::R10000;
+        live.machine.cpu = crate::compat::CpuModel::R10000;
         live.machine.set_prom(Some("/missing/override.bin".into()));
         let mut overlay = Overlay::default();
         overlay.key(Key::Options, &live);
@@ -1933,7 +2021,7 @@ mod tests {
             ..Default::default()
         };
         live.machine.profile = iris::config::MachineProfile::O2Ip32;
-        live.machine.cpu = iris::config::CpuModel::R5000;
+        live.machine.cpu = crate::compat::CpuModel::R5000;
         let mut overlay = Overlay::default();
         for key in [Key::Options, Key::Right, Key::Right] {
             overlay.key(key, &live);
@@ -1983,6 +2071,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(iris_diagnostics)]
     fn debug_changes_are_drafts_until_saved_and_discard_restores_output() {
         use crate::settings::DebugOutput;
         let live = Settings {

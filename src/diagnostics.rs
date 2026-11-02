@@ -107,6 +107,11 @@ impl Write for ScreenText {
     }
 }
 
+pub use iris::diagnostics::stderr;
+pub fn install(log: std::sync::Arc<DebugLog>) {
+    iris::diagnostics::set_sink(Some(log));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,7 +1,16 @@
 mod activity;
+#[cfg(iris_audio)]
+mod audio;
+#[cfg(not(iris_audio))]
+#[path = "compat/audio.rs"]
 mod audio;
 mod capture;
 mod checkpoints;
+mod compat;
+#[cfg(iris_diagnostics)]
+mod diagnostics;
+#[cfg(not(iris_diagnostics))]
+#[path = "compat/diagnostics.rs"]
 mod diagnostics;
 mod display;
 mod emulator;
@@ -209,6 +218,7 @@ fn release_input(
 }
 
 fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
+    compat::initialize_host()?;
     let sdl = sdl3::init()?;
     let video = sdl.video()?;
     let machine_smoke = options.boot_smoke_test
@@ -239,9 +249,9 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         settings.select_machine(label)?;
     }
     let debug_log = Arc::new(diagnostics::DebugLog::new(settings.debug_output));
-    iris::diagnostics::set_sink(Some(debug_log.clone()));
+    diagnostics::install(debug_log.clone());
     let mut debug_lines = Vec::new();
-    iris::diagnostics::stderr(format_args!("Prismatic: configuration {}", path.display()));
+    diagnostics::stderr(format_args!("Prismatic: configuration {}", path.display()));
     if let Some(keyboard) = options.keyboard {
         settings.machine.keyboard = keyboard;
     }
@@ -732,7 +742,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                         let message = emulator.as_ref().map(|e| {
                             let status = e.status();
                             if status.runtime.is_empty() { status.phase.label().to_owned() } else { status.runtime }
-                        }).unwrap_or_else(|| format!("No machine loaded. Ctrl+P boots the saved configuration.\nBuild features: {}", iris::build_features::enabled().join(", ")));
+                        }).unwrap_or_else(|| format!("No machine loaded. Ctrl+P boots the saved configuration.\nBuild features: {}\n{}", iris::build_features::enabled().join(", "), compat::report()));
                         overlay.show_report(message);
                     }
                     Effect::None => {}
@@ -940,7 +950,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 if next.monitor != status.monitor
                     && let Some(address) = next.monitor
                 {
-                    iris::diagnostics::stderr(format_args!("Prismatic: Iris monitor at {address}"));
+                    diagnostics::stderr(format_args!("Prismatic: Iris monitor at {address}"));
                 }
                 if let Phase::Failed(error) = &next.phase {
                     eprintln!("Prismatic: {error}");
@@ -979,7 +989,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 texture.update(None, &next.rgba, next.width as usize * 4)?;
                 if machine_smoke && first_content.is_none() && has_picture(&next) {
                     first_content = Some(Instant::now());
-                    iris::diagnostics::stderr(format_args!(
+                    diagnostics::stderr(format_args!(
                         "Prismatic: guest display content received ({}x{})",
                         next.width, next.height
                     ));

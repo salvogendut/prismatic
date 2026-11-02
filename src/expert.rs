@@ -103,9 +103,42 @@ impl Default for ExpertSettings {
     }
 }
 impl ExpertSettings {
+    /// Runtime projection only: unavailable preferences remain in the saved draft.
+    pub fn effective(&self) -> Self {
+        let mut settings = self.clone();
+        if !crate::compat::AFFINITY {
+            settings.thread_affinity = false;
+            settings.cpu_core = None;
+            settings.rex3_core = None;
+            settings.refresh_core = None;
+        }
+        if !iris::build_features::JITV2 {
+            settings.jit_threads = 1;
+        }
+        if !crate::compat::JIT_CACHE {
+            settings.jit_cache = false;
+        }
+        if !crate::compat::GDB {
+            settings.gdb_port = None;
+        }
+        if !crate::compat::VNC {
+            settings.vnc_port = None;
+        }
+        if !crate::compat::TRACE {
+            settings.trace_on_boot = false;
+        }
+        if !crate::compat::SERIAL {
+            settings.serial_a = crate::serial::Route::Tcp;
+            settings.serial_b = crate::serial::Route::Tcp;
+        }
+        settings
+    }
+
     pub fn validate(&self) -> Result<(), String> {
-        self.serial_a.validate()?;
-        self.serial_b.validate()?;
+        if crate::compat::SERIAL {
+            self.serial_a.validate()?;
+            self.serial_b.validate()?;
+        }
         if !(1..=64).contains(&self.jit_threads) {
             return Err("JIT compiler workers must be 1-64".into());
         }
@@ -151,12 +184,16 @@ impl ExpertSettings {
         Ok(())
     }
     pub fn validate_runtime(&self, profile: MachineProfile) -> Result<(), String> {
+        self.effective().validate_available(profile)
+    }
+    fn validate_available(&self, profile: MachineProfile) -> Result<(), String> {
         self.validate()?;
         if self.boot_elf.is_some()
             && matches!(profile, MachineProfile::O2Ip32 | MachineProfile::OctaneIp30)
         {
             return Err("Iris supports direct ELF loading on Indy and Indigo2 only".into());
         }
+        #[cfg(iris_affinity)]
         if self.thread_affinity {
             let available = iris::thread_affinity::available_cores()
                 .ok_or("Host thread affinity is unavailable on this platform")?;
@@ -206,6 +243,9 @@ impl ExpertSettings {
         Ok(())
     }
     pub fn apply(&self, config: &mut MachineConfig) -> Result<(), String> {
+        self.effective().apply_available(config)
+    }
+    fn apply_available(&self, config: &mut MachineConfig) -> Result<(), String> {
         self.validate_runtime(config.machine.profile)?;
         config.clock.fixed_mhz = self.count_mhz.map(f64::from);
         config.perf.thread_affinity = self.thread_affinity;
@@ -244,7 +284,7 @@ impl ExpertSettings {
         iris::thread_affinity::init(config.perf.clone());
         #[cfg(feature = "idle-pause")]
         iris::cpu::idle_park::set_idle_park_enabled(self.idle_parking);
-        #[cfg(feature = "jitv2")]
+        #[cfg(all(feature = "jitv2", iris_jit_cache))]
         iris::cpu::jitv2::pcache::configure(
             self.jit_cache.then(|| _state.join("jit-cache")).as_deref(),
         )?;
@@ -344,7 +384,7 @@ fn port_label(port: Option<u16>) -> String {
 
 fn serial_port_label(route: crate::serial::Route, port: u16) -> String {
     let label = port_label(Some(port));
-    if route == crate::serial::Route::Tcp {
+    if route == crate::serial::Route::Tcp || !crate::compat::SERIAL {
         label
     } else {
         format!("{label} (saved; TCP inactive)")
@@ -394,7 +434,7 @@ impl Field {
                 "Host processor ID, or blank/auto for scheduler choice. REX3 fields affect Newport only."
             }
             Self::JitThreads => {
-                "1-64 workers; experimental jitv2 build required. Without it, Enter restores 1."
+                "1-64 workers; experimental jitv2 build required. Unavailable builds retain the saved value."
             }
             Self::Monitor => {
                 "TCP port 1-65535, or 0/auto for automatic. Loopback only; applies after restart."
@@ -509,7 +549,7 @@ pub fn hint(page: Page, row: usize) -> &'static str {
         (Page::Performance, 2..=5) => Field::CpuCore.hint(),
         (Page::Performance, 6) => Field::JitThreads.hint(),
         (Page::Performance, 7) => {
-            "Per-label compiled-page reuse. Requires jitv2; Enter clears the setting when not built."
+            "Per-label compiled-page reuse. Requires jitv2 and the per-machine cache API."
         }
         (Page::Connections, 0) => Field::Monitor.hint(),
         (Page::Connections, 1 | 3) => {
@@ -523,7 +563,7 @@ pub fn hint(page: Page, row: usize) -> &'static str {
         }
         (Page::Developer, 0) => Field::BootElf.hint(),
         (Page::Developer, 1) => {
-            "New trace per boot in the label state folder. Requires perfetto; Enter clears when not built."
+            "New trace per boot in the label state folder. Requires perfetto and the owned tracing API."
         }
         (Page::Developer, 2) => Field::TraceCategories.hint(),
         (Page::Developer, 3) => {
@@ -536,9 +576,9 @@ pub fn hint(page: Page, row: usize) -> &'static str {
 /// Drop before stopping/replacing the workstation. These handles keep remote
 /// clients from retaining the CPU or input devices of an earlier label.
 pub struct Services {
-    gdb: Option<iris::gdb_stub::GdbServer>,
+    gdb: Option<crate::compat::GdbServer>,
     vnc: Option<iris::vnc::VncServer>,
-    #[cfg(feature = "perfetto")]
+    #[cfg(all(feature = "perfetto", iris_trace))]
     trace: Option<std::path::PathBuf>,
 }
 impl Services {
@@ -546,12 +586,12 @@ impl Services {
         let services = Self {
             gdb: None,
             vnc: None,
-            #[cfg(feature = "perfetto")]
+            #[cfg(all(feature = "perfetto", iris_trace))]
             trace: None,
         };
-        #[cfg(feature = "perfetto")]
+        #[cfg(all(feature = "perfetto", iris_trace))]
         let mut services = services;
-        #[cfg(feature = "perfetto")]
+        #[cfg(all(feature = "perfetto", iris_trace))]
         if _settings.trace_on_boot {
             let directory = _state.join("traces");
             std::fs::create_dir_all(&directory).map_err(|e| format!("Trace folder: {e}"))?;
@@ -588,7 +628,7 @@ impl Services {
     ) -> Result<(), String> {
         if let Some(port) = settings.gdb_port {
             self.gdb = Some(
-                iris::gdb_stub::GdbServer::start(port, machine.get_cpu_debug())
+                crate::compat::GdbServer::start(port, machine.get_cpu_debug())
                     .map_err(|e| format!("GDB: {e}"))?,
             );
         }
@@ -623,21 +663,22 @@ impl Services {
             ),
             "Remote services bind to loopback, without authentication.".into(),
             iris::thread_affinity::status_line(),
+            crate::compat::report(),
             format!(
                 "Build features: {}",
                 iris::build_features::enabled().join(", ")
             ),
         ];
-        #[cfg(feature = "perfetto")]
+        #[cfg(all(feature = "perfetto", iris_trace))]
         lines.push(iris::perfetto::status());
-        #[cfg(not(feature = "perfetto"))]
+        #[cfg(not(all(feature = "perfetto", iris_trace)))]
         lines.push("Perfetto: not built (--features perfetto)".into());
         lines.join("\n")
     }
     pub fn finish(&mut self) -> Result<(), String> {
         self.gdb.take();
         self.vnc.take();
-        #[cfg(feature = "perfetto")]
+        #[cfg(all(feature = "perfetto", iris_trace))]
         {
             self.trace.take();
             // Also close a recording started through the Iris monitor: its
@@ -752,7 +793,7 @@ mod tests {
         assert!(!directory.path().join("test.elf").exists());
     }
     #[test]
-    fn unsupported_features_affinity_and_elf_are_actionable_errors() {
+    fn unsupported_preferences_are_inert_and_invalid_available_inputs_are_errors() {
         let mut settings = ExpertSettings {
             boot_elf: Some("missing.elf".into()),
             ..Default::default()
@@ -772,26 +813,23 @@ mod tests {
         settings.boot_elf = None;
         settings.thread_affinity = true;
         settings.cpu_core = Some(u32::MAX);
-        assert!(settings.validate_runtime(MachineProfile::IndyIp24).is_err());
+        assert_eq!(
+            settings.validate_runtime(MachineProfile::IndyIp24).is_err(),
+            crate::compat::AFFINITY
+        );
         settings.thread_affinity = false;
         if !iris::build_features::JITV2 {
             settings.jit_cache = true;
-            assert!(
-                settings
-                    .validate_runtime(MachineProfile::IndyIp24)
-                    .unwrap_err()
-                    .contains("jitv2")
-            );
+            settings.validate_runtime(MachineProfile::IndyIp24).unwrap();
+            assert!(!settings.effective().jit_cache);
+            assert!(settings.jit_cache);
             settings.jit_cache = false;
         }
         if !cfg!(feature = "perfetto") {
             settings.trace_on_boot = true;
-            assert!(
-                settings
-                    .validate_runtime(MachineProfile::IndyIp24)
-                    .unwrap_err()
-                    .contains("perfetto")
-            );
+            settings.validate_runtime(MachineProfile::IndyIp24).unwrap();
+            assert!(!settings.effective().trace_on_boot);
+            assert!(settings.trace_on_boot);
         }
     }
 }

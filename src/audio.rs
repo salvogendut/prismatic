@@ -84,7 +84,7 @@ impl GuestAudio {
                 })
                 .map_err(|e| e.to_string())?;
             stream.resume().map_err(|e| e.to_string())?;
-            iris::diagnostics::stderr(format_args!(
+            crate::diagnostics::stderr(format_args!(
                 "Prismatic: guest audio through SDL3 at {rate} Hz"
             ));
             Ok(Box::new(stream))
@@ -176,7 +176,7 @@ impl GuestAudio {
         output.put(&samples[..count])?;
         if !self.reported_signal && samples[..count].iter().any(|&sample| sample != 0) {
             self.reported_signal = true;
-            iris::diagnostics::stderr(format_args!(
+            crate::diagnostics::stderr(format_args!(
                 "Prismatic: non-silent PCM from {} submitted to SDL3",
                 input.source()
             ));
