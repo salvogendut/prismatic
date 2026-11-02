@@ -1,5 +1,6 @@
 /target/
 *.bmp
+/tools/__pycache__/
 
 /prismatic.cfg
 /prismatic.cfg.lock

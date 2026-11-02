@@ -4,12 +4,16 @@
 - The emulation engine is our sibling `../iris` fork. Keep CPU/device changes
   there and integration code here. Inspect its current APIs before adapting
   them; read its `AGENTS.md` before editing the fork.
-- Prismatic `main` uses the user-requested `perf/sgiemu-port` branch of
-  `../iris` (based on `xiri`) after integrating the performance build. Keep this
-  Iris branch as the default until its performance changes are integrated into `xiri`.
-  Build with `pcap,idle-pause,perfetto,jitv2`, without `developer`: developer
-  instrumentation disables the new GPR cache. Check the Iris branch before
-  working. Prismatic also supports the fork's `main` and `xiri` branches:
+- The default fetch-and-build workflow is `make`: use
+  `https://github.com/salvogendut/iris.git`, branch `xiri`. Keep `IRIS_REPO` and
+  `IRIS_BRANCH` editable in the Makefile and overridable on the command line.
+  The helper owns isolated checkouts under `target/bootstrap`; never reset
+  local work or switch a developer's `../iris` checkout to satisfy a build.
+  Direct Cargo builds still use `../iris`; check its branch before working.
+  Default bootstrap features are `pcap,idle-pause,jitv2`. Add `perfetto` only
+  on cores where it compiles; avoid `developer` for performance builds because
+  its instrumentation disables the GPR cache. Prismatic supports the fork's
+  `main`, `xiri`, and `perf/sgiemu-port` branches:
   detect optional embedding APIs from the checked-out sources in `build.rs`,
   never from the branch name. A future merge of performance work into `xiri`
   must enable the corresponding capabilities automatically after rebuilding.

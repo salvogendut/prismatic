@@ -1,5 +1,32 @@
 # Frontend and Iris integration
 
+## Fetch-and-build workflow
+
+`Makefile` exposes editable `IRIS_REPO` and `IRIS_BRANCH` defaults: the user's
+Iris fork over HTTPS and `xiri`. `tools/build.py` also accepts these settings
+directly. It creates a separate source cache for each repository/branch pair
+under `target/bootstrap`, clones the requested branch on first use and uses
+fetch plus fast-forward updates thereafter. Dirty checkouts, changed origins or
+branches, and local/divergent commits stop the operation before compilation.
+Failed clones stay in temporary directories and are removed. A process lock
+serializes helper invocations; the developer's `../iris` remains independent.
+
+Each cache has a generated frontend manifest and a copy of the root Cargo.lock,
+with symlinks to the current frontend sources, assets and build inputs. This
+preserves the manifest's `../iris` dependency and patched host libraries without
+rewriting the checked-in files. The explicit workspace isolates Cargo discovery.
+Cargo runs from the real Prismatic directory with an absolute manifest path and
+`--locked`; runtime relative paths and screenshots therefore remain in the normal
+working directory. Artifacts default to the root `target` directory. The source
+revision, selected features/profile and command are recorded after success.
+Checks write separate metadata so they do not replace the release build record.
+
+Bootstrap features default to `pcap,idle-pause,jitv2` with no `developer` or
+`perfetto`; these can be overridden in Make. `check` runs frontend-only fmt,
+Clippy and tests, with test shader output isolated in the managed build directory.
+The helper's Python tests exercise local Git clone/update behavior, preservation
+of local work, generated inputs, Make overrides and failure propagation.
+
 ## Iris compatibility
 
 `build.rs` examines the sibling Iris sources for individual public embedding
@@ -32,7 +59,7 @@ fall back to restart confirmation on cores without persistent runtime overrides.
 
 ## Performance build
 
-Prismatic `main` uses the sibling Iris branch `perf/sgiemu-port`, with performance
+The optional `perf/sgiemu-port` Iris build has performance
 base `66f5a59` on the integrated `xiri` revision `087d250`, plus the boot/console
 `prom_env::prepare_environment` and runtime `MachineConfig.serial_backends` APIs.
 The performance changes stay in Iris: Cranelift SSA copies

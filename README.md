@@ -39,7 +39,65 @@ IRIX 6.5 running in Prismatic, captured at the guest's native 1282×1024 resolut
 
 ## Build and run
 
-Keep the checkouts alongside one another:
+Run `make` in a Rust/SDL3 build environment:
+
+```sh
+make                          # Fetch/update Iris, then build a release
+./target/release/prismatic
+# Or build and launch in one step:
+make run
+```
+
+The first settings in [Makefile](Makefile) choose the source:
+
+```make
+IRIS_REPO ?= https://github.com/salvogendut/iris.git
+IRIS_BRANCH ?= xiri
+```
+
+Edit these lines to change the defaults, or override them for one invocation:
+
+```sh
+make IRIS_BRANCH=main
+make IRIS_REPO=https://github.com/YOUR-NAME/iris.git IRIS_BRANCH=your-branch
+make IRIS_BRANCH=perf/sgiemu-port FEATURES=pcap,idle-pause,perfetto,jitv2
+```
+
+The helper clones each repository/branch combination into its own ignored
+`target/bootstrap/<source-key>/iris` directory. Later invocations fetch and
+fast-forward that managed checkout before compiling. It refuses local changes,
+changed remotes/branches, and local or divergent commits instead of resetting
+them. An existing sibling `../iris` checkout is not modified.
+
+A generated Cargo workspace beside the managed Iris checkout links to this
+repository's current `src`, assets and build script. This builds your latest
+Prismatic edits together with the fetched core without rewriting the root Cargo
+manifest or lockfile. Cargo builds use `--locked`; if a newer Iris dependency
+requires a lockfile update, the build fails rather than silently resolving a new
+dependency set. The successful build's Iris revision and settings are recorded
+in `target/bootstrap/<source-key>/build-info.json`.
+Check results use a separate `check-info.json`, preserving the build record.
+
+| Command / setting | Purpose |
+| --- | --- |
+| `make fetch` | Fetch Iris without requiring Rust or compiling. |
+| `make run ARGS='--config "my machine.cfg"'` | Build and run from this repository, so relative config/capture paths behave normally. |
+| `make PROFILE=dev` | Build into `target/debug` instead of `target/release`. |
+| `make FEATURES=` | Use the interpreter with optional Cargo features disabled. |
+| `make check FEATURES=` | Fetch, then run frontend formatting, Clippy and tests with default Cargo features. |
+| `make test-bootstrap` | Test the build helper using disposable local Git repositories; no network or Rust required. |
+| `CARGO=...`, `PYTHON=...` | Select the Cargo command or Python interpreter. |
+| `CARGO_TARGET_DIR=...` | Choose the Cargo artifact directory; default is this repository's `target`. |
+
+`make help` lists the helper options. Without Make, run `python3 tools/build.py`;
+its `--repo` and `--branch` options select other sources. The helper requires
+Git and Python 3 on Unix, plus the Rust/native build dependencies below for
+compilation. Use your Distrobox or other development environment with Cargo on
+`PATH` and the native libraries installed. It does not install system packages
+or change your Rust environment.
+
+For direct Cargo builds that use a checkout you maintain yourself, keep the
+checkouts alongside one another:
 
 ```text
 Dev/
@@ -48,10 +106,10 @@ Dev/
 ```
 
 Prismatic builds against our Iris fork's **`main`**, **`xiri`**, and
-**`perf/sgiemu-port`** branches. The default development checkout remains
-`perf/sgiemu-port`, based on `xiri` with NetBSD and other guest OS compatibility
-work alongside IRIX. Each binary links the Iris checkout present when built;
-rebuild Prismatic after changing that checkout.
+**`perf/sgiemu-port`** branches. Automated builds default to **`xiri`**, retaining
+NetBSD and other guest OS compatibility work alongside IRIX. Direct `cargo`
+commands use `../iris`; `make` uses its managed source checkout. Each binary
+links the Iris checkout present when built; rebuild after changing sources.
 
 `build.rs` detects optional embedding APIs from the Iris sources, independently
 of branch names. Missing features are greyed out in the overlays, with a reason
@@ -85,7 +143,10 @@ selects `nightly-2026-10-28`, the toolchain used for the Iris performance work.
 On a Fedora development system, install the native build dependencies:
 
 ```sh
-sudo dnf install gcc gcc-c++ make pkgconf-pkg-config sdl3-devel alsa-lib-devel clang-devel libpcap-devel
+sudo dnf install git python3 gcc gcc-c++ make pkgconf-pkg-config sdl3-devel alsa-lib-devel clang-devel libpcap-devel
+# Recommended fetch-and-build workflow (defaults to our fork's xiri):
+make
+# Alternatively, with a manually maintained sibling checkout:
 # Iris perf/sgiemu-port:
 cargo run --release --locked --features pcap,idle-pause,perfetto,jitv2
 # Current Iris main/xiri (or omit --features for the interpreter):
@@ -1053,11 +1114,25 @@ defaults. NVRAM/EEPROM remain separate machine-state files.
 
 ## Checks
 
+For the managed Iris checkout selected in the Makefile:
+
+```sh
+make test-bootstrap
+make check FEATURES=
+SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software make run ARGS=--smoke-test
+IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software make run ARGS='--boot-smoke-test --screenshot /tmp/prismatic-prom.bmp'
+```
+
+Repository, branch and feature overrides also apply to these targets. Use
+`make check` to check the selected optional features as well. For direct Cargo
+development against your maintained sibling `../iris` checkout:
+
 ```sh
 cargo fmt -p prismatic --check
 cargo clippy --locked --all-targets --no-deps -- -D warnings
 cargo test --locked
-cargo test --locked --features pcap,idle-pause,jitv2,perfetto,developer
+# Omit perfetto on Iris revisions affected by the Odyssey issue above:
+cargo test --locked --features pcap,idle-pause,jitv2
 SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --smoke-test
 IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --boot-smoke-test --screenshot /tmp/prismatic-prom.bmp
 IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --input-smoke-test --screenshot /tmp/prismatic-input.bmp
@@ -1065,6 +1140,10 @@ IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RE
 IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --media-smoke-test --screenshot /tmp/prismatic-media.bmp
 IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --advanced-smoke-test --screenshot /tmp/prismatic-advanced.bmp
 ```
+
+On cores with working Perfetto, also run
+`cargo test --locked --features pcap,idle-pause,jitv2,perfetto,developer` for
+tracing/developer coverage. Keep `developer` off in performance builds.
 
 `--smoke-test` renders three UI frames with the options open and exits without
 starting Iris. `--boot-smoke-test` uses fresh temporary NVRAM, waits for a
