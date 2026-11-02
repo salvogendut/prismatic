@@ -2,10 +2,10 @@
 
 ## Performance build
 
-Prismatic `main` uses the sibling Iris branch `perf/sgiemu-port` at `c97ab52` or
+Prismatic `main` uses the sibling Iris branch `perf/sgiemu-port` at `668911c` or
 newer, with performance base `66f5a59` on the integrated `xiri` revision `087d250`,
-plus the PROM environment embedding API described below. The performance changes
-stay in Iris: Cranelift SSA copies
+plus the boot/console `prom_env::prepare_environment` API described below.
+The performance changes stay in Iris: Cranelift SSA copies
 of guest integer registers and cached DS1x86 calendar conversion. The register
 cache keeps architectural state current and excludes FPU/fallback regions.
 
@@ -102,13 +102,25 @@ for old configurations. General cycles Keep existing, IRIX (`sash`, `/unix`,
 `auto`) and NetBSD (`boot`, `netbsd.boot`, `auto`). It participates in the normal
 machine-change restart comparison and checkpoint compatibility metadata.
 After taking the machine-state lease, the worker calls Iris's
-`prom_env::prepare_boot_environment` before constructing the workstation.
-The core atomically updates only OSLoader, OSLoadFilename and OSLoadOptions in
+`prom_env::prepare_environment` before constructing the workstation.
+The core updates the selected OSLoader, OSLoadFilename and OSLoadOptions in
 the model's persistent storage: Indy DS1386 NVRAM, Indigo2 EEPROM, O2 environment
 flash segment or Octane persistent flash records. Validation and draft edits do
 not write firmware state. Existing non-boot settings survive; invalid formats,
 checksums, insufficient space and I/O failures report `Phase::Failed`. Presets
 are reapplied on cold boots, while Keep existing preserves the current values.
+
+`MachineSettings.prom_console` independently defaults to `keep_existing` and
+cycles through Graphics (`console=g`) and Serial (`console=d`) in General.
+It shares the label persistence, restart confirmation, draft isolation and
+checkpoint compatibility rules. Indy/Indigo2 store console in their fixed
+environment; O2 stores it in its flash environment. Octane stores console in
+DS1685 NVRAM, separate from the flash records holding boot variables. Iris
+validates all affected images before writing and atomically replaces each file;
+if a later write fails, it attempts to restore earlier files and reports any
+restoration failure. The two Octane files are not a crash-atomic transaction.
+Serial mode uses the existing TCP endpoints (B on Indy/Indigo2, A on O2/Octane).
+It neither opens a terminal inside SDL nor changes the configured port numbers.
 
 Extensions selects graphics boards, Newport head count and Octane CPU count.
 `MachineSettings.graphics` is optional so old files retain Newport on Indy/IP22,

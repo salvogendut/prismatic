@@ -28,6 +28,62 @@ pub struct MachineSettings {
     pub o2_prom: Option<String>,
     pub octane_prom: Option<String>,
     pub prom_boot: PromBoot,
+    pub prom_console: PromConsole,
+}
+
+/// Independent of the OS boot preset and stored with each machine label.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PromConsole {
+    #[default]
+    KeepExisting,
+    Graphics,
+    Serial,
+}
+
+impl PromConsole {
+    pub fn cycle(&mut self) {
+        *self = match self {
+            Self::KeepExisting => Self::Graphics,
+            Self::Graphics => Self::Serial,
+            Self::Serial => Self::KeepExisting,
+        };
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::KeepExisting => "Keep existing",
+            Self::Graphics => "Graphics",
+            Self::Serial => "Serial",
+        }
+    }
+
+    pub fn environment(self) -> Option<iris::prom_env::Console> {
+        match self {
+            Self::KeepExisting => None,
+            Self::Graphics => Some(iris::prom_env::Console::Graphics),
+            Self::Serial => Some(iris::prom_env::Console::Serial),
+        }
+    }
+
+    pub fn hint(self, profile: MachineProfile) -> &'static str {
+        match self {
+            Self::KeepExisting => {
+                "Leaves the PROM console unchanged, including a previously applied choice."
+            }
+            Self::Graphics => {
+                "On boot: console=g. Use the guest display and keyboard in this window."
+            }
+            Self::Serial => match profile {
+                MachineProfile::O2Ip32 | MachineProfile::OctaneIp30 => {
+                    "On boot: console=d. Connect a terminal to Serial A; ports are in Advanced > Connections."
+                }
+                _ => {
+                    "On boot: console=d. Connect a terminal to Serial B; ports are in Advanced > Connections."
+                }
+            },
+        }
+    }
 }
 
 /// A per-machine PROM preset; old configurations retain their firmware settings.
@@ -68,7 +124,7 @@ impl PromBoot {
     pub fn hint(self) -> &'static str {
         match self {
             Self::KeepExisting => {
-                "Leaves the current PROM environment unchanged, including any previously applied preset."
+                "Leaves the PROM boot variables unchanged, including any previously applied preset."
             }
             Self::Irix => "On boot: OSLoader=sash, OSLoadFilename=/unix, OSLoadOptions=auto.",
             Self::Netbsd => {
@@ -91,6 +147,7 @@ impl Default for MachineSettings {
             o2_prom: None,
             octane_prom: None,
             prom_boot: PromBoot::default(),
+            prom_console: PromConsole::default(),
         }
     }
 }
@@ -835,6 +892,40 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prom_console_migrates_and_roundtrips_independently_per_label() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prismatic.cfg");
+        fs::write(&path, "[machine]\nprom_boot = 'netbsd'\n").unwrap();
+        let mut settings = Settings::load(&path).unwrap();
+        assert_eq!(settings.machine.prom_console, PromConsole::KeepExisting);
+        settings.machine.prom_console.cycle();
+        assert_eq!(settings.machine.prom_console, PromConsole::Graphics);
+        settings.save_as_machine("Graphics Indy").unwrap();
+        settings.machine.prom_console.cycle();
+        assert_eq!(settings.machine.prom_console, PromConsole::Serial);
+        settings.machine.cycle_profile();
+        settings.save_as_machine("Serial Indigo2").unwrap();
+        settings.save(&path).unwrap();
+        let mut loaded = Settings::load(&path).unwrap();
+        assert_eq!(loaded.machine.prom_console, PromConsole::Serial);
+        loaded.select_machine("Graphics Indy").unwrap();
+        assert_eq!(loaded.machine.prom_console, PromConsole::Graphics);
+        assert_eq!(loaded.machine.prom_boot, PromBoot::Netbsd);
+        assert_eq!(loaded.machine.profile, MachineProfile::IndyIp24);
+        let mut draft = loaded.clone();
+        draft.machine.prom_console = PromConsole::Serial;
+        assert!(draft.machine_differs_from(&loaded));
+        draft.machine.prom_console.cycle();
+        assert_eq!(draft.machine.prom_console, PromConsole::KeepExisting);
+        assert!(draft.machine_differs_from(&loaded));
+        fs::write(&path, "[machine]\nprom_console = 'unknown'\n").unwrap();
+        assert!(Settings::load(&path).is_err());
+        assert_eq!(PromConsole::KeepExisting.environment(), None);
+        assert_eq!(PromConsole::Graphics.environment().unwrap().value(), "g");
+        assert_eq!(PromConsole::Serial.environment().unwrap().value(), "d");
+    }
 
     #[test]
     fn prom_boot_presets_migrate_and_roundtrip_per_machine() {

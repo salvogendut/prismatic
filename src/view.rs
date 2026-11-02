@@ -346,6 +346,8 @@ fn draw_overlay(
         Tab::General => vec![
             if session.row == 12 {
                 session.draft.machine.prom_boot.hint().into()
+            } else if session.row == 13 {
+                session.draft.machine.prom_console.hint(session.draft.machine.profile).into()
             } else if session.row == 7 {
                 session.draft.machine.prom_path().map(|p| short_ascii(p, 100)).unwrap_or_else(||
                     "All models include bundled firmware. O2 and Octane also accept external PROMs.".into())
@@ -354,6 +356,8 @@ fn draw_overlay(
             } else { "Machine changes keep compatible CPU/RAM choices; other values are adjusted.".into() },
             if session.row == 12 {
                 "Saved per machine label; applies on cold boot/restart. Boot disk and AutoLoad remain unchanged.".into()
+            } else if session.row == 13 {
+                "Saved per label; applies on cold boot/restart. Automatic serial ports appear in Debug output.".into()
             } else { "Hardware changes ask to restart when saved. Display and audio options apply on Save.".into() },
         ],
         Tab::Media => {
@@ -462,7 +466,7 @@ fn draw_overlay(
         if index == session.row {
             fill(canvas, Rect::new(10, y, PANEL_WIDTH - 4, 16), SELECTED)?;
         }
-        let restart = (session.tab == Tab::General && (index < 4 || index == 7 || index == 12))
+        let restart = (session.tab == Tab::General && (index < 4 || index == 7 || index >= 12))
             || (session.tab == Tab::Advanced
                 && match session.advanced_page {
                     crate::expert::Page::Core => index < 5,

@@ -49,8 +49,8 @@ Dev/
 
 Prismatic uses the local Iris library directly, including the fork's power-off,
 diagnostic routing, bundled O2/Octane firmware and frontend audio support.
-Prismatic `main` requires Iris branch `perf/sgiemu-port` at commit `c97ab52` or
-newer, including the `prom_env::prepare_boot_environment` embedding API
+Prismatic `main` requires Iris branch `perf/sgiemu-port` at commit `668911c` or
+newer, including the `prom_env::prepare_environment` boot/console embedding API
 (performance base `66f5a59`).
 Update both checkouts together. This Iris branch builds on `xiri`, retaining
 the integration and compatibility work for NetBSD
@@ -223,6 +223,30 @@ name (see the [NetBSD boot manual](https://man.netbsd.org/sgimips/boot.8)).
 All five machine profiles have firmware-storage support; this does not imply
 that either guest OS boots on every model. Unrecognized or damaged firmware
 state produces a startup error; Keep existing allows normal PROM initialization.
+
+**General > PROM console** independently selects the console for each label:
+
+| Choice | PROM setting | Console |
+| --- | --- | --- |
+| Keep existing (default) | Unchanged | Retains the stored console choice |
+| Graphics | `console=g` | Guest display and keyboard in the Prismatic window |
+| Serial | `console=d` | First guest serial console over TCP |
+
+These are the PROM's [graphics and serial console settings](https://www.netbsd.org/~sborrill/htdocs/sgimips/faq.html).
+F9 saves `prom_console = "keep_existing"`, `"graphics"` or `"serial"` in the
+label's machine stanza. It follows the same cold boot/restart and initial
+**Ctrl+P** behavior as PROM boot. Keep existing retains any previously applied
+choice. Changing the console preserves the OS boot preset, baud rate and other
+existing firmware settings.
+
+For Serial, enable **Tinker**, then set a port in **Advanced > Connections**:
+use **Serial B** on Indy/Indigo2, or **Serial A** on O2/Octane. Connect a terminal
+with `telnet 127.0.0.1 PORT` after booting with Ctrl+P. Ports default to automatic
+allocation; enable **Advanced > Core > Debug output > Console** before boot to
+see the assigned address, or select a fixed port. Use distinct ports for
+simultaneously running labels. Serial output appears in that terminal; the
+Prismatic guest display may remain blank. The overlay remains available to
+switch back to Graphics.
 
 | Machine | CPUs | RAM presets (MB) | Graphics | PROM |
 | --- | --- | --- | --- | --- |

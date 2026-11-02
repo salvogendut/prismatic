@@ -440,11 +440,11 @@ impl Emulator {
                     };
                     // Apply only saved settings, with the state lease held and
                     // the old workstation gone. Iris owns the firmware formats.
-                    if let Some((loader, filename, options)) = hardware.prom_boot.environment() {
-                        iris::prom_env::prepare_boot_environment(
-                            &config, loader, filename, options,
-                        )?;
-                    }
+                    iris::prom_env::prepare_environment(
+                        &config,
+                        hardware.prom_boot.environment().map(|(loader, filename, options)| [loader, filename, options]),
+                        hardware.prom_console.environment(),
+                    )?;
                     let mut owned = OwnedMachine::new(iris::workstation::build(config)?);
                     // O2/Octane constructors currently use a default PS/2 layout.
                     // Set the shared controller before any CPU thread can query it.
@@ -717,6 +717,86 @@ mod tests {
 
     // Iris has process-wide display/CPU hooks; started machines must not overlap.
     static MACHINE_TEST: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn console_preparation_is_optional_and_validates_all_octane_files_before_writing() {
+        use iris::prom_env::{Console, prepare_environment};
+        let dir = tempfile::tempdir().unwrap();
+        for profile in MachineSettings::PROFILES {
+            let state = dir.path().join(format!("{profile:?}"));
+            let mut hardware = MachineSettings {
+                profile,
+                ..Default::default()
+            };
+            hardware.cpu = hardware.cpus()[0];
+            let config = machine_config(
+                &state,
+                &hardware,
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+            )
+            .unwrap();
+            prepare_environment(&config, None, None).unwrap();
+            assert!(!state.exists());
+            prepare_environment(&config, None, Some(Console::Serial)).unwrap();
+            let path = match profile {
+                MachineProfile::Indigo2Ip22 | MachineProfile::Indigo2Ip28 => &config.nveeprom,
+                _ => &config.nvram,
+            };
+            let image = std::fs::read(path).unwrap();
+            match profile {
+                MachineProfile::IndyIp24 => assert_eq!(&image[66..68], b"d\0"),
+                MachineProfile::Indigo2Ip22 | MachineProfile::Indigo2Ip28 => {
+                    assert_eq!(&image[2..4], b"d\0")
+                }
+                MachineProfile::O2Ip32 => assert!(image.windows(10).any(|b| b == b"console=d\0")),
+                MachineProfile::OctaneIp30 => {
+                    assert_eq!(&image[0x11..0x13], b"d\0");
+                    assert!(!Path::new(config.octane.flash.as_ref().unwrap()).exists());
+                    std::fs::write(config.octane.flash.as_ref().unwrap(), b"bad flash").unwrap();
+                    assert!(
+                        prepare_environment(
+                            &config,
+                            Some(["sash", "/unix", "auto"]),
+                            Some(Console::Graphics)
+                        )
+                        .is_err()
+                    );
+                    assert_eq!(std::fs::read(path).unwrap(), image);
+                }
+            }
+            prepare_environment(&config, None, Some(Console::Serial)).unwrap();
+            assert_eq!(std::fs::read(path).unwrap(), image);
+            prepare_environment(&config, None, None).unwrap();
+            assert_eq!(std::fs::read(path).unwrap(), image);
+        }
+        let hardware = MachineSettings {
+            prom_console: crate::settings::PromConsole::Serial,
+            ..Default::default()
+        };
+        std::fs::write(dir.path().join("nvram.bin"), b"bad state").unwrap();
+        let mut emulator = Emulator::spawn(
+            dir.path(),
+            &hardware,
+            &Default::default(),
+            &Default::default(),
+            &Default::default(),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !emulator.finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(emulator.finished());
+        assert!(
+            matches!(emulator.status().phase, Phase::Failed(error) if error.contains("PROM state"))
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("nvram.bin")).unwrap(),
+            b"bad state"
+        );
+    }
 
     #[test]
     fn prom_boot_preparation_is_offline_atomic_and_errors_reach_the_ui() {

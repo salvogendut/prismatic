@@ -233,6 +233,10 @@ impl Session {
                 ("Guest audio", on_off(!self.draft.audio.muted)),
                 ("Guest volume", format!("{}%", self.draft.audio.volume)),
                 ("PROM boot", self.draft.machine.prom_boot.label().into()),
+                (
+                    "PROM console",
+                    self.draft.machine.prom_console.label().into(),
+                ),
             ],
             Tab::Advanced if self.advanced_page != Page::Core => {
                 self.draft.advanced.expert.rows(self.advanced_page)
@@ -992,6 +996,7 @@ impl Overlay {
                 (Tab::General, 10) => session.draft.audio.muted = !session.draft.audio.muted,
                 (Tab::General, 11) => session.draft.audio.cycle_volume(),
                 (Tab::General, 12) => session.draft.machine.prom_boot.cycle(),
+                (Tab::General, 13) => session.draft.machine.prom_console.cycle(),
                 (Tab::Advanced, row) if row + 1 == session.rows().len() => {
                     session.advanced_page = session.advanced_page.next();
                     session.row = session.rows().len() - 1;
@@ -1754,12 +1759,48 @@ mod tests {
     }
 
     #[test]
+    fn prom_console_is_a_restart_draft_and_discard_preserves_live_settings() {
+        use crate::settings::PromConsole;
+        let live = Settings::default();
+        let mut overlay = Overlay::default();
+        overlay.key(Key::Options, &live);
+        overlay.key(Key::Up, &live); // PROM console.
+        overlay.key(Key::Enter, &live);
+        assert_eq!(
+            overlay.session.as_ref().unwrap().draft.machine.prom_console,
+            PromConsole::Graphics
+        );
+        overlay.key(Key::Enter, &live);
+        assert_eq!(
+            overlay.session.as_ref().unwrap().draft.machine.prom_console,
+            PromConsole::Serial
+        );
+        assert_eq!(live.machine.prom_console, PromConsole::KeepExisting);
+        let Effect::Save(draft) = overlay.key(Key::Options, &live) else {
+            panic!("expected Save");
+        };
+        assert!(draft.machine_differs_from(&live));
+        overlay.confirm_restart();
+        assert_eq!(overlay.key(Key::Enter, &live), Effect::None); // Cancel restart.
+        overlay.save_failed();
+        assert_eq!(
+            overlay.session.as_ref().unwrap().draft.machine.prom_console,
+            PromConsole::Serial
+        );
+        for key in [Key::Escape, Key::Left, Key::Enter, Key::Options] {
+            overlay.key(key, &live);
+        }
+        assert_eq!(overlay.session.as_ref().unwrap().draft, live);
+    }
+
+    #[test]
     fn prom_boot_is_a_restart_draft_and_survives_save_failure() {
         use crate::settings::PromBoot;
         let live = Settings::default();
         let mut overlay = Overlay::default();
         overlay.key(Key::Options, &live);
-        overlay.key(Key::Up, &live); // Last General row: PROM boot.
+        overlay.key(Key::Up, &live);
+        overlay.key(Key::Up, &live); // PROM boot, above PROM console.
         overlay.key(Key::Enter, &live);
         assert_eq!(
             overlay.session.as_ref().unwrap().draft.machine.prom_boot,
