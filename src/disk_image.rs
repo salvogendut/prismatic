@@ -374,6 +374,10 @@ mod tests {
         node.read(1024 * 1024 - 512, &mut buffer).unwrap();
         assert_eq!(buffer, [0; 512]);
         node.write(512, &[0x5a; 512]).unwrap();
+        if let Some(background) = node.background() {
+            background.sync_pending().unwrap();
+        }
+        node.flush_data().unwrap();
         node.flush().unwrap();
         drop(node);
         let mut node = crate::media::open_node(medium).unwrap();
