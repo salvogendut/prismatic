@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+prismatic_bin_dir=$(CDPATH= cd "$(dirname "$0")" && pwd)
+prismatic_capture_dir="${HOME:?}/Library/Application Support/prismatic/captures"
+mkdir -p "$prismatic_capture_dir"
+cd "$prismatic_capture_dir"
+exec "$prismatic_bin_dir/prismatic" "$@"

@@ -167,7 +167,8 @@ modules. Prismatic uses its own SDL window. Guest audio uses a per-machine PCM h
 when that API is available; otherwise it is disabled without opening CPAL. libclang is needed to build the
 Linux camera bindings.
 SDL is linked dynamically through the [`sdl3` Rust bindings](https://github.com/vhspace/sdl3-rs).
-SDL_ttf and a separate widget toolkit are not required. Linux is the first
-validated platform; Windows and macOS integration builds remain to be checked.
+SDL_ttf and a separate widget toolkit are not required. The
+[native package workflow](native-packages.md) compiles and smoke-tests Fedora,
+Debian, Windows x86_64 and macOS Intel/ARM packages on their respective runners.
 
 Related: [configuration and runtime files](configuration.md#firmware-and-runtime-files), [testing](testing.md), [integration architecture](architecture.md).

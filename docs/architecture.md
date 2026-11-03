@@ -159,6 +159,7 @@ including when the hints are hidden.
 | `src/view.rs` | SDL drawing, status strip, LEDs, options, confirmations and notifications |
 | `src/media.rs` | Native file/folder choosers, background validation and interface enumeration, media settings and Iris block-node adapters |
 | `src/disk_image.rs` | Cancellable blank raw/CHD creation, capacity validation and publication without overwriting existing images |
+| `tools/native.py`, `packaging/native/` | Revision-pinned native package builds, runtime bundling, platform metadata and installed-package smoke checks |
 | `src/storage.rs` | CD tray actions, offline COW commit/reset, scratch drive and payload transfers, bounded action results |
 | `src/activity.rs` | Atomic activity bits and visible LED pulse durations |
 

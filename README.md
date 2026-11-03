@@ -82,6 +82,7 @@ instructions, full shortcuts, input handling, capture options and audio.
 | --- | --- |
 | [Building and Iris compatibility](docs/building.md) | Dependencies, Makefile options, manual Cargo builds and core features |
 | [Linux Flatpak](docs/flatpak.md) | Installation, sandbox files, source builds and tagged-release CI |
+| [Native packages](docs/native-packages.md) | Fedora RPM, Debian DEB, Windows ZIP, macOS Intel/ARM apps and release CI |
 | [Controls, captures and audio](docs/usage.md) | First launch, keyboard/mouse input, window scaling, screenshots, GIFs and sound |
 | [Machine settings and saved labels](docs/machines.md) | Models, CPU/RAM, PROM boot/console presets, firmware and multiple instances |
 | [Advanced settings](docs/advanced.md) | Performance, SGIEmu optimizations, serial TCP/PTY, GDB/VNC, tracing and diagnostics |
