@@ -333,15 +333,7 @@ fn draw_debug(
 // The 1989 view uses an 8px inset, 20px rows and a content-sized panel.
 // Scale inside the existing logical window so fullscreen letterboxing and
 // guest hit testing keep using the same coordinate system.
-fn draw_overlay(
-    canvas: &mut WindowCanvas,
-    session: &crate::overlay::Session,
-    busy: bool,
-    action_busy: bool,
-) -> Result<(), sdl3::Error> {
-    const PANEL_WIDTH: u32 = 840;
-    const LINE_HEIGHT: i32 = 20;
-    let rows = session.rows();
+fn overlay_hints(session: &crate::overlay::Session) -> Vec<String> {
     let hints: Vec<String> = match session.tab {
         Tab::General => vec![
             if session.row == 2 && session.draft.machine.cpu.iris().is_err() {
@@ -378,6 +370,11 @@ fn draw_overlay(
             hints.push("Media changes require restart. Shut down the guest OS before saving.".into());
             hints
         }
+        Tab::Advanced if session.advanced_page == crate::expert::Page::Capture => vec![match session.row {
+            0 => "Native uses the guest screen size; scaled widths are optional.",
+            1 => "GIF sampling rate. F6 starts or stops a recording.",
+            _ => "FFmpeg optionally optimizes after recording; the built-in GIF is kept on failure.",
+        }.into(), "Shared capture preferences. Save applies to the next recording without restarting.".into()],
         Tab::Advanced if session.advanced_page != crate::expert::Page::Core => vec![crate::expert::hint(session.advanced_page, session.row).into(), "Saved per machine label. Setting changes take effect on the next boot/restart.".into()],
         Tab::Advanced => vec![match session.row {
             0 if !session.draft.machine.newport() => "GR2, IMPACT and GBE video modes are controlled by the PROM and guest OS.",
@@ -390,43 +387,108 @@ fn draw_overlay(
             3 => "Deferred is Iris's BSD-compatible default. Immediate changes SCSI timing.",
             4 => "Appends to serial.log in this machine's state directory. Timestamps use host UTC.",
             5 => "Bilinear filtering smooths the display when scaled; applies without restart.",
-            6 => "Debug: Off, Screen (latest messages), Console (terminal). Applies on Save.",
-            7 => "Native uses the guest screen size; scaled widths are optional. Applies to the next GIF.",
-            8 => "GIF sampling rate. Changes apply to the next recording; F6 starts or stops.",
-            10 => "Enter cycles Core, Performance, Connections and Developer pages.",
-            _ => "FFmpeg optionally optimizes after recording; the built-in GIF is kept on failure.",
+            _ => "Debug: Off, Screen (latest messages), Console (terminal). Applies on Save.",
         }.into(), "Core options require restart. Turning Tinker off keeps the saved values active.".into()],
         Tab::Extensions if session.extensions_page == crate::extensions::Page::Devices => vec![match session.row {
             0..=2 => "VINO is modeled on Indy/Indigo2. Host camera opens on boot; unavailable cameras supply black frames and retry.",
             3..=5 => "DaynaPort uses its own NAT subnet and inherits NFS/PCAP at boot. Network edits require restart while enabled; port forwards target onboard Ethernet.",
             6 => "Ultra64 is an N64 development bridge, requiring a compatible external gopher64. Only one bridge instance may run.",
-            7 => "Reports active settings. Use the Iris monitor's vino status or scsi dayna commands for capture and packet diagnostics.",
-            _ => "Enter cycles Hardware, Devices and Checkpoints.",
+            _ => "Reports active settings. Use the Iris monitor's vino status or scsi dayna commands for capture and packet diagnostics.",
         }.into(), "All device settings are saved per label and require restart.".into()],
         Tab::Extensions if session.extensions_page == crate::extensions::Page::Checkpoints => vec![
             "Experimental native state: single-head Newport Indy/IP22, raw COW disks or diskless. No CDs, scratch or optional devices.".into(),
             "Restores require the same executable, saved configuration and base disk contents. Audio/network sessions and external NFS files are not restored.".into(),
         ],
-        Tab::Extensions => vec![match session.row {
+        Tab::Extensions if session.extensions_page == crate::extensions::Page::Hardware => vec![match session.row {
             0 => "GR2/IMPACT compatibility depends on Iris and the guest OS; Newport is the default on Indy/IP22.",
             1 => "Two Newport heads appear side by side. Screenshots and GIFs include both heads.",
-            2 => "Octane supports one or two CPUs and up to 8192 MB RAM (set RAM in General).",
-            3 | 4 => "Scratch is a persistent raw transfer drive with an SGI volume header, in this label's state folder.",
-            5 => "Enter cycles the configured disk/CD targets used by the rows below.",
-            6 | 7 => "Changer queue edits are drafts and take effect after Save and restart.",
-            8 => "Save or discard drafts before live actions. Commit/reset require no loaded guest and confirmation.",
-            _ => "Scratch transfers briefly stop devices, then restore CPU state. They do not mount a guest filesystem.",
+            _ => "Octane supports one or two CPUs and up to 8192 MB RAM (set RAM in General).",
         }.into(), "Hardware changes require restart. Turning Tinker off keeps these settings active.".into()],
+        Tab::Extensions => vec![match session.row {
+            0 | 1 => "Scratch is a persistent raw transfer drive with an SGI volume header, in this label's state folder.",
+            2 => "Enter cycles the configured disk/CD targets used by the rows below.",
+            3 | 4 => "Changer queue edits are drafts and take effect after Save and restart.",
+            5 => "Save or discard drafts before live actions. Commit/reset require no loaded guest and confirmation.",
+            _ => "Scratch transfers briefly stop devices, then restore CPU state. They do not mount a guest filesystem.",
+        }.into(), "Scratch and changer settings require restart. Live storage actions confirm separately.".into()],
         Tab::About => vec![],
         Tab::Network => session.draft.network.hints(session.row),
     };
     let hints = session
         .unavailable(session.row)
         .map_or(hints, |reason| vec![reason.into()]);
-    let hints: Vec<String> = hints
+    hints
         .iter()
         .flat_map(|hint| wrap_ascii(hint, 100))
-        .collect();
+        .collect()
+}
+
+struct OverlayLayout {
+    rows_y: i32,
+    hint_y: i32,
+    footer_y: i32,
+    panel_height: u32,
+    scale: f32,
+}
+
+fn overlay_layout(subtabs: bool, rows: usize, hints: usize) -> OverlayLayout {
+    let rows_y = if subtabs { 68 } else { 48 };
+    let hint_y = rows_y + rows as i32 * 20 + 8;
+    let footer_y = hint_y + hints as i32 * 16 + 12;
+    let panel_height = (footer_y + 12) as u32;
+    let scale = (WIDTH as f32 / 860.0)
+        .min(HEIGHT as f32 / (panel_height + 8).max(510) as f32)
+        .min(1.25);
+    OverlayLayout {
+        rows_y,
+        hint_y,
+        footer_y,
+        panel_height,
+        scale,
+    }
+}
+
+fn subtab_rects(session: &crate::overlay::Session) -> Vec<(&'static str, bool, Rect)> {
+    let mut x = 20;
+    session
+        .subtabs()
+        .into_iter()
+        .map(|(label, selected)| {
+            let width = label.len() as u32 * 8 + 16;
+            let rect = Rect::new(x, 36, width, 22);
+            x += width as i32 + 4;
+            (label, selected, rect)
+        })
+        .collect()
+}
+
+/// Coordinates are in the renderer's logical view, including its letterboxing.
+pub fn subtab_at(session: &crate::overlay::Session, point: (f32, f32)) -> Option<usize> {
+    let tabs = subtab_rects(session);
+    if tabs.is_empty() {
+        return None;
+    }
+    let layout = overlay_layout(true, session.rows().len(), overlay_hints(session).len());
+    let (x, y) = (point.0 / layout.scale, point.1 / layout.scale);
+    tabs.iter().position(|(_, _, rect)| {
+        x >= rect.x() as f32
+            && x < rect.right() as f32
+            && y >= rect.y() as f32
+            && y < rect.bottom() as f32
+    })
+}
+
+fn draw_overlay(
+    canvas: &mut WindowCanvas,
+    session: &crate::overlay::Session,
+    busy: bool,
+    action_busy: bool,
+) -> Result<(), sdl3::Error> {
+    const PANEL_WIDTH: u32 = 840;
+    const LINE_HEIGHT: i32 = 20;
+    let rows = session.rows();
+    let hints = overlay_hints(session);
+    let subtabs = subtab_rects(session);
     let about_lines = [
         "Prismatic - Happy Years interface for Iris",
         "Rust / SDL3",
@@ -439,12 +501,13 @@ fn draw_overlay(
     } else {
         rows.len()
     };
-    let hint_y = 48 + row_count as i32 * LINE_HEIGHT + 8;
-    let footer_y = hint_y + hints.len() as i32 * 16 + 12;
-    let panel_height = (footer_y + 12) as u32;
-    let scale = (WIDTH as f32 / 860.0)
-        .min(HEIGHT as f32 / (panel_height + 8).max(510) as f32)
-        .min(1.25);
+    let OverlayLayout {
+        rows_y,
+        hint_y,
+        footer_y,
+        panel_height,
+        scale,
+    } = overlay_layout(!subtabs.is_empty(), row_count, hints.len());
     shade(canvas, 160)?;
     canvas.set_scale(scale, scale)?;
     panel(canvas, Rect::new(8, 8, PANEL_WIDTH, panel_height))?;
@@ -473,8 +536,20 @@ fn draw_overlay(
             Color::RGB(255, 208, 128),
         )?;
     }
+    for (label, selected, rect) in &subtabs {
+        if *selected {
+            fill(canvas, *rect, SELECTED)?;
+        }
+        text(
+            canvas,
+            rect.x() + 8,
+            rect.y() + 4,
+            label,
+            if *selected { TEXT } else { MUTED },
+        )?;
+    }
     for (index, (label, value)) in rows.iter().enumerate() {
-        let y = 48 + index as i32 * LINE_HEIGHT;
+        let y = rows_y + index as i32 * LINE_HEIGHT;
         if index == session.row {
             fill(canvas, Rect::new(10, y, PANEL_WIDTH - 4, 16), SELECTED)?;
         }
@@ -482,13 +557,15 @@ fn draw_overlay(
             || (session.tab == Tab::Advanced
                 && match session.advanced_page {
                     crate::expert::Page::Core => index < 5,
-                    crate::expert::Page::Performance => index + 1 < rows.len(),
+                    crate::expert::Page::Performance => true,
                     crate::expert::Page::Connections => index < 8,
+                    crate::expert::Page::Capture => false,
                     crate::expert::Page::Developer => index < 4,
                 })
             || (session.tab == Tab::Extensions
                 && match session.extensions_page {
-                    crate::extensions::Page::Hardware => index < 5 || index == 6 || index == 7,
+                    crate::extensions::Page::Hardware => true,
+                    crate::extensions::Page::Storage => index < 2 || index == 3 || index == 4,
                     crate::extensions::Page::Devices => index < 7,
                     crate::extensions::Page::Checkpoints => false,
                 });
@@ -538,6 +615,8 @@ fn draw_overlay(
             "Operation in progress..."
         } else if busy {
             "Choosing files / checking options...   Esc Cancel"
+        } else if !subtabs.is_empty() {
+            "Left/Right Section  Tab/Shift+Tab Topic  Up/Down Row  Enter Change  F9 Save  Esc Close"
         } else {
             "Left/Right Section  Up/Down Select  Enter Change  F9 Save  Esc Close"
         },

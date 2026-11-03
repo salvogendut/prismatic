@@ -36,5 +36,6 @@
   `cargo test --locked` and the dummy-video smoke test for frontend changes.
   Add focused tests for behavior and failure paths, not drawing constants.
 - For lifecycle or display changes, also run the diskless PROM smoke test in
-  README.md. Its environment override keeps Iris's shader corpus in `/tmp`.
+  [docs/testing.md](docs/testing.md#checks). Its environment override keeps Iris's
+  shader corpus in `/tmp`.
   Avoid `cargo fmt --all`: it follows path dependencies into the Iris checkout.

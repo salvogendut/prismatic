@@ -91,15 +91,16 @@ Shift+F2/F4/F5/F6/F9/F11/F12: send a bare guest function-key tap while captured
 Ctrl+Plus/Minus (also Ctrl+= and keypad +/-): scale window by 25% and save
 
 General: machine, RAM, CPU, keyboard and named machine labels. Core changes require restart.
-Tinker > Advanced: Core, Performance, Connections and Developer pages.
+Tinker > Advanced: Core, Performance, Connections, Capture and Developer sub-tabs.
+Click a sub-tab or use Tab/Shift+Tab; Left/Right switches main sections.
 Saved clock/affinity/JIT options, loopback monitor/serial/GDB/VNC, boot ELF and Perfetto traces.
-Advanced sets GIF resolution (Native/320/480/640), frame rate (10/20/25) and encoder.
+Advanced > Capture sets GIF resolution (Native/320/480/640), frame rate (10/20/25) and encoder.
 Captures save the guest display as timestamped PPM/GIF files in the working directory.
 Media: raw/CHD hard disks and ISO9660/EFS/CHD CD-ROMs.
 Starts PAUSED; Ctrl+P boots the selected machine. Default media is disconnected.
 Guest audio uses SDL3; General provides saved mute and volume controls.
 Tinker reveals Network: NAT subnet, NFS, TFTP, local port forwards and optional PCAP bridging.
-Tinker reveals Extensions: Hardware, Devices and experimental Checkpoints pages.
+Tinker reveals Extensions: Hardware, Storage, Devices and experimental Checkpoints sub-tabs.
 VINO/camera, DaynaPort and Ultra64 are available on the Indy/Indigo2 family.
 Checkpoints support single-head Newport Indy/IP22 with raw COW disks or no disks.
 Media selects both SCSI buses where supported and IDs 1-15 on Octane.
@@ -576,6 +577,19 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 } => {
                     if guest.captured {
                         guest.button(mouse_btn, true);
+                    } else if mouse_btn == MouseButton::Left && overlay.session.is_some() {
+                        if let Some(point) = display::window_to_view(
+                            (x, y),
+                            canvas.window().size(),
+                            canvas.window().size_in_pixels(),
+                            (view::WIDTH, view::HEIGHT),
+                        ) && let Some(index) = overlay
+                            .session
+                            .as_ref()
+                            .and_then(|session| view::subtab_at(session, point))
+                        {
+                            redraw |= overlay.select_subtab(index);
+                        }
                     } else if mouse_btn == MouseButton::Left
                         && guest.available()
                         && guest_frame_received
@@ -586,7 +600,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                         let point = display::window_to_view(
                             (x, y),
                             canvas.window().size(),
-                            canvas.output_size()?,
+                            canvas.window().size_in_pixels(),
                             (view::WIDTH, view::HEIGHT),
                         );
                         let area = view::guest_rect(&frame, &settings);

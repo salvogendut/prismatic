@@ -17,6 +17,8 @@ pub enum Key {
     Enter,
     Left,
     Right,
+    PreviousTopic,
+    NextTopic,
     Up,
     Down,
     Quit,
@@ -116,6 +118,40 @@ pub struct Session {
 }
 
 impl Session {
+    pub fn subtabs(&self) -> Vec<(&'static str, bool)> {
+        match self.tab {
+            Tab::Advanced => Page::ALL
+                .iter()
+                .map(|&page| (page.label(), page == self.advanced_page))
+                .collect(),
+            Tab::Extensions => ExtensionsPage::ALL
+                .iter()
+                .map(|&page| (page.label(), page == self.extensions_page))
+                .collect(),
+            _ => vec![],
+        }
+    }
+
+    fn select_subtab(&mut self, index: usize) -> bool {
+        let changed = match self.tab {
+            Tab::Advanced => Page::ALL.get(index).is_some_and(|&page| {
+                let changed = self.advanced_page != page;
+                self.advanced_page = page;
+                changed
+            }),
+            Tab::Extensions => ExtensionsPage::ALL.get(index).is_some_and(|&page| {
+                let changed = self.extensions_page != page;
+                self.extensions_page = page;
+                changed
+            }),
+            _ => false,
+        };
+        if changed {
+            self.row = 0;
+        }
+        changed
+    }
+
     pub fn dirty(&self) -> bool {
         self.draft != self.original
     }
@@ -314,6 +350,11 @@ impl Session {
                     self.draft.machine.prom_console.label().into(),
                 ),
             ],
+            Tab::Advanced if self.advanced_page == Page::Capture => vec![
+                ("GIF resolution", self.draft.gif.resolution_label()),
+                ("GIF frame rate", format!("{} fps", self.draft.gif.fps)),
+                ("GIF encoder", self.draft.gif.encoder.label().into()),
+            ],
             Tab::Advanced if self.advanced_page != Page::Core => {
                 self.draft.advanced.expert.rows(self.advanced_page)
             }
@@ -360,10 +401,6 @@ impl Session {
                 ),
                 ("Bilinear filtering", on_off(self.draft.smoothing)),
                 ("Debug output", self.draft.debug_output.label().into()),
-                ("GIF resolution", self.draft.gif.resolution_label()),
-                ("GIF frame rate", format!("{} fps", self.draft.gif.fps)),
-                ("GIF encoder", self.draft.gif.encoder.label().into()),
-                ("Advanced page", "Core - Enter for next".into()),
             ],
             Tab::Extensions if self.extensions_page == ExtensionsPage::Devices => {
                 let s = &self.draft.advanced.extensions;
@@ -397,7 +434,6 @@ impl Session {
                     ("DaynaPort NAT subnet", s.dayna_subnet.clone()),
                     ("Ultra64 development board", on_off(s.ultra64)),
                     ("Device status", "View running device status".into()),
-                    ("Extensions page", "Devices - Enter for next".into()),
                 ]
             }
             Tab::Extensions if self.extensions_page == ExtensionsPage::Checkpoints => vec![
@@ -423,9 +459,8 @@ impl Session {
                     "Exact build/config/disks; leaves PAUSED".into(),
                 ),
                 ("List checkpoints", "Saved for this machine label".into()),
-                ("Extensions page", "Checkpoints - Enter for next".into()),
             ],
-            Tab::Extensions => vec![
+            Tab::Extensions if self.extensions_page == ExtensionsPage::Hardware => vec![
                 (
                     "Graphics board",
                     self.draft
@@ -450,6 +485,8 @@ impl Session {
                         "1 (fixed)".into()
                     },
                 ),
+            ],
+            Tab::Extensions => vec![
                 (
                     "Scratch target",
                     self.draft.media.scratch.slot.map_or_else(
@@ -500,7 +537,6 @@ impl Session {
                     "Export scratch payload...",
                     "Save full payload to a new host file".into(),
                 ),
-                ("Extensions page", "Hardware - Enter for next".into()),
             ],
             Tab::Media => {
                 const LABELS: [&str; 32] = [
@@ -725,6 +761,21 @@ impl Overlay {
             }
             edit.error = None;
         }
+    }
+
+    pub fn select_subtab(&mut self, index: usize) -> bool {
+        if self.busy
+            || self.action_busy
+            || self.dialog.is_some()
+            || self.text_edit.is_some()
+            || self.interfaces.is_some()
+            || self.report.is_some()
+        {
+            return false;
+        }
+        self.session
+            .as_mut()
+            .is_some_and(|session| session.select_subtab(index))
     }
 
     pub fn key(&mut self, key: Key, live: &Settings) -> Effect {
@@ -1033,6 +1084,17 @@ impl Overlay {
                 session.tab = tabs[(current + step) % tabs.len()];
                 session.row = 0;
             }
+            Key::PreviousTopic | Key::NextTopic => {
+                let tabs = session.subtabs();
+                if let Some(current) = tabs.iter().position(|(_, selected)| *selected) {
+                    let step = if key == Key::PreviousTopic {
+                        tabs.len() - 1
+                    } else {
+                        1
+                    };
+                    session.select_subtab((current + step) % tabs.len());
+                }
+            }
             Key::Up | Key::Down => {
                 let count = session.rows().len();
                 if count > 0 {
@@ -1075,10 +1137,12 @@ impl Overlay {
                 (Tab::General, 11) => session.draft.audio.cycle_volume(),
                 (Tab::General, 12) => session.draft.machine.prom_boot.cycle(),
                 (Tab::General, 13) => session.draft.machine.prom_console.cycle(),
-                (Tab::Advanced, row) if row + 1 == session.rows().len() => {
-                    session.advanced_page = session.advanced_page.next();
-                    session.row = session.rows().len() - 1;
-                }
+                (Tab::Advanced, row) if session.advanced_page == Page::Capture => match row {
+                    0 => session.draft.gif.cycle_width(),
+                    1 => session.draft.gif.cycle_fps(),
+                    2 => session.draft.gif.cycle_encoder(),
+                    _ => {}
+                },
                 (Tab::Advanced, row) if session.advanced_page != Page::Core => {
                     let settings = &mut session.draft.advanced.expert;
                     let field = match (session.advanced_page, row) {
@@ -1167,9 +1231,6 @@ impl Overlay {
                 (Tab::Advanced, 4) => session.draft.advanced.cycle_serial_logging(),
                 (Tab::Advanced, 5) => session.draft.smoothing = !session.draft.smoothing,
                 (Tab::Advanced, 6) => session.draft.debug_output.cycle(),
-                (Tab::Advanced, 7) => session.draft.gif.cycle_width(),
-                (Tab::Advanced, 8) => session.draft.gif.cycle_fps(),
-                (Tab::Advanced, 9) => session.draft.gif.cycle_encoder(),
                 (Tab::Network, 0) => session
                     .draft
                     .network
@@ -1199,10 +1260,6 @@ impl Overlay {
                 }
                 (Tab::Network, 7) if session.draft.network.mode == iris::config::NetMode::Nat => {
                     self.edit_network(Field::Forwards)
-                }
-                (Tab::Extensions, row) if row + 1 == session.rows().len() => {
-                    session.extensions_page = session.extensions_page.next();
-                    session.row = session.rows().len() - 1;
                 }
                 (Tab::Extensions, row) if session.extensions_page == ExtensionsPage::Devices => {
                     let s = &mut session.draft.advanced.extensions;
@@ -1270,32 +1327,35 @@ impl Overlay {
                         }
                     }
                 }
-                (Tab::Extensions, 0) => session.draft.machine.cycle_graphics(),
-                (Tab::Extensions, 1) if session.draft.machine.newport() => {
-                    session.draft.machine.heads = 3 - session.draft.machine.heads
+                (Tab::Extensions, 0) if session.extensions_page == ExtensionsPage::Hardware => {
+                    session.draft.machine.cycle_graphics()
                 }
-                (Tab::Extensions, 2)
-                    if session.draft.machine.profile
-                        == iris::config::MachineProfile::OctaneIp30 =>
-                {
-                    session.draft.machine.cpus = 3 - session.draft.machine.cpus
+                (Tab::Extensions, 1) if session.extensions_page == ExtensionsPage::Hardware => {
+                    if session.draft.machine.newport() {
+                        session.draft.machine.heads = 3 - session.draft.machine.heads
+                    }
                 }
-                (Tab::Extensions, 3) => session.draft.media.scratch.cycle_slot(),
-                (Tab::Extensions, 4) => session.draft.media.scratch.cycle_size(),
-                (Tab::Extensions, 5) => {
+                (Tab::Extensions, 2) if session.extensions_page == ExtensionsPage::Hardware => {
+                    if session.draft.machine.profile == iris::config::MachineProfile::OctaneIp30 {
+                        session.draft.machine.cpus = 3 - session.draft.machine.cpus
+                    }
+                }
+                (Tab::Extensions, 0) => session.draft.media.scratch.cycle_slot(),
+                (Tab::Extensions, 1) => session.draft.media.scratch.cycle_size(),
+                (Tab::Extensions, 2) => {
                     session.storage_index = session.storage_index.wrapping_add(1)
                 }
-                (Tab::Extensions, 6) => {
+                (Tab::Extensions, 3) => {
                     if let Some(slot) = session.storage_slot() {
                         return Effect::Storage(Operation::QueueCd(slot));
                     }
                 }
-                (Tab::Extensions, 7) => {
+                (Tab::Extensions, 4) => {
                     if let Some(slot) = session.storage_slot() {
                         session.draft.media.cd_changers.remove(&slot);
                     }
                 }
-                (Tab::Extensions, 8) => {
+                (Tab::Extensions, 5) => {
                     if let Some(slot) = session.storage_slot() {
                         let cd = session.draft.media.devices[&slot].kind == MediaKind::Cdrom;
                         self.dialog = Some(Dialog::Storage {
@@ -1305,8 +1365,8 @@ impl Overlay {
                         });
                     }
                 }
-                (Tab::Extensions, 9) => return Effect::Storage(Operation::ImportScratch),
-                (Tab::Extensions, 10) => return Effect::Storage(Operation::ExportScratch),
+                (Tab::Extensions, 6) => return Effect::Storage(Operation::ImportScratch),
+                (Tab::Extensions, 7) => return Effect::Storage(Operation::ExportScratch),
                 (Tab::Network, 8) => {
                     session.draft.network.forward_lan = !session.draft.network.forward_lan
                 }
@@ -1337,6 +1397,127 @@ impl Overlay {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn topics_wrap_remember_selection_and_leave_settings_untouched() {
+        let live = Settings {
+            tinker: true,
+            ..Default::default()
+        };
+        let mut overlay = Overlay::default();
+        overlay.key(Key::Options, &live);
+        assert!(!overlay.select_subtab(1)); // General has no topics.
+        overlay.key(Key::NextTopic, &live);
+        assert_eq!(overlay.session.as_ref().unwrap().tab, Tab::General);
+        for (tab, labels) in [
+            (Tab::Advanced, Page::ALL.map(Page::label).to_vec()),
+            (
+                Tab::Extensions,
+                ExtensionsPage::ALL.map(ExtensionsPage::label).to_vec(),
+            ),
+        ] {
+            overlay.session.as_mut().unwrap().tab = tab;
+            for label in labels.iter().cycle().take(labels.len() * 2) {
+                let session = overlay.session.as_mut().unwrap();
+                assert_eq!(
+                    session.subtabs().into_iter().find(|s| s.1).unwrap().0,
+                    *label
+                );
+                session.row = session.rows().len() - 1;
+                assert_eq!(overlay.key(Key::NextTopic, &live), Effect::None);
+                assert_eq!(overlay.session.as_ref().unwrap().row, 0);
+            }
+            overlay.key(Key::PreviousTopic, &live);
+            let last = labels.len() - 1;
+            assert!(overlay.session.as_ref().unwrap().subtabs()[last].1);
+            overlay.key(Key::Right, &live);
+            overlay.key(Key::Left, &live);
+            assert!(overlay.session.as_ref().unwrap().subtabs()[last].1);
+            assert!(!overlay.select_subtab(labels.len()));
+            assert!(overlay.select_subtab(0));
+            overlay.key(Key::Down, &live);
+            assert!(!overlay.select_subtab(0));
+            assert_eq!(overlay.session.as_ref().unwrap().row, 1);
+            assert_eq!(overlay.session.as_ref().unwrap().draft, live);
+            assert!(!overlay.session.as_ref().unwrap().dirty());
+        }
+    }
+
+    #[test]
+    fn topic_navigation_cannot_bypass_modals_or_pending_work() {
+        let live = Settings {
+            tinker: true,
+            ..Default::default()
+        };
+        for blocker in 0..6 {
+            let mut overlay = Overlay::default();
+            for key in [Key::Options, Key::Right, Key::Right, Key::NextTopic] {
+                overlay.key(key, &live);
+            }
+            match blocker {
+                0 => overlay.busy = true,
+                1 => overlay.action_busy = true,
+                2 => overlay.confirm_restart(),
+                3 => {
+                    overlay.key(Key::Enter, &live); // Count MHz text editor.
+                    assert!(overlay.text_edit.is_some());
+                }
+                4 => overlay.interfaces_listed(vec![]),
+                _ => overlay.show_report("Connection status".into()),
+            }
+            assert!(!overlay.select_subtab(3));
+            assert_eq!(overlay.key(Key::NextTopic, &live), Effect::None);
+            assert_eq!(overlay.key(Key::PreviousTopic, &live), Effect::None);
+            let session = overlay.session.as_ref().unwrap();
+            assert_eq!(session.advanced_page, Page::Performance);
+            assert_eq!(session.row, 0);
+            assert_eq!(session.draft, live);
+        }
+    }
+
+    #[test]
+    fn storage_topic_keeps_drafts_and_dispatches_its_last_action() {
+        let live = Settings {
+            tinker: true,
+            ..Default::default()
+        };
+        let mut overlay = Overlay::default();
+        overlay.key(Key::Options, &live);
+        overlay.session.as_mut().unwrap().tab = Tab::Extensions;
+        overlay.key(Key::NextTopic, &live);
+        overlay.key(Key::Down, &live);
+        overlay.key(Key::Enter, &live); // Scratch size.
+        let changed = overlay
+            .session
+            .as_ref()
+            .unwrap()
+            .draft
+            .media
+            .scratch
+            .size_mb;
+        assert_ne!(changed, live.media.scratch.size_mb);
+        overlay.key(Key::NextTopic, &live);
+        overlay.key(Key::PreviousTopic, &live);
+        assert_eq!(
+            overlay.session.as_ref().unwrap().extensions_page,
+            ExtensionsPage::Storage
+        );
+        overlay.key(Key::Up, &live); // Export scratch, the last real row.
+        assert_eq!(
+            overlay.key(Key::Enter, &live),
+            Effect::Storage(Operation::ExportScratch)
+        );
+        let Effect::Save(draft) = overlay.key(Key::Options, &live) else {
+            panic!("Expected save");
+        };
+        assert_eq!(draft.media.scratch.size_mb, changed);
+        overlay.save_failed();
+        assert_eq!(overlay.session.as_ref().unwrap().draft, draft);
+        for key in [Key::Escape, Key::Left, Key::Enter, Key::Options] {
+            overlay.key(key, &live);
+        }
+        assert_eq!(overlay.session.as_ref().unwrap().draft, live);
+    }
 
     #[test]
     #[cfg(all(iris_devices, iris_checkpoints))]
@@ -1457,17 +1638,8 @@ mod tests {
         let mut overlay = Overlay::default();
         overlay.key(Key::Options, &live);
         for tab in [Tab::General, Tab::Advanced, Tab::Extensions, Tab::Network] {
-            for page in [
-                Page::Core,
-                Page::Performance,
-                Page::Connections,
-                Page::Developer,
-            ] {
-                for extension in [
-                    ExtensionsPage::Hardware,
-                    ExtensionsPage::Devices,
-                    ExtensionsPage::Checkpoints,
-                ] {
+            for page in Page::ALL {
+                for extension in ExtensionsPage::ALL {
                     let session = overlay.session.as_mut().unwrap();
                     session.tab = tab;
                     session.advanced_page = page;
@@ -1503,10 +1675,8 @@ mod tests {
             Key::Options,
             Key::Right,
             Key::Right,
-            Key::Up,
-            Key::Enter,
-            Key::Enter,
-            Key::Down,
+            Key::NextTopic,
+            Key::NextTopic,
             Key::Down,
             Key::Enter,
         ] {
@@ -1555,7 +1725,7 @@ mod tests {
     }
 
     #[test]
-    fn advanced_pages_edit_only_drafts_and_runtime_status_is_separate() {
+    fn advanced_topics_edit_only_drafts_and_runtime_status_is_separate() {
         let live = Settings {
             tinker: true,
             ..Default::default()
@@ -1565,9 +1735,7 @@ mod tests {
             Key::Options,
             Key::Right,
             Key::Right,
-            Key::Up,
-            Key::Enter,
-            Key::Down,
+            Key::NextTopic,
             Key::Enter,
         ] {
             overlay.key(key, &live);
@@ -1604,7 +1772,7 @@ mod tests {
         }
         assert!(!overlay.session.as_ref().unwrap().dirty());
         assert_eq!(overlay.session.as_ref().unwrap().advanced_page, Page::Core);
-        for key in [Key::Up, Key::Enter, Key::Enter, Key::Up] {
+        for key in [Key::NextTopic, Key::NextTopic, Key::Up] {
             overlay.key(key, &live);
         }
         assert_eq!(
@@ -2174,7 +2342,14 @@ mod tests {
             ..Default::default()
         };
         let mut overlay = Overlay::default();
-        for key in [Key::Options, Key::Right, Key::Right] {
+        for key in [
+            Key::Options,
+            Key::Right,
+            Key::Right,
+            Key::NextTopic,
+            Key::NextTopic,
+            Key::NextTopic,
+        ] {
             overlay.key(key, &live);
         }
         for label in ["GIF resolution", "GIF frame rate", "GIF encoder"] {

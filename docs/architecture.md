@@ -1,5 +1,7 @@
 # Frontend and Iris integration
 
+[Back to Prismatic](../README.md) · [User guides](../README.md#documentation) · [Testing](testing.md)
+
 ## Fetch-and-build workflow
 
 `Makefile` exposes editable `IRIS_REPO` and `IRIS_BRANCH` defaults: the user's
@@ -122,7 +124,7 @@ including when the hints are hidden.
 | `src/input.rs` | Host/modal key routing, physical scancode mapping, held guest input, PS/2 delivery |
 | `src/smoke.rs` | Scripted SDL input and General/Media/Advanced menu and restart smoke tests |
 | `src/overlay.rs` | Draft settings, navigation, modal choices and effects |
-| `src/expert.rs` | Advanced pages, validated performance/connection/developer settings, owned GDB/VNC and boot tracing |
+| `src/expert.rs` | Advanced topics, validated performance/connection/developer settings, owned GDB/VNC and boot tracing |
 | `src/serial.rs` | Per-channel TCP/PTY/Off routing, bounded nonblocking PTYs, actual endpoint reports and explicit transport cleanup |
 | `src/settings.rs` | Desktop/hardware/media/Advanced settings, compatibility, RAM banks, state paths and atomic persistence |
 | `src/profiles.rs` | Named machine stanzas, draft selection, state identity and concurrent catalog merging |
@@ -544,7 +546,7 @@ physical keyboard type. The guest chooses its character layout. SDL text/IME
 events are not interpreted as key presses.
 
 A left click inside the guest rectangle enables SDL relative mouse mode.
-Hit testing converts window points through renderer pixels to the letterboxed
+Hit testing converts window points through drawable window pixels to the letterboxed
 logical view, including high-DPI scaling. The capture click is consumed. Only
 captured input reaches the guest. Ctrl+Enter, F9, the quit dialog, focus loss,
 window hiding/minimizing and machine stop release all tracked keys/buttons and
@@ -615,9 +617,16 @@ those controls show fixed values and ignore Enter on these models. Their saved
 values are retained for switching back. Non-Newport profiles similarly show
 fixed Shadow cache and guest-controlled resolution.
 
-Advanced now has four pages. `Session.advanced_page` is presentation state, reset
-when the overlay opens; the Core page retains its original row ordering. Numeric
-and path fields use the existing transactional text editor. `AdvancedSettings.expert`
+Advanced has five visible topic sub-tabs: Core, Performance, Connections, Capture
+and Developer. Core keeps its original machine and display controls; Capture owns
+the shared GIF preferences. `Session.advanced_page` is presentation state, reset
+when the overlay opens. Tab/Shift+Tab wraps between topics and Left/Right switches
+main sections. Clicking a sub-tab uses the same layout and scaling as rendering.
+Input mapping uses the window's drawable pixel size, preserving letterbox offsets
+on resized and high-DPI windows.
+Topic changes reset row selection without touching drafts or runtime state;
+editors, dialogs, reports and pending work block both keyboard and mouse switching.
+Numeric and path fields use the existing transactional text editor. `AdvancedSettings.expert`
 is serialized under `[advanced.expert]` and copied into named machine stanzas.
 Structural validation runs on load/save; capability, host affinity and ELF-file
 checks run on the validation worker before persistence. Relative ELF paths resolve
@@ -809,8 +818,10 @@ OS-specific effects of nondefault clock/affinity/JIT settings need separate test
 
 ## Optional devices and checkpoints
 
-Extensions has Hardware, Devices and Checkpoints pages. Hardware retains its
-existing rows. Device settings live in `AdvancedSettings.extensions`, so named
+Extensions has Hardware, Storage, Devices and Checkpoints topic sub-tabs.
+Hardware contains graphics, display heads and CPU count; Storage contains scratch,
+CD changer and disk actions. `Session.extensions_page` uses the same presentation
+and navigation rules as Advanced. Device settings live in `AdvancedSettings.extensions`, so named
 machine stanzas, transactional saves and restart comparison include them.
 Validation runs without opening cameras, NAT engines or shared memory. It rejects
 unsupported profiles, occupied DaynaPort SCSI slots, invalid MACs and overlapping

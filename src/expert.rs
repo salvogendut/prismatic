@@ -1,4 +1,4 @@
-//! Saved Advanced pages and safe startup integration for Iris library services.
+//! Advanced topics and safe startup integration for Iris library services.
 use iris::config::{MachineConfig, MachineProfile};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -9,23 +9,25 @@ pub enum Page {
     Core,
     Performance,
     Connections,
+    Capture,
     Developer,
 }
 impl Page {
+    pub const ALL: [Self; 5] = [
+        Self::Core,
+        Self::Performance,
+        Self::Connections,
+        Self::Capture,
+        Self::Developer,
+    ];
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Core => "Core",
             Self::Performance => "Performance",
             Self::Connections => "Connections",
+            Self::Capture => "Capture",
             Self::Developer => "Developer",
-        }
-    }
-    pub fn next(self) -> Self {
-        match self {
-            Self::Core => Self::Performance,
-            Self::Performance => Self::Connections,
-            Self::Connections => Self::Developer,
-            Self::Developer => Self::Core,
         }
     }
 }
@@ -308,8 +310,8 @@ impl ExpertSettings {
                 format!("Not built (saved: {value})")
             }
         };
-        let mut rows = match page {
-            Page::Core => vec![],
+        match page {
+            Page::Core | Page::Capture => vec![],
             Page::Performance => vec![
                 ("Count clock (MHz)", Field::CountMhz.value(self)),
                 (
@@ -382,12 +384,7 @@ impl ExpertSettings {
                     "Show connections, tracing and build features".into(),
                 ),
             ],
-        };
-        rows.push((
-            "Advanced page",
-            format!("{} - Enter for next", page.label()),
-        ));
-        rows
+        }
     }
 }
 fn port_label(port: Option<u16>) -> String {
@@ -588,7 +585,7 @@ pub fn hint(page: Page, row: usize) -> &'static str {
         (Page::Developer, 3) => {
             "Host time or retired guest instructions. Traces flush when the machine stops."
         }
-        _ => "Enter cycles Core, Performance, Connections and Developer pages.",
+        _ => "Tab/Shift+Tab switches topics; Left/Right switches main sections.",
     }
 }
 

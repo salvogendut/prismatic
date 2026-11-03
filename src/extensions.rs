@@ -170,15 +170,24 @@ impl ExtensionsSettings {
 pub enum Page {
     #[default]
     Hardware,
+    Storage,
     Devices,
     Checkpoints,
 }
 impl Page {
-    pub fn next(self) -> Self {
+    pub const ALL: [Self; 4] = [
+        Self::Hardware,
+        Self::Storage,
+        Self::Devices,
+        Self::Checkpoints,
+    ];
+
+    pub fn label(self) -> &'static str {
         match self {
-            Self::Hardware => Self::Devices,
-            Self::Devices => Self::Checkpoints,
-            Self::Checkpoints => Self::Hardware,
+            Self::Hardware => "Hardware",
+            Self::Storage => "Storage",
+            Self::Devices => "Devices",
+            Self::Checkpoints => "Checkpoints",
         }
     }
 }

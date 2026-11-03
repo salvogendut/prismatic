@@ -122,6 +122,10 @@ pub fn route_key(
             S::Right => KeyRoute::Host(Key::Right),
             S::Up => KeyRoute::Host(Key::Up),
             S::Down => KeyRoute::Host(Key::Down),
+            S::Tab if modifiers.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD) => {
+                KeyRoute::Host(Key::PreviousTopic)
+            }
+            S::Tab => KeyRoute::Host(Key::NextTopic),
             _ => KeyRoute::Ignore,
         };
     }
@@ -438,6 +442,34 @@ pub fn physical_key(scan: Scancode) -> Option<KeyCode> {
 mod tests {
     use super::*;
     use iris::{config::KeyboardLayout, traits::Device};
+
+    #[test]
+    fn tab_switches_overlay_topics_but_remains_a_guest_key_when_captured() {
+        for (modifiers, topic) in [
+            (Mod::NOMOD, Key::NextTopic),
+            (Mod::LSHIFTMOD, Key::PreviousTopic),
+            (Mod::RSHIFTMOD, Key::PreviousTopic),
+        ] {
+            for captured in [false, true] {
+                assert_eq!(
+                    route_key(Scancode::Tab, modifiers, false, captured, true),
+                    KeyRoute::Host(topic)
+                );
+                assert_eq!(
+                    route_key(Scancode::Tab, modifiers, true, captured, true),
+                    KeyRoute::Ignore
+                );
+            }
+            assert_eq!(
+                route_key(Scancode::Tab, modifiers, false, true, false),
+                KeyRoute::Guest
+            );
+            assert_eq!(
+                route_key(Scancode::Tab, modifiers, false, false, false),
+                KeyRoute::Ignore
+            );
+        }
+    }
 
     #[test]
     fn scaling_uses_host_symbols_and_excludes_repeats_and_altgr() {

@@ -74,6 +74,8 @@ pub fn fit(width: u32, height: u32, area: Rect) -> Rect {
 
 /// SDL events use window points; the renderer letterboxes a fixed logical view.
 /// Converting through output pixels also handles high-DPI window/output sizes.
+/// Use the window's pixel size for `output`: SDL's current render output size
+/// already includes logical presentation and would lose the letterbox offsets.
 pub fn window_to_view(
     point: (f32, f32),
     window: (u32, u32),

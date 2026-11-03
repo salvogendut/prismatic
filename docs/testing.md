@@ -1,0 +1,147 @@
+# Testing and smoke checks
+
+[Back to Prismatic](../README.md) · [All guides](../README.md#documentation)
+
+- [Checks](#checks)
+- [Smoke test behavior](#smoke-test-behavior)
+- [Model coverage](#model-coverage)
+- [Input and menu checks](#input-and-menu-checks)
+- [State isolation and test coverage](#state-isolation-and-test-coverage)
+
+## Checks
+
+Run these commands from the repository root. See [building](building.md) for
+toolchain requirements and [Iris feature compatibility](building.md#iris-compatibility).
+
+For the managed Iris checkout selected in the Makefile:
+
+```sh
+make test-bootstrap
+make check FEATURES=
+SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software make run ARGS=--smoke-test
+IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software make run ARGS='--boot-smoke-test --screenshot /tmp/prismatic-prom.bmp'
+```
+
+Repository, branch and feature overrides also apply to these targets. Use
+`make check` to check the selected optional features as well. For direct Cargo
+development against your maintained sibling `../iris` checkout:
+
+```sh
+cargo fmt -p prismatic --check
+cargo clippy --locked --all-targets --no-deps -- -D warnings
+cargo test --locked
+# Omit perfetto on older Iris main revisions with the Odyssey compile issue:
+cargo test --locked --features pcap,idle-pause,jitv2
+SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --smoke-test
+IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --boot-smoke-test --screenshot /tmp/prismatic-prom.bmp
+IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --input-smoke-test --screenshot /tmp/prismatic-input.bmp
+IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --settings-smoke-test --screenshot /tmp/prismatic-settings.bmp
+IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --media-smoke-test --screenshot /tmp/prismatic-media.bmp
+IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --locked -- --advanced-smoke-test --screenshot /tmp/prismatic-advanced.bmp
+```
+
+On cores with working Perfetto, also run
+`cargo test --locked --features pcap,idle-pause,jitv2,perfetto,developer` for
+tracing/developer coverage. Keep `developer` off in performance builds.
+
+## Smoke test behavior
+
+`--smoke-test` renders three UI frames with the options open and exits without
+starting Iris. `--boot-smoke-test` uses fresh temporary NVRAM, waits for a
+nonuniform guest framebuffer, renders for ten more seconds, optionally captures
+the SDL output, and stops Iris. It fails if startup, display output (120-second
+timeout), or shutdown fails. This checks the display path; it does not identify
+PROM text or prove that a complete OS boot works.
+
+`cargo test --locked` also checks named-label persistence, concurrent catalog
+saves, instance locks, draft isolation and pause/reset/resume. The IP22 power-off
+regression writes its panel register separately from a monitor halt, using
+temporary state and no guest disks. Advanced tests also cover per-label
+expert settings, invalid draft edits, port collisions, real GDB protocol exchange,
+VNC teardown during a partial handshake, immediate port reuse and direct ELF boot.
+The optional-feature suite checks that each boot trace is distinct and flushed.
+
+## Model coverage
+
+For a diskless IP28 check, create a separate configuration and use the same
+smoke path (the input script also works with its PROM):
+
+```sh
+cat > /tmp/prismatic-ip28.cfg <<'EOF'
+[machine]
+profile = "indigo2_ip28"
+cpu = "r10000"
+ram_mb = 128
+EOF
+IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software cargo run --release --locked -- --config /tmp/prismatic-ip28.cfg --input-smoke-test --screenshot /tmp/prismatic-ip28.bmp
+```
+
+IP28 has passed PROM display checks at 32 MB, 128 MB and 1 GiB, with keyboard,
+mouse and hardware inventory checked at 128 MB. Bundled O2 4.18 reaches the
+diskless boot prompt with both R5000 and R10000 at 128 MB. Bundled Octane 4.9
+reaches the PROM menu at 128 MB: its diskless POST reports internal/external
+SCSI device/cable diagnostic failures, and Enter continues to the menu.
+O2/Octane also have synthetic-ROM startup, external-override, media attachment
+and shutdown coverage. These checks do not establish
+IRIX boot compatibility across all models or RAM configurations.
+
+## Input and menu checks
+
+`--input-smoke-test` also boots with fresh NVRAM. It queues SDL events to capture
+input, dismiss the boot error, move the pointer, enter the command monitor and
+type `hinv`. It checks release/recapture through Ctrl+Enter, F9 and focus loss,
+then captures the final display and stops. Inspect the screenshot for the
+hardware listing: the test checks routing and capture state but does not read
+PROM text. Omit `SDL_VIDEODRIVER` and `SDL_RENDER_DRIVER` to exercise the native
+desktop window; leave it focused while the scripted test runs.
+
+`--settings-smoke-test` exercises the actual General menu: change RAM, cancel
+restart, discard the draft, then save and confirm a change from a 64 MB Indy to
+a 128 MB Indigo2. After restart it runs the input smoke script and checks saved
+preferences. Inspect its screenshot for `Memory size: 128 Mbytes` and
+`Graphics: XL`. It has a 240-second overall timeout and rejects `--config`
+because it automatically saves preferences in its temporary directory.
+
+`--media-smoke-test` selects temporary raw/CHD disks and raw/CHD CDs through
+Media, saves `prismatic.cfg`, confirms restart and runs the input script.
+Inspect `hinv` for disks 1/2 and CD-ROMs 4/5/6. It substitutes known temporary
+paths for the OS file chooser, but exercises normal asynchronous validation,
+attachment and shutdown. These are synthetic sector fixtures, not bootable
+IRIX installation media; this does not establish a full OS installation.
+
+`--advanced-smoke-test` enables Tinker and edits all five core options. It
+cancels restart and discards once, then hides Tinker and confirms the changes.
+After restarting with 1024×768 initial resolution, Shadow cache, −5 years,
+immediate SCSI interrupts and timestamped logging, it runs the input script,
+checks saved preferences and log creation, and reopens Advanced for the
+screenshot. This test uses temporary state and a 240-second total timeout;
+it checks integration and PROM operation, not guest OS compatibility for
+every combination of expert options.
+
+## State isolation and test coverage
+
+The machine smoke commands redirect Iris's draw-shape cache to `/tmp` as well.
+All tests use temporary preferences unless `--config` is supplied. General,
+Media and Advanced menu tests automatically save options and reject `--config`.
+Missing configuration files are initialized on startup. Machine smoke tests always use
+temporary NVRAM and reject `--state-dir`; diskless tests reject configurations
+with attached media. A screenshot path is accepted only with a smoke test.
+Unit tests cover draft settings, persistence and failures,
+hardware compatibility/bank mapping, state-directory isolation, confirmation
+behavior, framebuffer packing/stride, frame replacement, startup failure,
+physical keys, host/modal routing, PS/2 releases, mouse input, high-DPI hit
+testing, configuration migration, COW persistence, CD read-only access,
+invalid media, flush failures, LED pulses, Advanced option mapping, restart
+detection and retained settings when Tinker is hidden. Storage/network tests cover
+CD changer actions on both buses, COW Commit/Reset, scratch import/export bounds,
+paused transfers and live forwarding after successful Save. Linux is validated;
+other platforms still need integration checks.
+
+Topic navigation tests cover forward/backward wrapping, mouse selection,
+draft retention and modal/busy guards. For a desktop check, enable Tinker and
+visit every Advanced and Extensions sub-tab using clicks and Tab/Shift+Tab.
+Change Capture and Storage options, switch topics, and exercise Save and Discard.
+Repeat mouse selection at 75% scale and with a wide, letterboxed window to verify
+that the visible sub-tabs and their click targets remain aligned.
+
+Related: [building](building.md), [integration architecture](architecture.md).
