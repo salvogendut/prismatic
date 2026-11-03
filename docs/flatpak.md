@@ -161,6 +161,9 @@ Runtime/LLVM changes must also be reflected in the workflow installation step.
 Automatic ELF debug extraction is disabled because it can modify the temporary
 Rust compiler libraries between modules. The toolchain is removed by cleanup;
 Cargo still builds the app with its normal optimized release profile.
+The libpcap module explicitly installs to `/app/lib`; older Flatpak Builder
+versions otherwise let CMake choose `/app/lib64`, which is outside the runtime
+loader's search path. The app build checks the shared library before compiling.
 
 ```sh
 python3 -m unittest discover -s tools -p 'test_*.py' -v

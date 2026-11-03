@@ -18,6 +18,11 @@ revision = subprocess.check_output(['git', '-C', 'iris', 'rev-parse', 'HEAD'], t
 if revision != info['iris_revision']:
     raise SystemExit('Iris checkout does not match the recorded release revision')
 
+# Older Flatpak Builder versions let CMake default to /app/lib64, which the
+# runtime loader does not search. Catch a missing runtime dependency early.
+if not Path('/app/lib/libpcap.so.1').is_file():
+    raise SystemExit('libpcap must be installed in /app/lib before building Prismatic')
+
 subprocess.run(['cargo', 'build', '--manifest-path', str(source / 'Cargo.toml'),
                 '--release', '--frozen', '--features', info['features']], check=True)
 

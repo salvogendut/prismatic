@@ -62,7 +62,7 @@
     {
       "name": "libpcap",
       "buildsystem": "cmake-ninja",
-      "config-opts": ["-DBUILD_SHARED_LIBS=ON", "-DDISABLE_DBUS=ON", "-DDISABLE_USB=ON"],
+      "config-opts": ["-DBUILD_SHARED_LIBS=ON", "-DCMAKE_INSTALL_LIBDIR=lib", "-DDISABLE_DBUS=ON", "-DDISABLE_USB=ON"],
       "sources": [
         {
           "type": "git",
