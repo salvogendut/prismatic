@@ -24,7 +24,7 @@ class BuildError(Exception):
 
 def execute(args, *, cwd, capture=False, env=None):
     result = subprocess.run(
-        [str(arg) for arg in args], cwd=cwd, env=env, text=True,
+        [str(arg) for arg in args], cwd=cwd, env=env, text=True, encoding="utf-8",
         stdout=subprocess.PIPE if capture else None,
         stderr=subprocess.PIPE if capture else None,
     )

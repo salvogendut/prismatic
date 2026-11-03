@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -14,6 +15,14 @@ from build import BuildError
 
 
 class NativeTests(unittest.TestCase):
+    def test_cargo_metadata_text_is_utf8_even_with_a_windows_locale(self):
+        # Cargo emits UTF-8, including dependency authors/descriptions; Python
+        # 3.13 otherwise uses the Windows code page for subprocess output.
+        with patch('subprocess._text_encoding', return_value='cp1252'):
+            text = native.run([sys.executable, '-c',
+                               'import sys; sys.stdout.buffer.write(bytes.fromhex("e38181"))'], capture=True)
+        self.assertEqual(text, '\u3041')
+
     def test_release_plan_honors_makefile_and_checks_version(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
