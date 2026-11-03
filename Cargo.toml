@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 description = "A Happy Years desktop frontend for the Iris SGI emulator"
+license = "BSD-3-Clause"
 
 [features]
 pcap = ["iris/pcap"]
@@ -14,7 +15,7 @@ developer = ["iris/developer"]
 
 [dependencies]
 iris = { path = "../iris" }
-# Read-only CHD inspection uses the same library as Iris's storage backend.
+# CHD inspection and blank-disk creation use Iris's storage library.
 libchdman-rs = { version = "0.289.2", features = ["prebuilt"] }
 # Iris's PS/2 API currently takes this physical-key enum. SDL owns all events.
 winit = { version = "0.30", default-features = false }

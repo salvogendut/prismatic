@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+# Desktop launches need a writable, predictable capture directory. Keep the
+# Flatpak's preferences and caches separate from native Prismatic and Iris.
+capture_dir="${XDG_DATA_HOME:?}/prismatic/captures"
+cache_dir="${XDG_CACHE_HOME:?}/prismatic"
+mkdir -p "$capture_dir" "$cache_dir"
+export IRIS_REX_JIT_PROFILE="${IRIS_REX_JIT_PROFILE:-$cache_dir/rex-jit-profile.bin}"
+cd "$capture_dir"
+exec /app/libexec/prismatic "$@"

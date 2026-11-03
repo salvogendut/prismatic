@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.salvogendut.Prismatic</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>BSD-3-Clause</project_license>
+  <name>Prismatic</name>
+  <summary>Emulate SGI workstations with the Happy Years interface</summary>
+  <developer id="io.github.salvogendut"><name>Happy Years</name></developer>
+  <description>
+    <p>Prismatic is a Rust and SDL3 desktop interface for our fork of Iris.
+    Configure SGI Indy, Indigo2, O2 and Octane machines, attach disk and CD
+    images, and boot supported guest operating systems including IRIX and NetBSD.</p>
+    <p>Save named machine configurations, manage media and networking, and
+    capture screenshots and animated GIFs using the Happy Years overlay menus.</p>
+  </description>
+  <launchable type="desktop-id">io.github.salvogendut.Prismatic.desktop</launchable>
+  <url type="homepage">https://github.com/salvogendut/prismatic</url>
+  <url type="bugtracker">https://github.com/salvogendut/prismatic/issues</url>
+  <url type="vcs-browser">https://github.com/salvogendut/prismatic</url>
+  <content_rating type="oars-1.1"/>
+  <supports><control>keyboard</control><control>pointing</control></supports>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/salvogendut/prismatic/main/images/irix65-desktop.png</image>
+      <caption>IRIX desktop running in Prismatic</caption>
+    </screenshot>
+  </screenshots>
+</component>

@@ -27,6 +27,10 @@ IRIX 6.5 running in Prismatic, captured at the guest's native 1282×1024 resolut
 
 ## Build and run
 
+For Linux desktop installation, see the [Flatpak guide](docs/flatpak.md).
+`make flatpak` builds an installable x86_64 bundle, including Iris `xiri` and the
+project icon. Tagged releases also build Flatpak bundles through GitHub Actions.
+
 Use a Rust/SDL3 development environment with Git, Python 3 and the native build
 libraries installed. Linux is the validated platform; see the
 [build guide](docs/building.md#dependencies-and-features) for prerequisites.
@@ -77,11 +81,12 @@ instructions, full shortcuts, input handling, capture options and audio.
 | Guide | Contents |
 | --- | --- |
 | [Building and Iris compatibility](docs/building.md) | Dependencies, Makefile options, manual Cargo builds and core features |
+| [Linux Flatpak](docs/flatpak.md) | Installation, sandbox files, source builds and tagged-release CI |
 | [Controls, captures and audio](docs/usage.md) | First launch, keyboard/mouse input, window scaling, screenshots, GIFs and sound |
 | [Machine settings and saved labels](docs/machines.md) | Models, CPU/RAM, PROM boot/console presets, firmware and multiple instances |
 | [Advanced settings](docs/advanced.md) | Performance, SGIEmu optimizations, serial TCP/PTY, GDB/VNC, tracing and diagnostics |
 | [Extensions](docs/extensions.md) | Graphics, extra CPUs, optional devices, checkpoints, CD changer and scratch storage |
-| [Media and activity LEDs](docs/media.md) | Disk/CD formats, SCSI IDs, copy-on-write overlays and status lights |
+| [Media and activity LEDs](docs/media.md) | Create empty disks, disk/CD formats, SCSI IDs, copy-on-write overlays and status lights |
 | [Networking and file sharing](docs/networking.md) | SSH through localhost port forwarding, NAT, PCAP, NFS, TFTP and RSH |
 | [Configuration and saved state](docs/configuration.md) | `prismatic.cfg`, TOML examples, paths and persistent firmware state |
 | [Testing and smoke checks](docs/testing.md) | Formatting, Clippy, unit tests, diskless PROM checks and coverage limits |
@@ -100,3 +105,8 @@ Thank you also to [Renato Tarabella](https://github.com/RenatoTarabella) and the
 caching and real-time clock caching techniques inspired the optional performance
 optimizations adapted into our Iris fork, now available in Prismatic through
 **Advanced > Performance > SGIEmu optimizations**.
+
+## License
+
+Prismatic is licensed under the [BSD 3-Clause license](LICENSE).
+Iris, other dependencies and attributed assets retain their own licenses.

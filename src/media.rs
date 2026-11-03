@@ -263,6 +263,7 @@ impl Medium {
 }
 
 pub enum Completion {
+    DiskDestination(PathBuf),
     Action(crate::storage::Action),
     FolderPicked {
         folder: crate::network::Folder,
@@ -295,6 +296,46 @@ pub struct MediaJobs {
     receiver: Option<mpsc::Receiver<Result<Completion, String>>>,
 }
 impl MediaJobs {
+    pub fn pick_disk_destination(
+        &mut self,
+        window: &sdl3::video::Window,
+        format: crate::disk_image::Format,
+        current: Option<&Path>,
+    ) -> Result<(), String> {
+        use sdl3::dialog::{DialogError, DialogFileFilter, show_save_file_dialog};
+        let (sender, receiver) = mpsc::sync_channel(1);
+        self.receiver = Some(receiver);
+        let filters = [DialogFileFilter {
+            name: format.label(),
+            pattern: match format {
+                crate::disk_image::Format::Raw => "img;raw;dsk;hdd",
+                crate::disk_image::Format::Chd => "chd",
+            },
+        }];
+        let default = PathBuf::from(format!("disk.{}", format.extension()));
+        show_save_file_dialog(
+            &filters,
+            Some(current.unwrap_or(&default)),
+            window,
+            Box::new(move |result: Result<Vec<PathBuf>, DialogError>, _| {
+                let result = match result {
+                    Ok(paths) if paths.len() == 1 => {
+                        Ok(Completion::DiskDestination(paths[0].clone()))
+                    }
+                    Ok(paths) if paths.is_empty() => Ok(Completion::Cancelled),
+                    Err(DialogError::Canceled) => Ok(Completion::Cancelled),
+                    Err(error) => Err(error.to_string()),
+                    _ => Err("Choose one destination".into()),
+                };
+                let _ = sender.try_send(result);
+            }),
+        )
+        .map_err(|error| {
+            self.receiver = None;
+            error.to_string()
+        })
+    }
+
     /// The smoke harness supplies a temporary fixture instead of a native dialog.
     pub fn pick_path(&mut self, id: u8, kind: MediaKind, path: PathBuf) {
         let (sender, receiver) = mpsc::sync_channel(1);

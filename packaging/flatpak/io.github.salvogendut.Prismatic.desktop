@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Prismatic
+Comment=SGI workstation emulator with the Happy Years interface
+Exec=prismatic
+Icon=io.github.salvogendut.Prismatic
+Terminal=false
+Categories=System;Emulator;
+Keywords=SGI;Indy;Indigo2;Octane;O2;IRIX;NetBSD;Iris;
+StartupWMClass=io.github.salvogendut.Prismatic

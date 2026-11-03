@@ -29,6 +29,27 @@ Clippy and tests, with test shader output isolated in the managed build director
 The helper's Python tests exercise local Git clone/update behavior, preservation
 of local work, generated inputs, Make overrides and failure propagation.
 
+## Flatpak distribution
+
+`make flatpak` uses `tools/flatpak.py` and the manifest in `packaging/flatpak/`.
+It resolves the Makefile's Iris repository/branch (by default our fork's `xiri`)
+to an exact commit before Flatpak Builder downloads sources. An explicit frontend
+snapshot excludes personal configuration, media and captures. All package
+compilation runs offline in the Freedesktop SDK, with checksum-pinned Rust and
+Cargo inputs. libchdman builds from its bundled source with a portable CPU baseline.
+The frontend/core boundary and native Cargo build remain unchanged.
+
+The Flatpak launcher gives captures a writable per-application location and
+redirects Iris's shader corpus into its private cache. Runtime permissions expose
+display/audio, network, Downloads and Documents/Prismatic. Sidecar disk overlays
+need directory access; portal permission to a single image may be insufficient.
+Host PCAP privileges and PTY device namespaces remain sandbox limitations.
+
+Tagged-release CI validates metadata, installs the bundle and runs UI/PROM smoke
+checks before uploading artifacts. Published releases also receive the bundle,
+checksums and a build provenance record. See [Linux Flatpak](flatpak.md) for the
+manifest lifecycle, source pinning and installation instructions.
+
 ## Iris compatibility
 
 `build.rs` embeds the linked Iris checkout's branch for the About overlay. It
@@ -137,6 +158,7 @@ including when the hints are hidden.
 | `src/display.rs` | Packed RGBA frame type, startup/UI-preview pixels and aspect-preserving placement |
 | `src/view.rs` | SDL drawing, status strip, LEDs, options, confirmations and notifications |
 | `src/media.rs` | Native file/folder choosers, background validation and interface enumeration, media settings and Iris block-node adapters |
+| `src/disk_image.rs` | Cancellable blank raw/CHD creation, capacity validation and publication without overwriting existing images |
 | `src/storage.rs` | CD tray actions, offline COW commit/reset, scratch drive and payload transfers, bounded action results |
 | `src/activity.rs` | Atomic activity bits and visible LED pulse durations |
 
@@ -230,6 +252,21 @@ on Octane. IP22/O2/Octane expose two buses; Indy/IP28 expose one in this core.
 The activity/error adapter is retained on all models. CPU/device threads stop
 before targets are detached and flushed; no frontend constructor uses Iris's
 exit-on-media-error default attachment path.
+
+Media's **New disk** form creates unformatted raw/CHD hard disks in a separate
+worker. It uses a bounded result channel, atomic progress/cancellation and a
+joined worker lifetime. A private temporary file in the destination directory
+is inspected read-only and flushed before publication without replacement;
+failed or cancelled creation removes the temporary file. Existing base images
+and stale overlay sidecars are rejected. Raw images use sparse allocation;
+libchdman's streaming hard-disk writer creates compressed CHDs with geometry
+and hashes in a helper process. Cancellation kills and reaps that process
+before deleting its temporary image, since the library's cancellation API
+otherwise drains the entire compression job. The helper never opens SDL or
+preferences; progress is bounded to one percentage value. CHD availability
+follows the detected Iris storage API. Creation
+is an explicit host-file action; attachment changes only the draft and follows
+normal Save/restart validation. Discard keeps already-created files.
 
 Iris's current library still compiles winit/glutin, CPAL, and camera support.
 Prismatic does not call `Ui::run`, so there is only the SDL window. Guest audio

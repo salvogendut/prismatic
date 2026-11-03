@@ -12,6 +12,7 @@ mod diagnostics;
 #[cfg(not(iris_diagnostics))]
 #[path = "compat/diagnostics.rs"]
 mod diagnostics;
+mod disk_image;
 mod display;
 mod emulator;
 mod expert;
@@ -326,6 +327,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let mut first_content: Option<Instant> = None;
     let mut captures = capture::Captures::new(std::env::current_dir()?);
     let mut storage_job: Option<storage::Job> = None;
+    let mut disk_job: Option<disk_image::Job> = None;
     let mut shutter = sound::Shutter::default();
     let mut guest_audio = audio::GuestAudio::default();
     let started = Instant::now();
@@ -360,6 +362,23 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             overlay.show_report(message);
             redraw = true;
         }
+        if let Some(job) = &disk_job {
+            if let Some(form) = &mut overlay.disk_create {
+                let progress = Some(job.progress());
+                redraw |= form.progress != progress;
+                form.progress = progress;
+            }
+            if let Some(result) = job.poll() {
+                if let Ok(Some(medium)) = &result {
+                    let message = format!("Created {}", medium.path);
+                    eprintln!("Prismatic: {message}");
+                    toast = Some((message, Instant::now()));
+                }
+                overlay.disk_created(result);
+                disk_job = None;
+                redraw = true;
+            }
+        }
         let mut ready_save = None;
         let text_input = video.text_input();
         if overlay.text_edit.is_some() != text_input.is_active(canvas.window()) {
@@ -372,6 +391,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(result) = media_jobs.poll() {
             redraw = true;
             match result {
+                Ok(Completion::DiskDestination(path)) => overlay.disk_destination_picked(path),
                 Ok(Completion::Action(action)) => overlay.action_picked(action),
                 Ok(Completion::Picked { id, medium }) => overlay.picked(id, medium),
                 Ok(Completion::PromPicked { profile, path }) => overlay.prom_picked(profile, path),
@@ -776,6 +796,26 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                         } else {
                             toast =
                                 Some(("Machine is PAUSED - Ctrl+P to boot".into(), Instant::now()));
+                        }
+                    }
+                    Effect::PickDiskDestination => {
+                        let form = overlay.disk_create.as_ref().unwrap();
+                        if let Err(error) = media_jobs.pick_disk_destination(
+                            canvas.window(),
+                            form.format,
+                            form.path.as_deref(),
+                        ) {
+                            overlay.busy = false;
+                            overlay.disk_created(Err(error));
+                        }
+                    }
+                    Effect::CreateDisk(request) => match disk_image::Job::start(request) {
+                        Ok(job) => disk_job = Some(job),
+                        Err(error) => overlay.disk_created(Err(error)),
+                    },
+                    Effect::CancelDiskCreation => {
+                        if let Some(job) = &disk_job {
+                            job.cancel();
                         }
                     }
                     Effect::PickProm => {
@@ -1263,6 +1303,9 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
         if let Some(time) = stopping {
+            if let Some(job) = &disk_job {
+                job.cancel();
+            }
             captures.stop();
             release_input(&mut guest, &mouse, canvas.window());
             let finished = if let Some(machine) = &mut emulator {
@@ -1271,7 +1314,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 true
             };
-            if finished && captures.idle() {
+            if finished && captures.idle() && disk_job.is_none() {
                 let stop_error =
                     emulator
                         .as_ref()
@@ -1368,12 +1411,16 @@ fn has_picture(frame: &display::Frame) -> bool {
 }
 
 fn main() -> std::process::ExitCode {
-    let result = Options::parse()
-        .map_err(Into::into)
-        .and_then(|options| match options {
-            Some(options) => run(options),
-            None => Ok(()),
-        });
+    let result = if let Some(result) = disk_image::worker_entry() {
+        result.map_err(Into::into)
+    } else {
+        Options::parse()
+            .map_err(Into::into)
+            .and_then(|options| match options {
+                Some(options) => run(options),
+                None => Ok(()),
+            })
+    };
     match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {

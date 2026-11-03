@@ -121,6 +121,9 @@ pub fn draw(
     if let Some(session) = &overlay.session {
         draw_overlay(canvas, session, overlay.busy, overlay.action_busy)?;
     }
+    if let Some(form) = &overlay.disk_create {
+        draw_disk_create(canvas, form, overlay.busy)?;
+    }
     if let Some(dialog) = overlay.dialog {
         draw_dialog(canvas, dialog, overlay.action.as_ref())?;
     }
@@ -150,6 +153,10 @@ pub fn draw(
         let y = HEIGHT as i32 / 2 - 80;
         panel(canvas, Rect::new(x, y, 720, 160))?;
         let (title, hint) = match edit.field {
+            crate::overlay::TextField::DiskSize => (
+                "Disk capacity (MiB)",
+                "1 to 1048576 MiB. 1024 MiB = 1 GiB. The guest must partition and format the disk.",
+            ),
             crate::overlay::TextField::Label => (
                 "Save machine as",
                 "Use up to 32 ASCII characters. Existing labels are kept.",
@@ -634,6 +641,105 @@ fn shade(canvas: &mut WindowCanvas, alpha: u8) -> Result<(), sdl3::Error> {
     )
 }
 
+fn draw_disk_create(
+    canvas: &mut WindowCanvas,
+    form: &crate::overlay::DiskCreate,
+    busy: bool,
+) -> Result<(), sdl3::Error> {
+    shade(canvas, 180)?;
+    let (x, y) = (80, 160);
+    panel(canvas, Rect::new(x, y, 800, 380))?;
+    text(
+        canvas,
+        x + 24,
+        y + 20,
+        &format!("New hard disk - SCSI {}:{}", form.id / 16, form.id % 16),
+        TEXT,
+    )?;
+    let rows = [
+        format!("Format       {}", form.format.label()),
+        format!(
+            "Capacity     {} MiB ({:.2} GiB)",
+            form.size_mib,
+            form.size_mib as f64 / 1024.0
+        ),
+        format!(
+            "Destination  {}",
+            form.path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "Choose filename...".into())
+        ),
+        "Create disk and attach to draft".into(),
+        "Cancel".into(),
+    ];
+    for (i, row) in rows.iter().enumerate() {
+        let row_y = y + 60 + i as i32 * 28;
+        if i == form.row && form.progress.is_none() && !busy {
+            fill(canvas, Rect::new(x + 16, row_y - 4, 768, 24), SELECTED)?;
+        }
+        text(
+            canvas,
+            x + 24,
+            row_y,
+            &short_ascii(row, 94),
+            if form.progress.is_some() || busy {
+                MUTED
+            } else {
+                TEXT
+            },
+        )?;
+    }
+    let status = if busy {
+        "Choose a filename in the system dialog. Esc cancels selection.".into()
+    } else if let Some(percent) = form.progress {
+        if form.cancelling {
+            "Cancelling; removing unfinished image...".into()
+        } else {
+            format!("Creating disk: {percent}%    Esc cancels")
+        }
+    } else {
+        form.error.clone().unwrap_or_else(|| {
+            "Up/Down Select   Enter Edit/Apply   Left/Right Format   Esc Cancel".into()
+        })
+    };
+    for (i, line) in wrap_ascii(&status, 94).iter().take(3).enumerate() {
+        text(canvas, x + 24, y + 208 + i as i32 * 16, line, BORDER)?;
+    }
+    text(
+        canvas,
+        x + 24,
+        y + 268,
+        "Creates an unpartitioned, zero-filled hard disk with 512-byte sectors.",
+        MUTED,
+    )?;
+    text(
+        canvas,
+        x + 24,
+        y + 288,
+        "Creates the host file now. Save options to apply the attachment.",
+        MUTED,
+    )?;
+    text(
+        canvas,
+        x + 24,
+        y + 308,
+        "Discard keeps created files. Existing files are never replaced.",
+        MUTED,
+    )?;
+    text(
+        canvas,
+        x + 24,
+        y + 340,
+        if cfg!(iris_chd_cow) {
+            "Raw uses sparse storage where supported; CHD compresses the empty space."
+        } else {
+            "CHD: unavailable with this Iris build. Raw disk creation is available."
+        },
+        MUTED,
+    )
+}
+
 fn draw_dialog(
     canvas: &mut WindowCanvas,
     dialog: Dialog,
@@ -685,7 +791,7 @@ fn draw_dialog(
         Dialog::Media { choice, .. } => (
             "Choose media for this SCSI target",
             "Select a raw/CHD disk, or ISO9660/EFS/CHD CD-ROM.",
-            vec!["Hard disk", "CD-ROM", "Disconnect", "Cancel"],
+            vec!["Hard disk", "CD-ROM", "Disconnect", "New disk...", "Cancel"],
             choice,
         ),
         Dialog::Checkpoint { operation, confirm } => (

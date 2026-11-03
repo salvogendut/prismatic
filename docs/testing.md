@@ -144,4 +144,12 @@ Change Capture and Storage options, switch topics, and exercise Save and Discard
 Repeat mouse selection at 75% scale and with a wide, letterboxed window to verify
 that the visible sub-tabs and their click targets remain aligned.
 
+Disk-creation tests check zero sectors, exact raw/CHD capacity and geometry,
+CHD hashes, guest writes through Iris's overlays, invalid sizes/extensions,
+existing files and stale sidecars, cancellation cleanup and draft isolation.
+For a desktop check, use Media > a SCSI target > New disk, create a small raw
+image and a CHD, then Save and reopen Media. Repeat with an existing destination,
+cancel a large CHD while it is being created, and Discard an attachment after
+creation: the completed host image must remain and live devices must not change.
+
 Related: [building](building.md), [integration architecture](architecture.md).

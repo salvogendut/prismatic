@@ -71,6 +71,8 @@ Check results use a separate `check-info.json`, preserving the build record.
 | `make test-bootstrap` | Test the build helper using disposable local Git repositories; no network or Rust required. |
 | `CARGO=...`, `PYTHON=...` | Select the Cargo command or Python interpreter. |
 | `CARGO_TARGET_DIR=...` | Choose the Cargo artifact directory; default is this repository's `target`. |
+| `make flatpak` | Build an installable x86_64 Linux Flatpak with isolated Iris sources; see the [Flatpak guide](flatpak.md). |
+| `make flatpak-prepare` | Generate the Flatpak manifest with a pinned Iris commit and locked Cargo sources. |
 
 `make help` lists the helper options. Without Make, run `python3 tools/build.py`;
 its `--repo` and `--branch` options select other sources. The helper requires

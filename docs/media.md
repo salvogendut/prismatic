@@ -3,6 +3,7 @@
 [Back to Prismatic](../README.md) · [All guides](../README.md#documentation)
 
 - [Attaching disks and CDs](#attaching-disks-and-cds)
+- [Creating an empty hard disk](#creating-an-empty-hard-disk)
 - [SCSI controllers](#scsi-controllers)
 - [Supported images](#supported-images)
 - [SCSI ID conventions](#scsi-id-conventions)
@@ -11,12 +12,47 @@
 
 ## Attaching disks and CDs
 
-Open **F9 > Media**, select a SCSI target, and press Enter. Choose **Hard disk**, **CD-ROM**, **Disconnect** or **Cancel**. The
+Open **F9 > Media**, select a SCSI target, and press Enter. Choose **Hard disk**, **CD-ROM**, **Disconnect**, **New disk…** or **Cancel**. The
 native file chooser accepts CHD and raw images, including `.img`, `.raw`,
 `.dsk`, `.hdd`, `.iso` and `.efs`. Choose the device type explicitly: an EFS
 CD image may have an `.img` extension. Selection edits the draft; **F9 Save**
 validates the images and asks to restart before applying a media change.
 Cancel retains the draft; Discard leaves the current devices unchanged.
+
+## Creating an empty hard disk
+
+Choose **F9 > Media > SCSI target > New disk…**. Use Up/Down to select a row
+and Enter to edit it:
+
+1. Choose **Raw** (`.img`, `.raw`, `.dsk`, `.hdd`) or **CHD** (`.chd`).
+2. Enter the capacity in **MiB** (1024 MiB = 1 GiB). The default is 4096 MiB;
+   whole-number capacities from 1 MiB to 1 TiB are accepted. Guest OS and
+   filesystem limits still apply.
+3. Choose a destination using the native save dialog. An omitted extension is
+   added automatically; an incompatible extension is rejected.
+4. Select **Create disk and attach to draft**, then **F9 Save** to apply the
+   attachment. A running machine still requires restart confirmation.
+
+The image contains zero-filled 512-byte sectors and has **no partition table or
+filesystem**. Initialize it using your guest's disk tools, such as IRIX `fx` or
+the NetBSD installer. This creates hard disks; it does not author ISO/EFS CDs,
+QCOW2 or VHD images.
+
+Raw files are sparse where the host filesystem supports it. CHDs compress the
+empty space and include hard-disk geometry and hashes for Iris's protected
+write support. CHD creation is unavailable when building against an Iris core
+without protected CHD support; Raw remains available.
+
+Creation runs in the background with progress. **Esc** cancels an unfinished
+creation and removes its temporary file. Failures leave the form open for
+correction. Existing files, including old overlay sidecars, are never replaced.
+Choose a new filename even if the native dialog offers to replace a file.
+
+**Create writes the host file immediately.** Only its attachment is part of the
+settings draft: Discard keeps the created image so you can attach it later.
+The destination directory must permit temporary files and Iris's future write
+overlays. For Flatpak, use Downloads or `~/Documents/Prismatic`, or grant access
+to another image folder as described in [the Flatpak guide](flatpak.md).
 
 ## SCSI controllers
 

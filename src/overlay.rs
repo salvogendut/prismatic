@@ -1,4 +1,5 @@
 use crate::checkpoints::Operation as CheckpointOperation;
+use crate::disk_image::{Format as DiskFormat, Request as DiskRequest};
 use crate::expert::{Field as ExpertField, Page};
 use crate::extensions::{Field as ExtensionsField, Page as ExtensionsPage};
 use crate::media::{MediaKind, Medium};
@@ -93,6 +94,9 @@ pub enum Effect {
     Save(Settings),
     Restart(Settings),
     Pick { id: u8, kind: MediaKind },
+    PickDiskDestination,
+    CreateDisk(DiskRequest),
+    CancelDiskCreation,
     PickProm,
     CancelMedia,
     Quit,
@@ -614,10 +618,38 @@ pub struct Overlay {
     pub action_busy: bool,
     pub report: Option<Vec<String>>,
     pub report_offset: usize,
+    pub disk_create: Option<DiskCreate>,
+}
+
+pub struct DiskCreate {
+    pub id: u8,
+    pub format: DiskFormat,
+    pub size_mib: u64,
+    pub path: Option<std::path::PathBuf>,
+    pub row: usize,
+    pub error: Option<String>,
+    pub progress: Option<u8>,
+    pub cancelling: bool,
+}
+
+impl DiskCreate {
+    fn new(id: u8) -> Self {
+        Self {
+            id,
+            format: DiskFormat::Raw,
+            size_mib: 4096,
+            path: None,
+            row: 0,
+            error: None,
+            progress: None,
+            cancelling: false,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
 pub enum TextField {
+    DiskSize,
     Label,
     Network(Field),
     Expert(ExpertField),
@@ -638,6 +670,32 @@ pub struct InterfacePicker {
 }
 
 impl Overlay {
+    pub fn disk_destination_picked(&mut self, path: std::path::PathBuf) {
+        self.busy = false;
+        if let Some(form) = &mut self.disk_create {
+            form.path = Some(path);
+            form.error = None;
+            form.row = 3;
+        }
+    }
+
+    pub fn disk_created(&mut self, result: Result<Option<Medium>, String>) {
+        let Some(form) = &mut self.disk_create else {
+            return;
+        };
+        form.progress = None;
+        form.cancelling = false;
+        match result {
+            Ok(Some(medium)) => {
+                let id = form.id;
+                self.disk_create = None;
+                self.picked(id, medium);
+            }
+            Ok(None) => form.error = Some("Creation cancelled; no disk attached.".into()),
+            Err(error) => form.error = Some(error),
+        }
+    }
+
     pub fn action_picked(&mut self, action: Action) {
         self.busy = false;
         if let Operation::QueueCd(slot) = action.operation {
@@ -741,6 +799,7 @@ impl Overlay {
         self.interfaces = None;
         self.action = None;
         self.report = None;
+        self.disk_create = None;
     }
 
     pub fn text_input(&mut self, text: &str) {
@@ -770,6 +829,7 @@ impl Overlay {
             || self.text_edit.is_some()
             || self.interfaces.is_some()
             || self.report.is_some()
+            || self.disk_create.is_some()
         {
             return false;
         }
@@ -839,6 +899,8 @@ impl Overlay {
                     let session = self.session.as_mut().unwrap();
                     let draft = &mut session.draft;
                     let result = match edit.field {
+                        TextField::DiskSize => crate::disk_image::parse_size(&edit.text)
+                            .map(|size| self.disk_create.as_mut().unwrap().size_mib = size),
                         TextField::CheckpointName => {
                             crate::checkpoints::validate_name(edit.text.trim())
                                 .map(|()| session.checkpoint = edit.text.trim().into())
@@ -994,7 +1056,7 @@ impl Overlay {
                 (Dialog::Media { id, choice }, Key::Left | Key::Right) => {
                     self.dialog = Some(Dialog::Media {
                         id,
-                        choice: (choice + if key == Key::Left { 3 } else { 1 }) % 4,
+                        choice: (choice + if key == Key::Left { 4 } else { 1 }) % 5,
                     });
                 }
                 (Dialog::Media { id, choice: 0 | 1 }, Key::Enter) => {
@@ -1015,6 +1077,10 @@ impl Overlay {
                     session.row = session.row.min(session.rows().len().saturating_sub(1));
                     self.dialog = None;
                 }
+                (Dialog::Media { id, choice: 3 }, Key::Enter) => {
+                    self.dialog = None;
+                    self.disk_create = Some(DiskCreate::new(id));
+                }
                 (Dialog::Media { .. }, Key::Enter) => self.dialog = None,
                 (Dialog::Firmware { choice }, Key::Left | Key::Right) => {
                     self.dialog = Some(Dialog::Firmware {
@@ -1033,6 +1099,64 @@ impl Overlay {
                 }
                 (Dialog::Firmware { .. }, Key::Enter) => self.dialog = None,
                 _ => {}
+            }
+            return Effect::None;
+        }
+        if let Some(form) = &mut self.disk_create {
+            if key == Key::Quit {
+                self.dialog = Some(Dialog::Quit { confirm: false });
+            } else if form.progress.is_some() {
+                if key == Key::Escape && !form.cancelling {
+                    form.cancelling = true;
+                    return Effect::CancelDiskCreation;
+                }
+            } else {
+                match key {
+                    Key::Escape => self.disk_create = None,
+                    Key::Up => form.row = (form.row + 4) % 5,
+                    Key::Down => form.row = (form.row + 1) % 5,
+                    Key::Enter | Key::Left | Key::Right if form.row == 0 => {
+                        if cfg!(iris_chd_cow) {
+                            form.format = if form.format == DiskFormat::Raw {
+                                DiskFormat::Chd
+                            } else {
+                                DiskFormat::Raw
+                            };
+                            form.path = None;
+                            form.error = None;
+                        } else {
+                            form.error = Some(
+                                "CHD unavailable in this Iris build; Raw is supported.".into(),
+                            );
+                        }
+                    }
+                    Key::Enter if form.row == 1 => {
+                        self.text_edit = Some(TextEdit {
+                            field: TextField::DiskSize,
+                            text: form.size_mib.to_string(),
+                            error: None,
+                            selected: true,
+                        })
+                    }
+                    Key::Enter if form.row == 2 => {
+                        self.busy = true;
+                        return Effect::PickDiskDestination;
+                    }
+                    Key::Enter if form.row == 3 => {
+                        if let Some(path) = &form.path {
+                            form.error = None;
+                            form.progress = Some(0);
+                            return Effect::CreateDisk(DiskRequest {
+                                format: form.format,
+                                size_mib: form.size_mib,
+                                path: path.clone(),
+                            });
+                        }
+                        form.error = Some("Choose a destination first.".into());
+                    }
+                    Key::Enter if form.row == 4 => self.disk_create = None,
+                    _ => {}
+                }
             }
             return Effect::None;
         }
@@ -1379,7 +1503,7 @@ impl Overlay {
                 }
                 (Tab::Media, _) => {
                     if let Some(id) = session.media_slot() {
-                        self.dialog = Some(Dialog::Media { id, choice: 3 });
+                        self.dialog = Some(Dialog::Media { id, choice: 4 });
                     } else {
                         session.media_controller =
                             (session.media_controller + 1) % session.media_controllers();
@@ -1934,6 +2058,7 @@ mod tests {
         assert_eq!(session.media_slot(), Some(31));
         assert!(session.rows()[session.row].1.starts_with("Unavailable"));
         overlay.key(Key::Enter, &live);
+        overlay.key(Key::Left, &live); // New disk.
         overlay.key(Key::Left, &live); // Disconnect.
         overlay.key(Key::Enter, &live);
         assert!(
@@ -2433,6 +2558,116 @@ mod tests {
     }
 
     #[test]
+    fn new_disk_form_validates_edits_and_attaches_only_to_the_draft() {
+        let live = Settings::default();
+        let mut overlay = Overlay::default();
+        for key in [Key::Options, Key::Right, Key::Enter, Key::Left, Key::Enter] {
+            overlay.key(key, &live);
+        }
+        assert_eq!(overlay.disk_create.as_ref().unwrap().id, 1);
+        assert!(!overlay.select_subtab(1));
+        for key in [Key::NextMachine, Key::Options, Key::NextTopic] {
+            assert_eq!(overlay.key(key, &live), Effect::None);
+        }
+        overlay.key(Key::Down, &live);
+        overlay.key(Key::Enter, &live);
+        overlay.text_input("-10");
+        overlay.key(Key::Enter, &live);
+        assert!(overlay.text_edit.as_ref().unwrap().error.is_some());
+        assert_eq!(overlay.disk_create.as_ref().unwrap().size_mib, 4096);
+        overlay.key(Key::SelectAll, &live);
+        overlay.text_input("8192");
+        overlay.key(Key::Enter, &live);
+        assert_eq!(overlay.disk_create.as_ref().unwrap().size_mib, 8192);
+        overlay.key(Key::Down, &live);
+        assert_eq!(overlay.key(Key::Enter, &live), Effect::PickDiskDestination);
+        assert!(overlay.busy);
+        assert_eq!(overlay.key(Key::Escape, &live), Effect::CancelMedia);
+        assert!(overlay.disk_create.is_some());
+        overlay.disk_destination_picked("/tmp/new.img".into());
+        assert_eq!(
+            overlay.key(Key::Enter, &live),
+            Effect::CreateDisk(DiskRequest {
+                format: DiskFormat::Raw,
+                size_mib: 8192,
+                path: "/tmp/new.img".into(),
+            })
+        );
+        assert!(!overlay.session.as_ref().unwrap().dirty());
+        overlay.disk_created(Err("Cannot write folder".into()));
+        assert!(overlay.disk_create.as_ref().unwrap().error.is_some());
+        assert_eq!(overlay.disk_create.as_ref().unwrap().size_mib, 8192);
+        assert!(matches!(
+            overlay.key(Key::Enter, &live),
+            Effect::CreateDisk(_)
+        ));
+        assert_eq!(overlay.key(Key::Escape, &live), Effect::CancelDiskCreation);
+        assert_eq!(overlay.key(Key::Escape, &live), Effect::None);
+        overlay.disk_created(Ok(None));
+        assert!(!overlay.session.as_ref().unwrap().dirty());
+        assert!(matches!(
+            overlay.key(Key::Enter, &live),
+            Effect::CreateDisk(_)
+        ));
+        let medium = Medium {
+            kind: MediaKind::Disk,
+            path: "/tmp/new.img".into(),
+        };
+        overlay.disk_created(Ok(Some(medium.clone())));
+        assert!(overlay.disk_create.is_none());
+        assert_eq!(
+            overlay.session.as_ref().unwrap().draft.media.devices[&1],
+            medium
+        );
+        assert!(live.media.devices.is_empty());
+        for key in [Key::Escape, Key::Left, Key::Enter] {
+            overlay.key(key, &live);
+        }
+        assert!(overlay.session.is_none());
+        assert!(live.media.devices.is_empty());
+    }
+
+    #[test]
+    fn new_disk_cancel_format_capabilities_and_quit_confirmation() {
+        let live = Settings::default();
+        let mut overlay = Overlay::default();
+        overlay.key(Key::Options, &live);
+        overlay.disk_create = Some(DiskCreate::new(18));
+        overlay.key(Key::Enter, &live);
+        assert_eq!(
+            overlay.disk_create.as_ref().unwrap().format,
+            if cfg!(iris_chd_cow) {
+                DiskFormat::Chd
+            } else {
+                DiskFormat::Raw
+            }
+        );
+        overlay.key(Key::Escape, &live);
+        assert!(overlay.disk_create.is_none());
+        assert!(!overlay.session.as_ref().unwrap().dirty());
+        overlay.disk_create = Some(DiskCreate::new(18));
+        overlay.disk_destination_picked("/tmp/second-bus.img".into());
+        assert!(matches!(
+            overlay.key(Key::Enter, &live),
+            Effect::CreateDisk(_)
+        ));
+        overlay.key(Key::Quit, &live);
+        assert_eq!(overlay.dialog, Some(Dialog::Quit { confirm: false }));
+        overlay.key(Key::Enter, &live); // cancel quit, retain active job
+        assert!(overlay.disk_create.as_ref().unwrap().progress.is_some());
+        overlay.key(Key::Quit, &live);
+        overlay.key(Key::Left, &live);
+        assert_eq!(overlay.key(Key::Enter, &live), Effect::Quit);
+        overlay.saved();
+        overlay.disk_created(Ok(Some(Medium {
+            kind: MediaKind::Disk,
+            path: "late.img".into(),
+        })));
+        assert!(overlay.session.is_none());
+        assert!(overlay.disk_create.is_none());
+    }
+
+    #[test]
     fn media_choice_cancel_disconnect_and_discard_preserve_live_devices() {
         let mut live = Settings::default();
         live.media.devices.insert(
@@ -2446,10 +2681,10 @@ mod tests {
         for key in [Key::Options, Key::Right, Key::Enter] {
             overlay.key(key, &live);
         }
-        assert_eq!(overlay.dialog, Some(Dialog::Media { id: 1, choice: 3 }));
+        assert_eq!(overlay.dialog, Some(Dialog::Media { id: 1, choice: 4 }));
         overlay.key(Key::Enter, &live);
         assert!(!overlay.session.as_ref().unwrap().dirty());
-        for key in [Key::Enter, Key::Left, Key::Enter] {
+        for key in [Key::Enter, Key::Left, Key::Left, Key::Enter] {
             overlay.key(key, &live);
         }
         assert!(
