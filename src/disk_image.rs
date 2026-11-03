@@ -135,15 +135,19 @@ fn create(
         .prefix(".prismatic-disk-")
         .suffix(&format!(".{}", request.format.extension()))
         .tempfile_in(path.parent().unwrap())
-        .map_err(|e| format!("Cannot create disk: {e}"))?;
+        .map_err(|e| format!("Cannot create disk: {e}"))?
+        // Let the native CHD writer reopen the path without a competing
+        // handle, while retaining automatic cleanup on error/cancellation.
+        .into_temp_path();
     let bytes = request.size_mib * 1024 * 1024;
     match request.format {
-        Format::Raw => temporary
-            .as_file()
-            .set_len(bytes)
+        Format::Raw => fs::OpenOptions::new()
+            .write(true)
+            .open(&temporary)
+            .and_then(|file| file.set_len(bytes))
             .map_err(|e| format!("Cannot size disk: {e}"))?,
         Format::Chd => {
-            if !compress(temporary.path(), request.size_mib, &cancelled, progress)? {
+            if !compress(&temporary, request.size_mib, &cancelled, progress)? {
                 return Ok(None);
             }
         }
@@ -152,8 +156,11 @@ fn create(
         return Ok(None);
     }
     // Inspection is read-only: no overlays or guest writes before Save/boot.
-    Medium::inspect(temporary.path(), MediaKind::Disk)?;
-    fs::File::open(temporary.path())
+    Medium::inspect(&temporary, MediaKind::Disk)?;
+    // Windows FlushFileBuffers requires write access, even after inspection.
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&temporary)
         .and_then(|file| file.sync_all())
         .map_err(|e| format!("Cannot flush disk: {e}"))?;
     check_destination(&path, request.format)?;

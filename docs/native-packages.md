@@ -82,9 +82,11 @@ Cargo builds use `--locked`. Windows downloads a checksum-pinned official SDL3
 SDK. Debian computes runtime dependencies with `dpkg-shlibdeps`; RPM computes
 its ELF dependencies through `rpmbuild`. macOS rewrites library paths into the
 app bundle and checks that no Homebrew library paths remain. Each platform
-runs dummy-video UI and diskless PROM checks against the packaged application.
+runs raw/CHD disk-creation tests, plus dummy-video UI and diskless PROM checks
+against the packaged application.
 The Linux jobs also install the resulting RPM/DEB in their disposable containers
-and repeat the smoke checks against the installed executable.
+and repeat the smoke checks against the installed executable. Those containers
+provide 1 GiB of shared memory for Iris's guest RAM mappings.
 
 Published-release builds attach packages only after all platforms succeed.
 Each package has a uniquely named checksum file and `build-info.json`, avoiding

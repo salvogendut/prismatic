@@ -45,7 +45,11 @@ jobs:
     name: ${{ matrix.platform }} x86_64
     needs: plan
     runs-on: ubuntu-24.04
-    container: ${{ matrix.container }}
+    container:
+      image: ${{ matrix.container }}
+      # Iris maps guest RAM through POSIX shared memory. Docker's 64 MiB
+      # default is too small even for the diskless Indy smoke test.
+      options: --shm-size=1g
     strategy:
       fail-fast: false
       matrix:

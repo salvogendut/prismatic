@@ -213,7 +213,10 @@ def macos_package(stage, binary, licenses, info, output):
     resources.mkdir(parents=True)
     frameworks.mkdir()
     copy_file(binary, executable, True)
-    copy_file(ROOT / 'packaging/native/prismatic-macos', contents / 'MacOS/Prismatic', True)
+    # macOS normally uses a case-insensitive filesystem: the launcher name
+    # must differ from the binary by more than capitalization.
+    launcher = contents / 'MacOS/prismatic-launcher'
+    copy_file(ROOT / 'packaging/native/prismatic-macos', launcher, True)
     shutil.copytree(licenses, resources / 'licenses')
     shutil.copytree(ROOT / 'docs', resources / 'docs')
     copy_file(ROOT / 'README.md', resources / 'README.md')
@@ -222,7 +225,7 @@ def macos_package(stage, binary, licenses, info, output):
     (resources / 'build-info.json').write_text(json.dumps(info, indent=2) + '\n')
     with (contents / 'Info.plist').open('wb') as stream:
         plistlib.dump({'CFBundleName': 'Prismatic', 'CFBundleDisplayName': 'Prismatic',
-                      'CFBundleIdentifier': APP_ID, 'CFBundleExecutable': 'Prismatic',
+                      'CFBundleIdentifier': APP_ID, 'CFBundleExecutable': launcher.name,
                       'CFBundlePackageType': 'APPL', 'CFBundleInfoDictionaryVersion': '6.0',
                       'CFBundleVersion': info['version'], 'CFBundleShortVersionString': info['version'],
                       'CFBundleIconFile': 'Prismatic.icns', 'LSMinimumSystemVersion': '15.0',
@@ -254,7 +257,7 @@ def macos_package(stage, binary, licenses, info, output):
     run(['codesign', '--force', '--sign', '-', '--entitlements', ROOT / 'packaging/native/macos.entitlements', app])
     run(['codesign', '--verify', '--deep', '--strict', app])
     run(['lipo', executable, '-verify_arch', info['architecture']])
-    smoke(contents / 'MacOS/Prismatic')
+    smoke(launcher)
     destination = output / f"Prismatic-{info['version']}-macos-{info['architecture']}.zip"
     run(['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', app, destination])
     return destination
@@ -288,6 +291,7 @@ def build(info, target_platform, output, install_test=False):
             environment['MACOSX_DEPLOYMENT_TARGET'] = '15.0'
         if flags:
             environment['CARGO_ENCODED_RUSTFLAGS'] = '\x1f'.join(flags)
+        run(['cargo', 'test', '--release', '--locked', '--features', features, 'disk_image::tests'], cwd=frontend, env=environment)
         run(['cargo', 'build', '--release', '--locked', '--features', features], cwd=frontend, env=environment)
         metadata = json.loads(run(['cargo', 'metadata', '--locked', '--format-version', '1'], cwd=frontend, env=environment, capture=True))
         licenses = work / 'licenses'

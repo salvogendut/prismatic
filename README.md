@@ -27,9 +27,10 @@ IRIX 6.5 running in Prismatic, captured at the guest's native 1282×1024 resolut
 
 ## Build and run
 
-For Linux desktop installation, see the [Flatpak guide](docs/flatpak.md).
-`make flatpak` builds an installable x86_64 bundle, including Iris `xiri` and the
-project icon. Tagged releases also build Flatpak bundles through GitHub Actions.
+Release CI builds [native packages](docs/native-packages.md) for Fedora (`.rpm`),
+Debian (`.deb`), Windows and macOS (Intel/ARM), plus a [Linux Flatpak](docs/flatpak.md).
+All builds fetch our Iris `xiri` sources. See the guides for installation and
+platform requirements.
 
 Use a Rust/SDL3 development environment with Git, Python 3 and the native build
 libraries installed. Linux is the validated platform; see the
