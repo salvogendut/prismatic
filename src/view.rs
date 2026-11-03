@@ -427,8 +427,15 @@ fn draw_overlay(
         .iter()
         .flat_map(|hint| wrap_ascii(hint, 100))
         .collect();
+    let about_lines = [
+        "Prismatic - Happy Years interface for Iris",
+        "Rust / SDL3",
+        concat!("Iris branch: ", env!("PRISMATIC_IRIS_BRANCH")),
+        "Iris Indy / Indigo2 / Newport - SCSI disk and CD-ROM support.",
+        "Click captures input; Ctrl+Enter releases. Shift+F4/F6/F9/F11/F12: guest key.",
+    ];
     let row_count = if session.tab == Tab::About {
-        4
+        about_lines.len()
     } else {
         rows.len()
     };
@@ -510,16 +517,14 @@ fn draw_overlay(
         }
     }
     if session.tab == Tab::About {
-        for (index, line) in [
-            "Prismatic - Happy Years interface for Iris",
-            "Rust / SDL3",
-            "Iris Indy / Indigo2 / Newport - SCSI disk and CD-ROM support.",
-            "Click captures input; Ctrl+Enter releases. Shift+F4/F6/F9/F11/F12: guest key.",
-        ]
-        .iter()
-        .enumerate()
-        {
-            text(canvas, 20, 48 + index as i32 * LINE_HEIGHT, line, TEXT)?;
+        for (index, line) in about_lines.iter().enumerate() {
+            text(
+                canvas,
+                20,
+                48 + index as i32 * LINE_HEIGHT,
+                &short_ascii(line, 100),
+                TEXT,
+            )?;
         }
     }
     for (index, hint) in hints.iter().enumerate() {

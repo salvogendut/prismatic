@@ -112,6 +112,11 @@ alongside IRIX. Compatibility with the fork's **`main`** remains available. Dire
 commands use `../iris`; `make` uses its managed source checkout. Each binary
 links the Iris checkout present when built; rebuild after changing sources.
 
+**F9 > About** shows the Iris branch linked into the executable at build time.
+This works with both `make` and direct Cargo builds. Detached checkouts show
+`detached HEAD` with the short commit ID; builds without Git metadata show
+`unknown (Git metadata unavailable)`.
+
 `build.rs` detects optional embedding APIs from the Iris sources, independently
 of branch names. Missing features are greyed out in the overlays, with a reason
 in the hint strip. Saved preferences remain in `prismatic.cfg` and machine

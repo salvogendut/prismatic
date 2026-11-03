@@ -29,6 +29,12 @@ of local work, generated inputs, Make overrides and failure propagation.
 
 ## Iris compatibility
 
+`build.rs` embeds the linked Iris checkout's branch for the About overlay. It
+watches Git HEAD, including linked-worktree metadata, so a branch switch at the
+same commit updates the label on rebuild. Detached HEADs include a short commit
+ID; absent Git metadata produces an explicit unknown label. This display value
+does not control capability detection.
+
 `build.rs` examines the sibling Iris sources for individual public embedding
 APIs and emits checked `iris_*` cfgs. It watches each relevant source (or its
 parent if a module is absent), so changing branches reruns detection. It does
