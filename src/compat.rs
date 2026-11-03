@@ -10,6 +10,7 @@ pub const GDB: bool = cfg!(iris_gdb) && !iris::build_features::LIGHTNING;
 pub const VNC: bool = cfg!(iris_vnc);
 pub const TRACE: bool = cfg!(all(iris_trace, feature = "perfetto"));
 pub const JIT_CACHE: bool = cfg!(all(iris_jit_cache, feature = "jitv2"));
+pub const SGIEMU_OPTIMIZATIONS: bool = cfg!(iris_sgiemu_optimizations);
 pub const FIRMWARE: bool = cfg!(iris_firmware);
 pub const DEVICES: bool = cfg!(iris_devices);
 pub const CHECKPOINTS: bool = cfg!(iris_checkpoints);
@@ -27,6 +28,7 @@ pub fn report() -> String {
         ("owned VNC", VNC),
         ("boot tracing", TRACE),
         ("JIT disk cache", JIT_CACHE),
+        ("SGIEmu optimizations", SGIEMU_OPTIMIZATIONS),
         ("bundled O2/Octane PROMs", FIRMWARE),
         ("optional devices", DEVICES),
         ("paused checkpoints", CHECKPOINTS),

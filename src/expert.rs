@@ -63,6 +63,7 @@ pub struct ExpertSettings {
     pub refresh_core: Option<u32>,
     pub jit_threads: usize,
     pub jit_cache: bool,
+    pub sgiemu_optimizations: bool,
     pub monitor_port: u16,
     pub serial_port_a: u16,
     pub serial_port_b: u16,
@@ -87,6 +88,7 @@ impl Default for ExpertSettings {
             refresh_core: None,
             jit_threads: 1,
             jit_cache: false,
+            sgiemu_optimizations: false,
             monitor_port: 0,
             serial_port_a: 0,
             serial_port_b: 0,
@@ -114,6 +116,9 @@ impl ExpertSettings {
         }
         if !iris::build_features::JITV2 {
             settings.jit_threads = 1;
+        }
+        if !crate::compat::SGIEMU_OPTIMIZATIONS {
+            settings.sgiemu_optimizations = false;
         }
         if !crate::compat::JIT_CACHE {
             settings.jit_cache = false;
@@ -248,6 +253,10 @@ impl ExpertSettings {
     fn apply_available(&self, config: &mut MachineConfig) -> Result<(), String> {
         self.validate_runtime(config.machine.profile)?;
         config.clock.fixed_mhz = self.count_mhz.map(f64::from);
+        #[cfg(iris_sgiemu_optimizations)]
+        {
+            config.perf.sgiemu_optimizations = self.sgiemu_optimizations;
+        }
         config.perf.thread_affinity = self.thread_affinity;
         config.perf.cpu_core = self.cpu_core;
         config.perf.rex3_core = self.rex3_core;
@@ -318,6 +327,13 @@ impl ExpertSettings {
                 (
                     "JIT disk cache",
                     feature(iris::build_features::JITV2, boolean(self.jit_cache)),
+                ),
+                (
+                    "SGIEmu optimizations",
+                    feature(
+                        crate::compat::SGIEMU_OPTIMIZATIONS,
+                        boolean(self.sgiemu_optimizations),
+                    ),
                 ),
             ],
             Page::Connections => vec![
@@ -551,6 +567,9 @@ pub fn hint(page: Page, row: usize) -> &'static str {
         (Page::Performance, 7) => {
             "Per-label compiled-page reuse. Requires jitv2 and the per-machine cache API."
         }
+        (Page::Performance, 8) => {
+            "Optional JIT integer and Indy/Indigo2 clock caches. Off by default. Changing this restarts the machine."
+        }
         (Page::Connections, 0) => Field::Monitor.hint(),
         (Page::Connections, 1 | 3) => {
             "TCP / Pseudoterminal / Off. Connection status shows the active port or PTY path after boot."
@@ -701,6 +720,43 @@ impl Drop for Services {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sgiemu_choice_defaults_off_persists_per_machine_and_applies_if_available() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prismatic.cfg");
+        std::fs::write(&path, "tinker = false\n").unwrap();
+        let mut settings = crate::settings::Settings::load(&path).unwrap();
+        assert!(!settings.advanced.expert.sgiemu_optimizations);
+        settings.save_as_machine("Standard").unwrap();
+        settings.advanced.expert.sgiemu_optimizations = true;
+        settings.save_as_machine("Optimized").unwrap();
+        settings.save(&path).unwrap();
+        let mut loaded = crate::settings::Settings::load(&path).unwrap();
+        assert!(loaded.advanced.expert.sgiemu_optimizations);
+        let optimized = loaded.clone();
+        loaded.select_machine("Standard").unwrap();
+        assert!(!loaded.advanced.expert.sgiemu_optimizations);
+        loaded.select_machine("Optimized").unwrap();
+        assert_eq!(loaded, optimized);
+        assert!(!loaded.tinker); // Hiding the editor does not disable the choice.
+        let expert = &loaded.advanced.expert;
+        assert_eq!(
+            expert.effective().sgiemu_optimizations,
+            crate::compat::SGIEMU_OPTIMIZATIONS
+        );
+        let mut config = MachineConfig::default();
+        expert.apply(&mut config).unwrap();
+        #[cfg(iris_sgiemu_optimizations)]
+        assert!(config.perf.sgiemu_optimizations);
+        assert!(expert.sgiemu_optimizations); // Older cores retain the preference.
+        loaded.advanced.expert.sgiemu_optimizations = false;
+        assert!(loaded.machine_differs_from(&optimized));
+        loaded.advanced.expert.apply(&mut config).unwrap();
+        #[cfg(iris_sgiemu_optimizations)]
+        assert!(!config.perf.sgiemu_optimizations);
+    }
+
     #[test]
     fn serial_routes_migrate_persist_per_label_and_only_active_tcp_ports_collide() {
         use crate::serial::Route;

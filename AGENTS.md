@@ -12,13 +12,13 @@
   Direct Cargo builds still use `../iris`; check its branch before working.
   Default bootstrap features are `pcap,idle-pause,jitv2`. Add `perfetto` only
   on cores where it compiles; avoid `developer` for performance builds because
-  its instrumentation disables the GPR cache. Prismatic supports the fork's
-  `main`, `xiri`, and `perf/sgiemu-port` branches:
+  its instrumentation disables the GPR cache. Development happens only on
+  `xiri`; `perf/sgiemu-port` is merged and retired. Retain `main` compatibility:
   detect optional embedding APIs from the checked-out sources in `build.rs`,
-  never from the branch name. A future merge of performance work into `xiri`
-  must enable the corresponding capabilities automatically after rebuilding.
-  Grey out unavailable controls, preserve saved preferences, and test all three
-  branches in isolated checkouts. Do not switch the active Iris checkout merely
+  never from the branch name. The integrated SGIEmu optimizations are opt-in,
+  off by default, and must remain configurable per machine after rebuilding.
+  Grey out unavailable controls, preserve saved preferences, and test `main` compatibility
+  in an isolated checkout as well as the active `xiri` core. Do not switch the active Iris checkout merely
   for compatibility tests or use the former `xiri/netbsd-newport` branch. Preserve NetBSD and other
   guest OS compatibility when integrating changes; do not assume IRIX-only use.
 - Match the native Happy Years UI conventions in `../1984`, `../1985`,

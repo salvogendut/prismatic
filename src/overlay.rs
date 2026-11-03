@@ -230,6 +230,9 @@ impl Session {
                 7 if !c::JIT_CACHE => {
                     Some("JIT disk caching requires jitv2 and Iris's per-machine cache API.")
                 }
+                8 if !c::SGIEMU_OPTIMIZATIONS => Some(
+                    "This Iris build has no SGIEmu optimization toggle. The saved preference is retained.",
+                ),
                 _ => None,
             },
             (Tab::Advanced, row) if self.advanced_page == Page::Connections => match row {
@@ -1103,6 +1106,10 @@ impl Overlay {
                             settings.jit_cache = iris::build_features::JITV2 && !settings.jit_cache;
                             None
                         }
+                        (Page::Performance, 8) => {
+                            settings.sgiemu_optimizations = !settings.sgiemu_optimizations;
+                            None
+                        }
                         (Page::Connections, 0) => Some(ExpertField::Monitor),
                         (Page::Connections, 1) => {
                             settings.serial_a.cycle();
@@ -1386,6 +1393,56 @@ mod tests {
     }
 
     #[test]
+    fn sgiemu_toggle_is_a_restart_draft_and_discard_keeps_live_settings() {
+        if !crate::compat::SGIEMU_OPTIMIZATIONS {
+            return; // Unavailable controls are covered separately below.
+        }
+        let live = Settings {
+            tinker: true,
+            ..Default::default()
+        };
+        let mut overlay = Overlay::default();
+        overlay.key(Key::Options, &live);
+        let session = overlay.session.as_mut().unwrap();
+        session.tab = Tab::Advanced;
+        session.advanced_page = Page::Performance;
+        session.row = 8;
+        overlay.key(Key::Enter, &live);
+        assert!(
+            overlay
+                .session
+                .as_ref()
+                .unwrap()
+                .draft
+                .advanced
+                .expert
+                .sgiemu_optimizations
+        );
+        assert!(!live.advanced.expert.sgiemu_optimizations);
+        let Effect::Save(draft) = overlay.key(Key::Options, &live) else {
+            panic!("expected Save")
+        };
+        assert!(draft.machine_differs_from(&live));
+        overlay.confirm_restart();
+        assert_eq!(overlay.key(Key::Enter, &live), Effect::None); // Defaults to Cancel.
+        overlay.save_failed();
+        assert!(
+            overlay
+                .session
+                .as_ref()
+                .unwrap()
+                .draft
+                .advanced
+                .expert
+                .sgiemu_optimizations
+        );
+        for key in [Key::Escape, Key::Left, Key::Enter, Key::Options] {
+            overlay.key(key, &live);
+        }
+        assert_eq!(overlay.session.as_ref().unwrap().draft, live);
+    }
+
+    #[test]
     fn unavailable_rows_ignore_enter_and_backspace_without_losing_saved_preferences() {
         let mut live = Settings {
             tinker: true,
@@ -1393,6 +1450,7 @@ mod tests {
         };
         live.advanced.expert.jit_threads = 4;
         live.advanced.expert.jit_cache = true;
+        live.advanced.expert.sgiemu_optimizations = true;
         live.advanced.expert.trace_on_boot = true;
         live.advanced.expert.serial_b = crate::serial::Route::Pty;
         live.machine.prom_boot = crate::settings::PromBoot::Netbsd;

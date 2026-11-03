@@ -60,7 +60,7 @@ Edit these lines to change the defaults, or override them for one invocation:
 ```sh
 make IRIS_BRANCH=main
 make IRIS_REPO=https://github.com/YOUR-NAME/iris.git IRIS_BRANCH=your-branch
-make IRIS_BRANCH=perf/sgiemu-port FEATURES=pcap,idle-pause,perfetto,jitv2
+make FEATURES=pcap,idle-pause,perfetto,jitv2
 ```
 
 The helper clones each repository/branch combination into its own ignored
@@ -105,9 +105,10 @@ Dev/
   prismatic/
 ```
 
-Prismatic builds against our Iris fork's **`main`**, **`xiri`**, and
-**`perf/sgiemu-port`** branches. Automated builds default to **`xiri`**, retaining
-NetBSD and other guest OS compatibility work alongside IRIX. Direct `cargo`
+Prismatic development uses our Iris fork's **`xiri`** branch, which includes the
+merged performance work. **`perf/sgiemu-port`** is retired. Automated builds
+default to **`xiri`**, retaining NetBSD and other guest OS compatibility work
+alongside IRIX. Compatibility with the fork's **`main`** remains available. Direct `cargo`
 commands use `../iris`; `make` uses its managed source checkout. Each binary
 links the Iris checkout present when built; rebuild after changing sources.
 
@@ -115,8 +116,8 @@ links the Iris checkout present when built; rebuild after changing sources.
 of branch names. Missing features are greyed out in the overlays, with a reason
 in the hint strip. Saved preferences remain in `prismatic.cfg` and machine
 stanzas; rebuilding against a core that provides the APIs enables them again.
-If the performance work merges into `xiri`, those APIs will be detected without
-another Prismatic branch-specific change.
+Rebuilding against the integrated `xiri` automatically enables its APIs,
+including the optional SGIEmu performance control.
 
 The current `main` core lacks several frontend hooks: SDL guest audio,
 diagnostic routing, PROM boot/console presets, PTY/Off serial routing, owned
@@ -130,9 +131,8 @@ external O2/Octane PROMs selected in General. Diagnostics stay on the console;
 guest audio is disabled when no SDL PCM hook exists. Network changes require
 restart on cores without persistent live-network overrides.
 
-On the current `xiri` revision, most embedding hooks are present; PROM presets,
-PTY/Off routing and the newer Octane CPU selections await their corresponding
-merges. General cycles only CPUs available in the linked core. A label saved
+The integrated `xiri` includes PROM presets, PTY/Off routing and the newer
+Octane CPU selections. General cycles only CPUs available in the linked core. A label saved
 with an unavailable CPU still loads, but boot asks you to select a supported
 CPU rather than silently replacing the hardware. **Connection status** lists
 which optional capabilities are unavailable in the current build.
@@ -147,14 +147,14 @@ sudo dnf install git python3 gcc gcc-c++ make pkgconf-pkg-config sdl3-devel alsa
 # Recommended fetch-and-build workflow (defaults to our fork's xiri):
 make
 # Alternatively, with a manually maintained sibling checkout:
-# Iris perf/sgiemu-port:
+# Iris xiri:
 cargo run --release --locked --features pcap,idle-pause,perfetto,jitv2
-# Current Iris main/xiri (or omit --features for the interpreter):
+# Older Iris main (or omit --features for the interpreter):
 cargo run --release --locked --features pcap,idle-pause,jitv2
 ```
 
-The current `main`/`xiri` Odyssey code fails to compile with Iris's `perfetto` feature
-(missing `events::cfifo`/`events::swap` references); the performance branch carries
+Older `main` Odyssey revisions fail to compile with Iris's `perfetto` feature
+(missing `events::cfifo`/`events::swap` references); the integrated `xiri` carries
 the correction. Omit `perfetto` on affected checkouts. Tracing controls are grey
 when not built or when the owned tracing API is absent.
 
@@ -452,7 +452,7 @@ required APIs. Greyed controls show their availability reason in the hint strip.
 
 ### O2 and Octane firmware
 
-The `xiri` and performance cores embed O2 4.18 and Octane 4.9 as Rust byte arrays,
+The `xiri` core embeds O2 4.18 and Octane 4.9 as Rust byte arrays,
 just like their Indy and Indigo2 PROMs. With that capability, leave **PROM
 firmware** at **Bundled with Iris**. On cores without it (currently `main`),
 **Use bundled** is greyed out and an external PROM is required before boot.
@@ -524,6 +524,15 @@ Performance exposes the following settings, all saved per machine label:
 | Host thread affinity | Enables optional host core IDs for CPU, REX3 processing and Newport refresh threads. `auto` leaves a role to the host scheduler. CPU IDs must be available to the process; both Octane CPUs use the CPU role. |
 | JIT compiler workers | 1–64 workers for the experimental `jitv2` build. The execution engine is selected at build time. |
 | JIT disk cache | Opt-in compiled-page reuse, stored under this label's state directory in `jit-cache/`. |
+| SGIEmu optimizations | **Off by default.** Enables the JIT integer register cache and Indy/Indigo2 clock calendar cache. Changing a running machine requires a confirmed restart. |
+
+Enable **Tinker**, then open **F9 → Advanced → Performance** to change
+**SGIEmu optimizations**. The choice persists per machine label as
+`advanced.expert.sgiemu_optimizations`. Ordinary JIT compilation and correctness
+fixes, including the JIT restart and Newport rendering fixes, remain enabled
+independently. The register cache requires `jitv2` without `developer`; O2 and
+Octane have different RTCs. On older cores the control is disabled and the saved
+preference is retained; it cannot change those cores' optimization policy.
 
 Connections provides **Serial A routing** and **Serial B routing**, plus editable
 **Monitor**, **Serial A/B TCP**, **GDB** and **VNC** ports. Each serial route
@@ -1237,3 +1246,9 @@ to [Iris](https://github.com/techomancer/iris) for developing the SGI emulation
 core that powers Prismatic. Their emulator, hardware research and documentation
 provide the foundation for [our fork](https://github.com/salvogendut/iris) and
 its integration with the Happy Years Rust/SDL3 interface.
+
+Thank you also to [Renato Tarabella](https://github.com/RenatoTarabella) and the
+[SGIEmu project](https://github.com/RenatoTarabella/SGIEmu). SGIEmu's JIT register
+caching and real-time clock caching techniques inspired the optional performance
+optimizations adapted into our Iris fork, now available in Prismatic through
+**Advanced > Performance > SGIEmu optimizations**.

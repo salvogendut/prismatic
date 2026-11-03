@@ -19,6 +19,11 @@ fn main() {
         ("vnc", "vnc/mod.rs", "sessions.lock()"),
         ("trace", "perfetto/mod.rs", "pub fn stop_if_running("),
         ("jit_cache", "cpu/jitv2/pcache.rs", "pub fn configure("),
+        (
+            "sgiemu_optimizations",
+            "config.rs",
+            "pub sgiemu_optimizations: bool",
+        ),
         ("firmware", "lib.rs", "pub mod prombinip32;"),
         (
             "poweroff",

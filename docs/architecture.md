@@ -33,9 +33,10 @@ of local work, generated inputs, Make overrides and failure propagation.
 APIs and emits checked `iris_*` cfgs. It watches each relevant source (or its
 parent if a module is absent), so changing branches reruns detection. It does
 not inspect branch names: merging performance/embedding work into `xiri`
-automatically exposes the new capabilities on the next rebuild. Supported
-baselines are `main` at `2eb811f`, `xiri` at `e049373`, and `perf/sgiemu-port`
-at `59c2f16`. Older arbitrary Iris revisions are not a supported API contract.
+automatically exposes the new capabilities on the next rebuild. Development
+now uses `xiri`; the merged `perf/sgiemu-port` branch is retired. Compatibility
+with the fork's `main` is retained. Older arbitrary Iris revisions are not a
+supported API contract.
 
 `compat` centralizes capability flags and small adapters. The native audio,
 diagnostic and serial implementations are selected only when their APIs exist.
@@ -57,34 +58,35 @@ Safe paused checkpoints, owned remote services and per-machine affinity/JIT cach
 management require their corresponding lifecycle APIs. Live network changes
 fall back to restart confirmation on cores without persistent runtime overrides.
 
-## Performance build
+## Performance configuration
 
-The optional `perf/sgiemu-port` Iris build has performance
-base `66f5a59` on the integrated `xiri` revision `087d250`, plus the boot/console
-`prom_env::prepare_environment` and runtime `MachineConfig.serial_backends` APIs.
-The performance changes stay in Iris: Cranelift SSA copies
-of guest integer registers and cached DS1x86 calendar conversion. The register
-cache keeps architectural state current and excludes FPU/fallback regions.
+The SGIEmu work is integrated into Iris's `xiri` branch. The per-label
+`ExpertSettings.sgiemu_optimizations` preference defaults to false and maps to
+`MachineConfig.perf.sgiemu_optimizations` when the core exposes that field.
+`build.rs` detects this API from source; unsupported cores retain the preference
+but disable its Performance row. Their existing optimization policy is unchanged.
+
+The toggle controls Cranelift SSA copies of guest integer registers and cached
+DS1x86 calendar conversion. The register cache keeps architectural state current
+and excludes FPU/fallback regions, developer and lockstep builds. O2 and Octane
+use different RTCs. JIT compilation, persistent compiled-page caching, host
+affinity and idle parking remain separate choices. Correctness fixes always apply.
+
+Save uses the existing machine-difference and restart confirmation flow; Cancel
+or Discard does not change the live machine. The worker constructs a replacement
+with the selected policy, including all SMP CPUs. Iris keeps policy per JIT pool,
+preserves it through worker/arena resets and includes it in persistent code keys.
+RTC snapshots preserve guest state without overriding the host's policy.
 
 Build with `pcap,idle-pause,perfetto,jitv2` using `nightly-2026-10-28`.
-The `developer` feature disables the new register cache, so the performance
-binary omits it. Default-feature checks still exercise the interpreter build;
-checks and PROM smoke runs with the performance feature set exercise the JIT.
-The performance integration requires no Prismatic UI or configuration schema changes.
+The interpreter build can use the RTC cache; the register cache needs `jitv2`.
+Avoid `developer` when measuring the register optimization. PROM smoke checks
+establish startup and restart behavior, not an OS boot speedup.
 
-The performance base was validated against `66f5a59` with formatting, strict
-frontend Clippy, default-feature and performance-feature tests. The release
-binary passes dummy SDL, diskless PROM and guest-input smoke tests, with JIT pages
-compiled during PROM execution. These checks do not measure an OS boot speedup.
-The media attachment/restart smoke test currently reaches the confirmed restart
-but times out waiting for PROM display output within its 240-second limit.
-Media restart validation remains incomplete on this performance build.
-The serial routing restart check similarly reaches an Indy PROM panic after
-switching PTY to TCP in the same performance-build process. The new TCP endpoint
-opens and carries the panic output. The equivalent interpreter check passes,
-and a fresh performance-build process boots the same saved firmware and TCP
-configuration to the PROM menu. The underlying restart issue remains unresolved;
-quit and relaunch after saving routing changes to a running machine.
+The former same-process JIT restart panic was traced to a global hot compilation
+queue. Iris now gives each machine's JIT pool its own queue, so an old worker
+cannot compile the replacement machine's request against old memory. This fix
+remains active with SGIEmu optimizations either on or off.
 
 ## Design baseline
 
@@ -142,10 +144,9 @@ The core currently models one 1280x1024 Odyssey scanout and refuses VPro
 snapshots. Hardware mode limits, DCD and physical-board validation are outside
 this frontend integration.
 
-The root Cargo manifest depends directly on `../iris` on its `perf/sgiemu-port` branch,
+The root Cargo manifest depends directly on `../iris`, developed on `xiri`,
 preserving that fork's winit and block patches at the root where Cargo applies
-them. This branch is based on `xiri` and retains its NetBSD and other guest
-OS compatibility work alongside IRIX support. The nightly
+them. It retains NetBSD and other guest OS compatibility work alongside IRIX. The nightly
 Rust toolchain matches Iris. No emulator source is copied into this repository.
 The default is Indy IP24, R4400, 64 MB RAM, one Newport head, and no SCSI
 devices. General selects all five workstation profiles: Indy IP24, Indigo2 IP22,
@@ -659,8 +660,8 @@ automatic TCP ports, occupied-port failures, per-label persistence and draft
 isolation. Live SDL checks boot all five profiles to serial PROM menus over PTYs,
 verify console environment values and pause/quit cleanup, and exercise Indy with
 minicom. The interpreter also passes a live PTY-to-fixed-TCP switch through the
-restart confirmation flow. The performance-build restart limitation is described
-above; cold boots and reconnects pass with that build.
+restart confirmation flow. The integrated JIT core also passes same-process restarts; the former global
+compilation-queue failure is described above.
 
 Each boot trace gets a unique reserved file under the label's `traces/` directory;
 it never truncates a previous capture. Stop flushes the recording and retains the
@@ -670,7 +671,7 @@ GDB/VNC default off. Fixed-port preflight failures, GDB/VNC bind failures, monit
 invalid ELF files produce recoverable startup failures. Serial TCP endpoints bind
 once and remain reserved through construction, so failures reach `Phase::Failed`
 before firmware writes or CPU startup. The optional Cargo features forward
-`idle-pause`, `jitv2`, `perfetto` and `developer` to the compatible Iris performance branch.
+`idle-pause`, `jitv2`, `perfetto` and `developer` to the integrated `xiri` core.
 
 Serial logging uses Iris's console sink (B on IP2x, A on IP30/IP32) and raw or wall-clock timestamps.
 The path is `serial.log` within the selected machine's state directory. The

@@ -475,7 +475,7 @@ fn draw_overlay(
             || (session.tab == Tab::Advanced
                 && match session.advanced_page {
                     crate::expert::Page::Core => index < 5,
-                    crate::expert::Page::Performance => index < 8,
+                    crate::expert::Page::Performance => index + 1 < rows.len(),
                     crate::expert::Page::Connections => index < 8,
                     crate::expert::Page::Developer => index < 4,
                 })
