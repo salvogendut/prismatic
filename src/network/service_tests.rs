@@ -198,3 +198,180 @@ fn live_nat_save_changes_forward_listeners_without_restarting_backend() {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+
+#[test]
+#[cfg(iris_stream_network)]
+fn private_stream_transports_frames_to_an_external_peer() {
+    use iris::net::stream::{read_frame, write_frame};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let settings = NetworkSettings {
+        mode: NetMode::Stream,
+        stream: Some(format!("tcp:{}", listener.local_addr().unwrap())),
+        ..Default::default()
+    };
+    let mut backend = Backend::new(&settings);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut peer = loop {
+        match listener.accept() {
+            Ok((peer, _)) => break peer,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => panic!("{e}"),
+        }
+    };
+    peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    let outgoing = backend.route.udp(1, 68, 67, b"private frame");
+    backend.rings.to_net.push(outgoing.clone()).unwrap();
+    backend.rings.tx_wake.notify();
+    assert_eq!(read_frame(&mut peer).unwrap().unwrap(), outgoing);
+    let incoming = backend.route.udp(2, 67, 68, b"peer reply");
+    write_frame(&mut peer, &incoming).unwrap();
+    loop {
+        if let Ok(frame) = backend.rings.from_net.pop() {
+            assert_eq!(frame, incoming);
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        backend.rings.rx_wake.wait(Duration::from_millis(10));
+    }
+}
+
+#[cfg(all(iris_stream_network, unix))]
+fn install_server_exchange(
+    backend: &mut Backend,
+    sport: u16,
+    dport: u16,
+    payload: &[u8],
+) -> Vec<u8> {
+    use iris::net::packet::{ARP_REPLY, ARP_REQUEST, arp};
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut send_at = Instant::now();
+    loop {
+        if Instant::now() >= send_at {
+            backend
+                .rings
+                .to_net
+                .push(backend.route.udp(1, sport, dport, payload))
+                .unwrap();
+            backend.rings.tx_wake.notify();
+            send_at = Instant::now() + Duration::from_millis(250);
+        }
+        while let Ok(frame) = backend.rings.from_net.pop() {
+            let eth = Ether::parse(&frame).unwrap();
+            if let Some(request) = eth.arp()
+                && request.op() == ARP_REQUEST
+                && request.target_ip() == backend.route.src
+            {
+                backend
+                    .rings
+                    .to_net
+                    .push(arp(
+                        ARP_REPLY,
+                        backend.route.src_mac,
+                        backend.route.src,
+                        request.sender_mac(),
+                        request.sender_ip(),
+                    ))
+                    .unwrap();
+                backend.rings.tx_wake.notify();
+            }
+            if let Some(udp) = eth.ipv4().and_then(|ip| ip.udp())
+                && udp.dport() == sport
+            {
+                return udp.payload().to_vec();
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Install server did not answer port {dport}"
+        );
+        backend.rings.rx_wake.wait(Duration::from_millis(10));
+    }
+}
+
+#[cfg(all(iris_stream_network, unix))]
+fn real_install_helper(backend: crate::installation::Backend) {
+    use crate::installation::{Server, Settings};
+    let fixture = tempfile::tempdir().unwrap();
+    let setup = fixture.path().join("setup with spaces");
+    std::fs::create_dir_all(setup.join("media/dist")).unwrap();
+    std::fs::create_dir_all(setup.join("media/stand")).unwrap();
+    std::fs::write(setup.join("media/dist/sa"), b"synthetic sa").unwrap();
+    std::fs::write(
+        setup.join("media/stand/bootfile"),
+        b"Prismatic network boot fixture",
+    )
+    .unwrap();
+    std::fs::write(
+        setup.join("instigator.yaml"),
+        r#"server_ip: 192.168.0.1
+netmask: 192.168.0.0/24
+clients:
+  - {name: test, mac: "08:00:69:12:34:56", ip: 192.168.0.2}
+install_sets:
+  - name: test
+    layers:
+      - {name: base, source: media, boot: true}
+services:
+  bootp: true
+  tftp: {enabled: true}
+  rsh: true
+"#,
+    )
+    .unwrap();
+    let mut settings = Settings {
+        backend,
+        folder: Some(setup.to_str().unwrap().into()),
+        program: std::env::var("PRISMATIC_INSTALL_HELPER").unwrap_or_else(|_| "instigator".into()),
+        ..Default::default()
+    };
+    settings.validate_files().unwrap();
+    let mut server = Server::start(&settings, &AtomicBool::new(false)).unwrap();
+    let socket = server.endpoint().strip_prefix("unix:").unwrap().to_owned();
+    let net = NetworkSettings {
+        mode: NetMode::Stream,
+        stream: Some(server.endpoint().into()),
+        ..Default::default()
+    };
+    let mut peer = Backend::new(&net);
+    peer.route.dst_mac = [8, 0, 0x69, 0, 0, 2]; // Instigator's private NIC.
+    let mut bootp = vec![0; 300];
+    bootp[..3].copy_from_slice(&[1, 1, 6]);
+    bootp[4..8].copy_from_slice(&1234u32.to_be_bytes());
+    bootp[12..16].copy_from_slice(&peer.route.src.octets());
+    bootp[28..34].copy_from_slice(&peer.route.src_mac);
+    let name = b"test/stand/bootfile";
+    bootp[108..108 + name.len()].copy_from_slice(name);
+    let reply = install_server_exchange(&mut peer, 68, 67, &bootp);
+    assert_eq!(&reply[16..20], &[192, 168, 0, 2]);
+    assert_eq!(&reply[20..24], &[192, 168, 0, 1]);
+    let tftp = install_server_exchange(
+        &mut peer,
+        40000,
+        69,
+        b"\x00\x01test/stand/bootfile\x00octet\x00",
+    );
+    assert_eq!(&tftp[..4], b"\x00\x03\x00\x01");
+    assert_eq!(&tftp[4..], b"Prismatic network boot fixture");
+    assert!(server.report().contains("Running"));
+    drop(peer);
+    drop(server);
+    assert!(!std::path::Path::new(&socket).exists());
+}
+
+#[test]
+#[cfg(all(iris_stream_network, unix))]
+#[ignore = "requires Instigator: set PRISMATIC_INSTALL_HELPER to its absolute path"]
+fn native_instigator_answers_bootp_and_tftp_over_iris_stream() {
+    real_install_helper(crate::installation::Backend::Native);
+}
+
+#[test]
+#[cfg(all(iris_stream_network, target_os = "linux"))]
+#[ignore = "requires rootless Podman and make install-server-image"]
+fn podman_instigator_answers_bootp_and_tftp_over_iris_stream() {
+    real_install_helper(crate::installation::Backend::Podman);
+}

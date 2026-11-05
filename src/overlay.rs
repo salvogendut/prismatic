@@ -3,7 +3,7 @@ use crate::disk_image::{Format as DiskFormat, Request as DiskRequest};
 use crate::expert::{Field as ExpertField, Page};
 use crate::extensions::{Field as ExtensionsField, Page as ExtensionsPage};
 use crate::media::{MediaKind, Medium};
-use crate::network::{Field, Folder, Interface};
+use crate::network::{Field, Folder, Interface, Page as NetworkPage};
 use crate::settings::{Settings, WindowScale};
 use crate::storage::{Action, Operation};
 
@@ -119,11 +119,16 @@ pub struct Session {
     pub advanced_page: Page,
     pub extensions_page: ExtensionsPage,
     pub checkpoint: String,
+    pub network_page: NetworkPage,
 }
 
 impl Session {
     pub fn subtabs(&self) -> Vec<(&'static str, bool)> {
         match self.tab {
+            Tab::Network => NetworkPage::ALL
+                .iter()
+                .map(|&page| (page.label(), page == self.network_page))
+                .collect(),
             Tab::Advanced => Page::ALL
                 .iter()
                 .map(|&page| (page.label(), page == self.advanced_page))
@@ -138,6 +143,11 @@ impl Session {
 
     fn select_subtab(&mut self, index: usize) -> bool {
         let changed = match self.tab {
+            Tab::Network => NetworkPage::ALL.get(index).is_some_and(|&page| {
+                let changed = self.network_page != page;
+                self.network_page = page;
+                changed
+            }),
             Tab::Advanced => Page::ALL.get(index).is_some_and(|&page| {
                 let changed = self.advanced_page != page;
                 self.advanced_page = page;
@@ -298,11 +308,40 @@ impl Session {
                 )
             }
             (Tab::Extensions, 2 | 3)
+                if self.extensions_page == ExtensionsPage::Checkpoints
+                    && self.draft.network.mode == crate::network::NetMode::Stream =>
+            {
+                Some(
+                    "Checkpoints cannot restore a private network peer; return to NAT after installation.",
+                )
+            }
+            (Tab::Extensions, 2 | 3)
                 if self.extensions_page == ExtensionsPage::Checkpoints && !c::CHECKPOINTS =>
             {
                 Some("This Iris build has no safe paused checkpoint API.")
             }
-            (Tab::Network, 2 | 5) if !cfg!(feature = "pcap") => {
+            (Tab::Network, _)
+                if self.network_page == NetworkPage::Installation && !c::STREAM_NETWORK =>
+            {
+                Some(
+                    "This Iris build has no private stream network API. Saved installation settings are retained.",
+                )
+            }
+            (Tab::Network, 0 | 4)
+                if self.network_page == NetworkPage::Installation && !cfg!(unix) =>
+            {
+                Some(
+                    "Managed installation servers currently require Linux or macOS; use an external TCP stream server.",
+                )
+            }
+            (Tab::Network, 11)
+                if self.network_page == NetworkPage::Connection && !c::STREAM_NETWORK =>
+            {
+                Some("Private stream networking is unavailable in this Iris build.")
+            }
+            (Tab::Network, 2 | 5)
+                if self.network_page == NetworkPage::Connection && !cfg!(feature = "pcap") =>
+            {
                 Some("PCAP interfaces require a build with the pcap feature.")
             }
             _ => None,
@@ -447,6 +486,7 @@ impl Session {
                         &self.draft.machine,
                         &self.draft.media,
                         &self.draft.advanced,
+                        &self.draft.network,
                     )
                     .map_or_else(
                         |e| e,
@@ -602,6 +642,9 @@ impl Session {
                 rows
             }
             Tab::About => vec![],
+            Tab::Network if self.network_page == NetworkPage::Installation => {
+                self.draft.network.installation.rows()
+            }
             Tab::Network => self.draft.network.rows(),
         }
     }
@@ -1180,6 +1223,7 @@ impl Overlay {
                     advanced_page: Page::Core,
                     extensions_page: ExtensionsPage::Hardware,
                     checkpoint: "checkpoint-1".into(),
+                    network_page: NetworkPage::Connection,
                 });
                 if key == Key::NextMachine {
                     let session = self.session.as_mut().unwrap();
@@ -1355,34 +1399,65 @@ impl Overlay {
                 (Tab::Advanced, 4) => session.draft.advanced.cycle_serial_logging(),
                 (Tab::Advanced, 5) => session.draft.smoothing = !session.draft.smoothing,
                 (Tab::Advanced, 6) => session.draft.debug_output.cycle(),
+                (Tab::Network, row) if session.network_page == NetworkPage::Installation => {
+                    match row {
+                        0 => session.draft.network.installation.cycle(),
+                        1 => {
+                            self.dialog = Some(Dialog::Folder {
+                                folder: Folder::Installation,
+                                choice: 3,
+                            })
+                        }
+                        2 => self.edit_network(Field::InstallProgram),
+                        3 => self.edit_network(Field::InstallImage),
+                        4 => session.draft.network.mode = crate::network::NetMode::Stream,
+                        5 => return Effect::RuntimeStatus,
+                        _ => {}
+                    }
+                }
+                (Tab::Network, 11)
+                    if session.draft.network.mode == crate::network::NetMode::Stream
+                        && !session.draft.network.installation.enabled() =>
+                {
+                    self.edit_network(Field::Stream)
+                }
                 (Tab::Network, 0) => session
                     .draft
                     .network
                     .cycle_mode(session.draft.machine.profile),
-                (Tab::Network, 1) if session.draft.network.mode == iris::config::NetMode::Nat => {
+                (Tab::Network, 1) if session.draft.network.mode == crate::network::NetMode::Nat => {
                     self.edit_network(Field::Subnet)
                 }
-                (Tab::Network, 2) if session.draft.network.mode == iris::config::NetMode::Pcap => {
+                (Tab::Network, 2)
+                    if session.draft.network.mode == crate::network::NetMode::Pcap =>
+                {
                     self.busy = true;
                     return Effect::ListInterfaces;
                 }
-                (Tab::Network, 3) if session.draft.network.mode != iris::config::NetMode::Off => {
+                (Tab::Network, 3)
+                    if matches!(
+                        session.draft.network.mode,
+                        crate::network::NetMode::Nat | crate::network::NetMode::Pcap
+                    ) =>
+                {
                     self.dialog = Some(Dialog::Folder {
                         folder: Folder::Nfs,
                         choice: 3,
                     });
                 }
                 (Tab::Network, 4) => session.draft.network.cycle_nfs_version(),
-                (Tab::Network, 5) if session.draft.network.mode == iris::config::NetMode::Pcap => {
+                (Tab::Network, 5)
+                    if session.draft.network.mode == crate::network::NetMode::Pcap =>
+                {
                     self.edit_network(Field::NfsIp)
                 }
-                (Tab::Network, 6) if session.draft.network.mode == iris::config::NetMode::Nat => {
+                (Tab::Network, 6) if session.draft.network.mode == crate::network::NetMode::Nat => {
                     self.dialog = Some(Dialog::Folder {
                         folder: Folder::Tftp,
                         choice: 3,
                     });
                 }
-                (Tab::Network, 7) if session.draft.network.mode == iris::config::NetMode::Nat => {
+                (Tab::Network, 7) if session.draft.network.mode == crate::network::NetMode::Nat => {
                     self.edit_network(Field::Forwards)
                 }
                 (Tab::Extensions, row) if session.extensions_page == ExtensionsPage::Devices => {
@@ -1495,7 +1570,9 @@ impl Overlay {
                     session.draft.network.forward_lan = !session.draft.network.forward_lan
                 }
                 (Tab::Network, 9) => self.edit_network(Field::Mac),
-                (Tab::Network, 10) if session.draft.network.mode == iris::config::NetMode::Nat => {
+                (Tab::Network, 10)
+                    if session.draft.network.mode == crate::network::NetMode::Nat =>
+                {
                     self.dialog = Some(Dialog::Folder {
                         folder: Folder::Rsh,
                         choice: 3,
@@ -1523,6 +1600,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn installation_drafts_are_isolated_and_unavailable_cores_retain_preferences() {
+        let live = Settings {
+            tinker: true,
+            ..Default::default()
+        };
+        let mut overlay = Overlay::default();
+        overlay.key(Key::Options, &live);
+        overlay.session.as_mut().unwrap().tab = Tab::Network;
+        assert!(overlay.select_subtab(1));
+        assert_eq!(overlay.key(Key::Enter, &live), Effect::None);
+        if !crate::compat::STREAM_NETWORK || !cfg!(unix) {
+            assert_eq!(overlay.session.as_ref().unwrap().draft, live);
+            return;
+        }
+        assert_eq!(
+            overlay
+                .session
+                .as_ref()
+                .unwrap()
+                .draft
+                .network
+                .installation
+                .backend,
+            crate::installation::Backend::Native
+        );
+        overlay.folder_picked(Folder::Installation, "/media/setup".into());
+        overlay.session.as_mut().unwrap().row = 4;
+        assert_eq!(overlay.key(Key::Enter, &live), Effect::None);
+        assert_eq!(
+            overlay.session.as_ref().unwrap().draft.network.mode,
+            crate::network::NetMode::Stream
+        );
+        assert_eq!(
+            live.network.installation.backend,
+            crate::installation::Backend::Off
+        );
+        let Effect::Save(draft) = overlay.key(Key::Options, &live) else {
+            panic!("Expected a save draft")
+        };
+        assert_eq!(
+            draft.network.installation.folder.as_deref(),
+            Some("/media/setup")
+        );
+        assert!(draft.machine_differs_from(&live));
+        overlay.key(Key::Escape, &live);
+        overlay.key(Key::Left, &live); // Discard.
+        overlay.key(Key::Enter, &live);
+        assert!(overlay.session.is_none());
+        assert!(!live.network.installation.enabled());
+    }
+
+    #[test]
     fn topics_wrap_remember_selection_and_leave_settings_untouched() {
         let live = Settings {
             tinker: true,
@@ -1535,6 +1664,10 @@ mod tests {
         assert_eq!(overlay.session.as_ref().unwrap().tab, Tab::General);
         for (tab, labels) in [
             (Tab::Advanced, Page::ALL.map(Page::label).to_vec()),
+            (
+                Tab::Network,
+                NetworkPage::ALL.map(NetworkPage::label).to_vec(),
+            ),
             (
                 Tab::Extensions,
                 ExtensionsPage::ALL.map(ExtensionsPage::label).to_vec(),

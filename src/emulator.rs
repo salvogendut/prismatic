@@ -419,6 +419,13 @@ impl Emulator {
                     let _state_lease =
                         crate::instance::Lease::acquire(&state_dir.join("machine.lock"))?;
                     let _disk_leases = crate::instance::disks(&media)?;
+                    let mut install_server = if network.mode == crate::network::NetMode::Stream && network.installation.enabled() {
+                        worker_status.lock().unwrap().runtime = "Checking installation media and starting server...".into();
+                        let server = crate::installation::Server::start(&network.installation, &worker_stop)?;
+                        #[cfg(iris_stream_network)]
+                        { config.network.stream = Some(server.endpoint().into()); }
+                        Some(server)
+                    } else { None };
                     prepare_serial_log(&config)?;
                     expert.prepare(&config, &state_dir)?;
                     let serial = crate::serial::Endpoints::prepare(&mut config, &expert)?;
@@ -536,8 +543,9 @@ impl Emulator {
                             *worker_status.lock().unwrap() = Status {
                                 phase,
                                 monitor: owned.machine.monitor_addr(),
-                                runtime: format!("{}\nVINO: {} / {} / camera {}\nDaynaPort: {} / {}\nUltra64: {}",
-                                    services.report(&serial, owned.machine.monitor_addr()), crate::compat::vino_status(owned.machine.as_mut()), if extensions.pal { "PAL" } else { "NTSC" }, extensions.camera_index,
+                                runtime: format!("{}\n{}\nVINO: {} / {} / camera {}\nDaynaPort: {} / {}\nUltra64: {}",
+                                    services.report(&serial, owned.machine.monitor_addr()),
+                                    install_server.as_mut().map_or_else(|| "Install server: Off / external".into(), crate::installation::Server::report), crate::compat::vino_status(owned.machine.as_mut()), if extensions.pal { "PAL" } else { "NTSC" }, extensions.camera_index,
                                     extensions.daynaport.map_or_else(|| "Off".into(), |s| format!("SCSI {}:{}", s / 16, s % 16)), extensions.dayna_subnet,
                                     if extensions.ultra64 { "Enabled (external bridge)" } else { "Off" }),
                                 pcap: owned.machine.net_pcap_status(),

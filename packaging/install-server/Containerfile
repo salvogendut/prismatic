@@ -1,0 +1,12 @@
+# Source is fetched at the revision pinned in tools/install_server.py.
+FROM docker.io/library/golang:1.27.1 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOTOOLCHAIN=local go build -trimpath -ldflags "-s -w" -o /instigator ./cmd/instigator
+
+FROM scratch
+COPY --from=build /instigator /instigator
+COPY --from=build /src/LICENSE /src/THIRD_PARTY_NOTICES /licenses/instigator/
+ENTRYPOINT ["/instigator"]

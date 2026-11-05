@@ -83,6 +83,7 @@ fn main() {
         ("checkpoints", "machine.rs", "pub fn save_snapshot_paused("),
         ("octane_cpus", "config.rs", "pub const OCTANE: [Self; 3]"),
         ("live_network", "net/mod.rs", "fn runtime_config("),
+        ("stream_network", "config.rs", "pub stream: Option<String>"),
     ] {
         println!("cargo:rustc-check-cfg=cfg(iris_{name})");
         let path = root.join(file);

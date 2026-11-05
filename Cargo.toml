@@ -28,7 +28,7 @@ gif = "0.14.2"
 jiff = { version = "0.2.38", default-features = false, features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31", default-features = false, features = ["fs", "term"] }
+nix = { version = "0.31", default-features = false, features = ["fs", "term", "signal"] }
 
 # Cargo only applies patches declared by the root package. Preserve the fork's
 # patched host dependencies when embedding Iris from this separate repository.

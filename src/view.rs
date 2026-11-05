@@ -419,6 +419,7 @@ fn overlay_hints(session: &crate::overlay::Session) -> Vec<String> {
             _ => "Scratch transfers briefly stop devices, then restore CPU state. They do not mount a guest filesystem.",
         }.into(), "Scratch and changer settings require restart. Live storage actions confirm separately.".into()],
         Tab::About => vec![],
+        Tab::Network if session.network_page == crate::network::Page::Installation => session.draft.network.installation.hints(),
         Tab::Network => session.draft.network.hints(session.row),
     };
     let hints = session

@@ -60,7 +60,7 @@ impl Context {
         self.network = network;
     }
     pub fn capability(&self) -> Result<(), String> {
-        capability(&self.hardware, &self.media, &self.advanced)
+        capability(&self.hardware, &self.media, &self.advanced, &self.network)
     }
     fn provenance(&self) -> Result<Vec<DiskRef>, String> {
         self.media
@@ -90,7 +90,11 @@ pub fn capability(
     hardware: &MachineSettings,
     media: &MediaSettings,
     advanced: &AdvancedSettings,
+    network: &NetworkSettings,
 ) -> Result<(), String> {
+    if network.mode == crate::network::NetMode::Stream {
+        return Err("Private network peers are not captured by checkpoints; finish installation and return to NAT first".into());
+    }
     if !crate::compat::CHECKPOINTS {
         return Err("Paused checkpoints are unavailable in this Iris build".into());
     }
@@ -346,6 +350,14 @@ mod tests {
             &Default::default(),
         );
         assert_eq!(context.capability().is_ok(), crate::compat::CHECKPOINTS);
+        context.network.mode = crate::network::NetMode::Stream;
+        assert!(
+            context
+                .capability()
+                .unwrap_err()
+                .contains("Private network peers")
+        );
+        context.network.mode = crate::network::NetMode::Nat;
         if !crate::compat::TRACE {
             context.advanced.expert.trace_on_boot = true;
             assert_eq!(context.capability().is_ok(), crate::compat::CHECKPOINTS);

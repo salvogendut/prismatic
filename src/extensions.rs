@@ -94,6 +94,9 @@ impl ExtensionsSettings {
             return Err("DaynaPort MAC must be unicast".into());
         }
         if let Some(slot) = self.daynaport {
+            if network.mode == crate::network::NetMode::Stream {
+                return Err("DaynaPort cannot join a private stream network; disable it for network installation".into());
+            }
             if !(1..=7).contains(&(slot % 16)) || slot / 16 >= hardware.profile.scsi_controllers() {
                 return Err("DaynaPort needs an available SCSI target 1-7 on this machine".into());
             }

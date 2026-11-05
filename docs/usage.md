@@ -45,7 +45,7 @@ and terminal; confirmed quit stops the worker and saves the machine's NVRAM befo
 | F6 | Start or stop an animated GIF capture |
 | F9 | Open options; save and close an open options session |
 | Left / Right (in options/dialogs) | Change section or confirmation choice |
-| Tab / Shift+Tab (in Advanced/Extensions) | Next / previous topic sub-tab; clicking a sub-tab also selects it |
+| Tab / Shift+Tab (in Advanced/Network/Extensions) | Next / previous topic sub-tab; clicking a sub-tab also selects it |
 | Up / Down (in options) | Select a row |
 | Enter (in options/dialogs) | Cycle a value, toggle an option or accept a confirmation |
 | Escape (in options/dialogs) | Close; offer Save / Discard / Cancel if changed |
@@ -85,7 +85,9 @@ settings; Extensions selects graphics hardware, CPU count, storage services,
 optional devices and experimental checkpoints.
 Advanced groups its controls into **Core**, **Performance**, **Connections**,
 **Capture** and **Developer** sub-tabs. Extensions groups them into **Hardware**,
-**Storage**, **Devices** and **Checkpoints**. Switching topics retains pending
+**Storage**, **Devices** and **Checkpoints**. Network has **Connection** and
+**Installation** topics for network services and the optional
+[installation helper](installation.md). Switching topics retains pending
 edits; returning to a main section remembers its topic until the overlay closes.
 Hiding these tabs retains their saved settings. Options
 are edited in a private draft and applied only after a successful save. Cancelling or discarding leaves the live display

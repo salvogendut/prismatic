@@ -15,6 +15,7 @@ pub const FIRMWARE: bool = cfg!(iris_firmware);
 pub const DEVICES: bool = cfg!(iris_devices);
 pub const CHECKPOINTS: bool = cfg!(iris_checkpoints);
 pub const LIVE_NETWORK: bool = cfg!(iris_live_network);
+pub const STREAM_NETWORK: bool = cfg!(iris_stream_network);
 
 pub fn report() -> String {
     let features = [
@@ -33,6 +34,7 @@ pub fn report() -> String {
         ("optional devices", DEVICES),
         ("paused checkpoints", CHECKPOINTS),
         ("live network changes", LIVE_NETWORK),
+        ("private stream networking", STREAM_NETWORK),
         ("Octane R12000/R14000", cfg!(iris_octane_cpus)),
     ];
     let unavailable: Vec<_> = features

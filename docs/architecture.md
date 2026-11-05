@@ -155,6 +155,7 @@ including when the hints are hidden.
 | `src/sound.rs` | Embedded Happy Years screenshot shutter through a main-thread SDL audio stream |
 | `src/audio.rs` | Bounded per-machine guest PCM handoff and main-thread SDL3 playback |
 | `src/network.rs` | Per-machine network settings, validation, Iris configuration mapping, Network rows and hints |
+| `src/installation.rs`, `tools/install_server.py` | Per-machine Instigator process/container ownership, private stream setup, bounded logs and optional helper builds |
 | `src/display.rs` | Packed RGBA frame type, startup/UI-preview pixels and aspect-preserving placement |
 | `src/view.rs` | SDL drawing, status strip, LEDs, options, confirmations and notifications |
 | `src/media.rs` | Native file/folder choosers, background validation and interface enumeration, media settings and Iris block-node adapters |
@@ -294,9 +295,13 @@ device-selection controls and removal of unused host dependencies remain future 
 
 ## Networking
 
-The Tinker-gated Network tab edits per-machine NAT/PCAP/Off mode, subnet,
+The Tinker-gated Network tab edits per-machine NAT/PCAP/Stream/Off mode, subnet,
 NFS folder/version/bridge IP, TFTP/RSH folders, MAC and TCP/UDP forwarding with
 localhost or all-interface bind scope.
+Connection and Installation are separate keyboard/mouse sub-tabs. Network mode
+is serialized through a frontend enum so stream preferences remain readable on
+cores without that API. `build.rs` detects the public stream configuration field;
+unsupported controls are greyed out and active unsupported modes fail explicitly.
 Settings live under `[network]` and each named machine's `.network` stanza.
 Old files default to NAT with no shares or forwards. Hiding Tinker does not
 disable saved networking. Changing from O2/Octane with Ethernet Off to an
@@ -329,6 +334,32 @@ The machine worker reports Iris's `PcapStatus`; capture failures produce a
 notification independently of debug logging. PCAP NFS requires an explicit
 virtual LAN IP; NAT-only services remain saved but are not passed to the PCAP
 backend. Prismatic never changes host capture privileges.
+
+### Installation server ownership
+
+`installation.rs` holds per-label helper preferences under `network.installation`.
+Save checks paths without starting processes. On boot, the machine worker holds
+the instance/disk leases, runs Instigator's full media check, starts its native
+process or a temporary Podman container and waits for the private socket before
+constructing Iris. It never opens a probe connection: Instigator accepts one
+emulator. Each worker has a unique temporary directory/socket/container name.
+The helper guard is declared before the owned workstation, so unwind teardown
+stops Iris before removing the server. Stop during validation/startup is polled;
+shutdown sends SIGTERM, then uses bounded termination and container removal.
+
+Child output is drained by readers into a bounded 32-line ring, with bounded
+line fragments even for output lacking newlines. Runtime status includes this
+history and unexpected helper exits without automatically resetting a guest.
+No commands are sent to the PROM/installer. Stream checkpoints and DaynaPort are
+rejected because neither can preserve the peer session. NAT shares/forwards stay
+saved but inactive. Temporary socket paths never enter saved configuration.
+
+The Linux Podman backend mounts only setup media read-only and runtime state
+read/write; it disables host networking and added capabilities. It uses a local
+image built by `tools/install_server.py` from a pinned source revision, with no
+image pull during boot. Native Unix helpers use the same private socket protocol.
+Flatpak host Podman and managed Windows helpers are not implemented. See
+[installation](installation.md) for user setup and current validation limits.
 
 ## Machine lifecycle
 

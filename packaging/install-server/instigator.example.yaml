@@ -1,0 +1,30 @@
+# Starter profile: edit filenames and client MAC to match your own setup.
+# IRIX 6.5.30 is for O2/Octane here; use suitable media for other machines.
+# All source paths resolve from the setup folder, mounted read-only in Podman.
+server_ip: 192.168.0.1
+netmask: 192.168.0.0/24
+clients:
+  - name: prismatic
+    mac: "08:00:69:12:34:56"
+    ip: 192.168.0.2
+
+install_sets:
+  - name: "6.5.30"
+    layers:
+      - {name: overlay1, source: "media/overlays1.iso", boot: true}
+      - {name: overlay2, source: "media/overlays2.iso"}
+      - {name: overlay3, source: "media/overlays3.iso"}
+  - name: foundations
+    layers:
+      - {name: foundation1, source: "media/foundation1.iso"}
+      - {name: foundation2, source: "media/foundation2.iso"}
+  - name: applications
+    layers:
+      - {name: applications, source: "media/applications.iso"}
+
+services:
+  bootp: true
+  tftp:
+    enabled: true
+    port_range: [2048, 32767]
+  rsh: true

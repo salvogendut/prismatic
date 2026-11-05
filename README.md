@@ -67,7 +67,7 @@ Cargo builds, optional features and `main` compatibility.
 | F5 | Confirm a cold reset |
 | F9 | Open options; save an open options session |
 | Arrows / Enter / Escape | Navigate options, change a value, or close with Save/Discard choices |
-| Tab / Shift+Tab | Switch topic sub-tabs in Advanced and Extensions; sub-tabs are also clickable |
+| Tab / Shift+Tab | Switch topic sub-tabs in Advanced, Network and Extensions; sub-tabs are also clickable |
 | Ctrl+Plus / Ctrl+Minus | Change and save the window scale |
 | F11 / F12 | Toggle fullscreen / confirm quit |
 
@@ -90,6 +90,7 @@ instructions, full shortcuts, input handling, capture options and audio.
 | [Extensions](docs/extensions.md) | Graphics, extra CPUs, optional devices, checkpoints, CD changer and scratch storage |
 | [Media and activity LEDs](docs/media.md) | Create empty disks, disk/CD formats, SCSI IDs, copy-on-write overlays and status lights |
 | [Networking and file sharing](docs/networking.md) | SSH through localhost port forwarding, NAT, PCAP, NFS, TFTP and RSH |
+| [Network installation helper](docs/installation.md) | Private Ethernet and optional native/Podman Instigator server; full IRIX installation validation pending |
 | [Configuration and saved state](docs/configuration.md) | `prismatic.cfg`, TOML examples, paths and persistent firmware state |
 | [Testing and smoke checks](docs/testing.md) | Formatting, Clippy, unit tests, diskless PROM checks and coverage limits |
 | [Integration architecture](docs/architecture.md) | Frontend/core boundaries, worker lifecycle, display/audio handoff and design details |
@@ -107,6 +108,10 @@ Thank you also to [Renato Tarabella](https://github.com/RenatoTarabella) and the
 caching and real-time clock caching techniques inspired the optional performance
 optimizations adapted into our Iris fork, now available in Prismatic through
 **Advanced > Performance > SGIEmu optimizations**.
+
+The optional installation helper uses James Braid's
+[Instigator](https://github.com/jamesbraid/instigator), which serves SGI
+installation media and provides a private emulator network.
 
 ## License
 

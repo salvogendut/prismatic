@@ -73,6 +73,8 @@ Check results use a separate `check-info.json`, preserving the build record.
 | `CARGO_TARGET_DIR=...` | Choose the Cargo artifact directory; default is this repository's `target`. |
 | `make flatpak` | Build an installable x86_64 Linux Flatpak with isolated Iris sources; see the [Flatpak guide](flatpak.md). |
 | `make flatpak-prepare` | Generate the Flatpak manifest with a pinned Iris commit and locked Cargo sources. |
+| `make install-server-image` | Build the optional Instigator Podman image; see [network installation](installation.md). |
+| `make install-server` | Build that image and extract a native Linux helper into `target/install-server/instigator`. |
 
 `make help` lists the helper options. Without Make, run `python3 tools/build.py`;
 its `--repo` and `--branch` options select other sources. The helper requires

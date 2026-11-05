@@ -1,0 +1,34 @@
+# Indy/IP22 starter: edit filenames and client MAC for your own setup.
+# Keep overlay discs separate here: some images contain conflicting
+# .prereq_hints files, so merging requires an explicit collision policy.
+server_ip: 192.168.0.1
+netmask: 192.168.0.0/24
+clients:
+  - name: prismatic-indy
+    mac: "08:00:69:12:34:56"
+    ip: 192.168.0.2
+
+install_sets:
+  - name: "6.5.22"
+    layers:
+      - {name: overlay1, source: "media/overlays1.iso", boot: true}
+  - name: overlays2
+    layers:
+      - {name: overlay2, source: "media/overlays2.iso"}
+  - name: overlays3
+    layers:
+      - {name: overlay3, source: "media/overlays3.iso"}
+  - name: foundations
+    layers:
+      - {name: foundation1, source: "media/foundation1.iso"}
+      - {name: foundation2, source: "media/foundation2.iso"}
+  - name: applications
+    layers:
+      - {name: applications, source: "media/applications.iso"}
+
+services:
+  bootp: true
+  tftp:
+    enabled: true
+    port_range: [2048, 32767]
+  rsh: true

@@ -18,6 +18,7 @@ mod emulator;
 mod expert;
 mod extensions;
 mod input;
+mod installation;
 mod instance;
 mod media;
 mod network;
@@ -100,7 +101,7 @@ Captures save the guest display as timestamped PPM/GIF files in the working dire
 Media: raw/CHD hard disks and ISO9660/EFS/CHD CD-ROMs.
 Starts PAUSED; Ctrl+P boots the selected machine. Default media is disconnected.
 Guest audio uses SDL3; General provides saved mute and volume controls.
-Tinker reveals Network: NAT subnet, NFS, TFTP, local port forwards and optional PCAP bridging.
+Tinker reveals Network: NAT, NFS, TFTP, port forwards, PCAP and private installation servers.
 Tinker reveals Extensions: Hardware, Storage, Devices and experimental Checkpoints sub-tabs.
 VINO/camera, DaynaPort and Ultra64 are available on the Indy/Indigo2 family.
 Checkpoints support single-head Newport Indy/IP22 with raw COW disks or no disks.
@@ -775,7 +776,11 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                     Effect::RuntimeStatus => {
                         let message = emulator.as_ref().map(|e| {
                             let status = e.status();
-                            if status.runtime.is_empty() { status.phase.label().to_owned() } else { status.runtime }
+                            match status.phase {
+                                Phase::Failed(error) => format!("Machine failed:\n{error}"),
+                                _ if status.runtime.is_empty() => status.phase.label().to_owned(),
+                                _ => status.runtime,
+                            }
                         }).unwrap_or_else(|| format!("No machine loaded. Ctrl+P boots the saved configuration.\nBuild features: {}\n{}", iris::build_features::enabled().join(", "), compat::report()));
                         overlay.show_report(message);
                     }

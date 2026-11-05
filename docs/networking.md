@@ -5,6 +5,8 @@
 - [Network settings](#network-settings)
 - [Connect from the host to the guest (SSH)](#connect-from-the-host-to-the-guest-ssh)
 - [Guest setup, NFS and TFTP](#guest-setup-nfs-and-tftp)
+- [Network installation helper](installation.md)
+- [Future IRIX installation reference](#future-irix-installation-reference)
 - [PCAP bridging](#pcap-bridging)
 - [Configuration example](#configuration-example)
 
@@ -21,7 +23,7 @@ Tinker keeps saved network settings active.
 
 | Control | Behavior |
 | --- | --- |
-| Network backend | NAT, optional PCAP bridge, or Off on O2/Octane. Indy/Indigo2 cannot disconnect Ethernet in the current core. |
+| Network backend | NAT, optional PCAP bridge, private Stream where supported, or Off on O2/Octane. Indy/Indigo2 cannot disconnect Ethernet in the current core. |
 | NAT subnet | Enter an IPv4 network/prefix, such as `192.168.5.0/24`. Gateway/DNS is network + 1 and the guest address is network + 2; the menu shows both and the netmask. |
 | PCAP host interface | Choose an enumerated host interface, Automatic, or enter a name/index. Available in PCAP mode. |
 | NFS shared folder | Choose or enter an existing host folder, or Disable. The guest has **read/write** access to this folder. |
@@ -32,6 +34,12 @@ Tinker keeps saved network settings active.
 | Forward bind scope | Localhost (default), or all host interfaces to allow LAN access to forwarded ports. Applies to all rules. |
 | Guest Ethernet MAC | Optional unicast MAC, such as `02:00:00:00:00:22`; clear to use Iris's default. Requires restart. Existing Indy/Indigo2 NVRAM can retain its previous station address. |
 | RSH file folder | Existing folder served read-only by Iris's NAT RSH service, or Disable. Supports the core's limited file commands, without executing a host shell. |
+| Stream endpoint | `tcp:IP:PORT` or `unix:/absolute/socket/path`. The external peer supplies network services. A managed installation helper supplies its own temporary socket. |
+
+These controls are on **Network > Connection**. **Network > Installation**
+configures an optional native or Podman Instigator helper; see the
+[installation guide](installation.md). Stream mode retains NAT/PCAP preferences
+but does not run Iris's NAT services. It cannot be combined with DaynaPort.
 
 Text fields initially select the current value: typing replaces it, Ctrl+A
 selects all, Backspace edits, Enter accepts into the draft and Escape cancels.
@@ -98,6 +106,31 @@ Iris serves NFS over UDP. A PCAP guest mounts `<NFS bridge IP>:/` instead.
 For TFTP booting, place the appropriate boot files in the selected folder and
 use the guest PROM's `bootp()` command; for example, O2 accepts
 `boot -f bootp():FILE`. The guest/PROM must have a suitable network address.
+
+## Future IRIX installation reference
+
+Keep [Tech-Pubs: installing IRIX 6.5 over the network from Linux](https://tech-pubs.net/tutorials/remote-irix-6.5-installation-from-linux.html)
+as a reference for a future installation from scratch. It covers preparing
+installation media, configuring BOOTP/TFTP and RSH on a Linux server, booting
+the SGI installer, partitioning a disk and installing distributions with `inst`.
+A complete installation needs the Foundation media as well as the installation
+tools and overlays appropriate for the machine.
+
+The tutorial targets physical SGI systems and a separate Linux server. When
+adapting it to Prismatic, evaluate Iris's built-in NAT TFTP and RSH services
+through the Network overlay and use the guest/gateway addresses shown there.
+An end-to-end installation following this guide still needs validation in
+Prismatic; this is a planning reference, not a tested installation recipe.
+
+The optional [installation helper](installation.md) uses
+[Instigator](https://github.com/jamesbraid/instigator), which serves SGI CD
+images directly and supplies BOOTP, TFTP and RSH installation services. Its
+[private emulator connection](https://github.com/jamesbraid/instigator/blob/main/docs/operations.md#emulator-connections)
+uses QEMU stream framing over a Unix socket or loopback TCP, matching the
+stream backend in the current Iris `xiri` sources. Prismatic can manage a
+temporary install-server container with read-only media and a private socket,
+or a native helper process. Complete installations still need testing.
+Flatpak host-container management remains future work.
 
 ## PCAP bridging
 

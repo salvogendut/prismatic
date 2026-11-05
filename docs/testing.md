@@ -7,6 +7,7 @@
 - [Model coverage](#model-coverage)
 - [Input and menu checks](#input-and-menu-checks)
 - [State isolation and test coverage](#state-isolation-and-test-coverage)
+- [Installation helper checks](#installation-helper-checks)
 
 ## Checks
 
@@ -153,3 +154,36 @@ cancel a large CHD while it is being created, and Discard an attachment after
 creation: the completed host image must remain and live devices must not change.
 
 Related: [building](building.md), [integration architecture](architecture.md).
+
+## Installation helper checks
+
+The normal suite checks stream endpoint validation, per-label persistence,
+draft isolation, disabled controls, real Iris frame transport, helper error
+reporting/cancellation and bounded diagnostic output. It needs no container
+runtime or IRIX media.
+
+Build the optional helper with `make install-server`. These ignored tests use
+synthetic files, then exercise BOOTP and TFTP through Iris's actual stream
+backend and the managed server lifecycle:
+
+```sh
+PRISMATIC_INSTALL_HELPER="$PWD/target/install-server/instigator" cargo test --locked native_instigator_answers -- --ignored --nocapture
+cargo test --locked podman_instigator_answers -- --ignored --nocapture
+```
+
+Run the Podman test where rootless Podman and the built image are available.
+When compiling in distrobox without Podman inside it, run the compiled test
+executable on the Linux host if its shared libraries are compatible. Each test
+uses a private setup folder, socket and container; none accesses IRIX images.
+
+For a desktop check, open Network > Installation, edit a helper and folder,
+then Discard and confirm Connection settings were preserved. Save a setup with
+a missing `instigator.yaml` and confirm the overlay stays open. A valid setup
+must remain pre-boot PAUSED until Ctrl+P; changing an active installation must
+offer restart confirmation. Check recent logs in Installation status, reset,
+and quit during helper startup. No `prismatic-install-*` container should remain.
+
+Full real-media installation is a separate check: use a new blank disk and
+fresh label, verify PROM network boot and miniroot, complete `inst`, then boot
+the resulting disk with the helper disabled. A BOOTP/TFTP packet test or an
+installer return marker alone does not establish a successful OS installation.

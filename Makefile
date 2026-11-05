@@ -12,7 +12,7 @@ ARGS ?=
 
 export IRIS_REPO IRIS_BRANCH FEATURES PROFILE CARGO ARGS
 .DEFAULT_GOAL := build
-.PHONY: build fetch run check help test-bootstrap flatpak flatpak-prepare
+.PHONY: build fetch run check help test-bootstrap flatpak flatpak-prepare install-server-image install-server
 
 build fetch run check:
 	$(PYTHON) tools/build.py $@
@@ -30,3 +30,10 @@ flatpak:
 
 flatpak-prepare:
 	$(PYTHON) tools/flatpak.py prepare
+
+# Optional Linux installation helper. Requires rootless Podman.
+install-server-image:
+	$(PYTHON) tools/install_server.py image
+
+install-server:
+	$(PYTHON) tools/install_server.py native

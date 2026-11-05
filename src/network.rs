@@ -1,5 +1,5 @@
 //! Per-machine network preferences and validation; no host services start here.
-use iris::config::{MachineConfig, MachineProfile, NetMode, NfsConfig};
+use iris::config::{MachineConfig, MachineProfile, NfsConfig};
 use iris::net::{PcapStatus, nfsudp::NfsVersion};
 use serde::{Deserialize, Serialize};
 use std::{net::Ipv4Addr, path::Path};
@@ -7,10 +7,37 @@ use std::{net::Ipv4Addr, path::Path};
 #[cfg(test)]
 mod service_tests;
 
+/// Frontend-owned so saved stream preferences survive builds with older Iris APIs.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum NetMode {
+    Nat,
+    Pcap,
+    Off,
+    Stream,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Page {
+    Connection,
+    Installation,
+}
+impl Page {
+    pub const ALL: [Self; 2] = [Self::Connection, Self::Installation];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Connection => "Connection",
+            Self::Installation => "Installation",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct NetworkSettings {
     pub mode: NetMode,
+    pub stream: Option<String>,
+    pub installation: crate::installation::Settings,
     pub nat_subnet: String,
     pub pcap_interface: Option<String>,
     pub nfs_dir: Option<String>,
@@ -27,6 +54,8 @@ impl Default for NetworkSettings {
     fn default() -> Self {
         Self {
             mode: NetMode::Nat,
+            stream: None,
+            installation: Default::default(),
             nat_subnet: "192.168.0.0/24".into(),
             pcap_interface: None,
             nfs_dir: None,
@@ -77,6 +106,7 @@ pub enum Folder {
     Nfs,
     Tftp,
     Rsh,
+    Installation,
 }
 
 impl Folder {
@@ -85,6 +115,7 @@ impl Folder {
             Self::Nfs => "NFS shared folder (read/write)",
             Self::Tftp => "TFTP boot folder (read-only)",
             Self::Rsh => "RSH file folder (read-only)",
+            Self::Installation => "Install setup folder (instigator.yaml and media)",
         }
     }
     pub fn path(self, settings: &NetworkSettings) -> Option<&str> {
@@ -92,6 +123,7 @@ impl Folder {
             Self::Nfs => settings.nfs_dir.as_deref(),
             Self::Tftp => settings.tftp_dir.as_deref(),
             Self::Rsh => settings.rsh_dir.as_deref(),
+            Self::Installation => settings.installation.folder.as_deref(),
         }
     }
     pub fn set(self, settings: &mut NetworkSettings, value: Option<String>) {
@@ -99,6 +131,7 @@ impl Folder {
             Self::Nfs => settings.nfs_dir = value,
             Self::Tftp => settings.tftp_dir = value,
             Self::Rsh => settings.rsh_dir = value,
+            Self::Installation => settings.installation.folder = value,
         }
     }
 }
@@ -106,6 +139,9 @@ impl Folder {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Field {
     Subnet,
+    Stream,
+    InstallProgram,
+    InstallImage,
     Mac,
     Interface,
     NfsIp,
@@ -117,6 +153,9 @@ impl Field {
     pub fn title(self) -> &'static str {
         match self {
             Self::Subnet => "NAT subnet",
+            Self::Stream => "Private stream endpoint",
+            Self::InstallProgram => "Instigator executable",
+            Self::InstallImage => "Podman installation image",
             Self::Mac => "Guest Ethernet MAC",
             Self::Interface => "PCAP host interface",
             Self::NfsIp => "NFS virtual address on the bridged LAN",
@@ -126,6 +165,15 @@ impl Field {
     }
     pub fn hint(self) -> &'static str {
         match self {
+            Self::Stream => {
+                "tcp:IP:PORT or unix:/absolute/socket/path. Empty when using the managed helper."
+            }
+            Self::InstallProgram => {
+                "Executable name on PATH or an absolute path; no command arguments."
+            }
+            Self::InstallImage => {
+                "Local image built with make install-server-image. Images are never pulled at boot."
+            }
             Self::Mac => "Six hexadecimal octets, e.g. 02:00:00:00:00:01. Empty uses Iris default.",
             Self::Subnet => "IPv4 network/prefix, e.g. 192.168.5.0/24. Gateway .1, guest .2.",
             Self::Interface => "Host interface name or 1-based index. Empty selects automatically.",
@@ -139,6 +187,9 @@ impl Field {
     pub fn value(self, settings: &NetworkSettings) -> String {
         match self {
             Self::Subnet => settings.nat_subnet.clone(),
+            Self::Stream => settings.stream.clone().unwrap_or_default(),
+            Self::InstallProgram => settings.installation.program.clone(),
+            Self::InstallImage => settings.installation.image.clone(),
             Self::Mac => settings.mac.clone().unwrap_or_default(),
             Self::Interface => settings.pcap_interface.clone().unwrap_or_default(),
             Self::NfsIp => settings
@@ -158,6 +209,20 @@ impl Field {
         let text = text.trim();
         let optional = || (!text.is_empty()).then(|| text.to_owned());
         match self {
+            Self::Stream => {
+                if !text.is_empty() {
+                    validate_stream(text)?;
+                }
+                settings.stream = optional();
+            }
+            Self::InstallProgram => {
+                crate::installation::validate_program(text)?;
+                settings.installation.program = text.into();
+            }
+            Self::InstallImage => {
+                crate::installation::validate_image(text)?;
+                settings.installation.image = text.into();
+            }
             Self::Mac => {
                 if !text.is_empty() {
                     validate_mac(text)?;
@@ -216,6 +281,26 @@ impl Field {
     }
 }
 
+pub fn validate_stream(text: &str) -> Result<(), String> {
+    if let Some(address) = text.strip_prefix("tcp:") {
+        let address = address
+            .parse::<std::net::SocketAddr>()
+            .map_err(|_| "Use tcp:IP:PORT (IPv6 in brackets)")?;
+        if address.port() == 0 || address.ip().is_unspecified() {
+            return Err("Stream peer needs a destination address and nonzero port".into());
+        }
+        return Ok(());
+    }
+    if let Some(path) = text.strip_prefix("unix:") {
+        // Parse Unix syntax even on Windows so saved inactive endpoints survive.
+        if path.starts_with('/') && !path.contains('\0') {
+            return Ok(());
+        }
+        return Err("Unix stream socket path must be absolute".into());
+    }
+    Err("Use tcp:IP:PORT or unix:/absolute/socket/path".into())
+}
+
 fn validate_mac(text: &str) -> Result<(), String> {
     let mac = iris::config::parse_mac(text)?;
     if mac == [0; 6] {
@@ -263,8 +348,11 @@ impl NetworkSettings {
     }
     pub fn cycle_mode(&mut self, profile: MachineProfile) {
         self.mode = match self.mode {
-            NetMode::Nat => NetMode::Pcap,
-            NetMode::Pcap if Self::supports_off(profile) => NetMode::Off,
+            NetMode::Nat if cfg!(feature = "pcap") => NetMode::Pcap,
+            NetMode::Nat | NetMode::Pcap if crate::compat::STREAM_NETWORK => NetMode::Stream,
+            NetMode::Nat | NetMode::Pcap | NetMode::Stream if Self::supports_off(profile) => {
+                NetMode::Off
+            }
             _ => NetMode::Nat,
         };
     }
@@ -277,9 +365,13 @@ impl NetworkSettings {
     }
     /// Syntax only: inactive labels can retain PCAP settings in a non-PCAP build.
     pub fn validate(&self, profile: MachineProfile) -> Result<(), String> {
-        if self.mode == NetMode::Stream {
+        self.installation.validate()?;
+        if let Some(endpoint) = &self.stream {
+            validate_stream(endpoint)?;
+        }
+        if self.mode == NetMode::Stream && !self.installation.enabled() && self.stream.is_none() {
             return Err(
-                "Stream networking is not configured by Prismatic; choose NAT, PCAP or Off".into(),
+                "Stream networking needs an endpoint or a managed installation helper".into(),
             );
         }
         iris::config::parse_nat_subnet(&self.nat_subnet).map_err(|e| format!("NAT subnet: {e}"))?;
@@ -311,6 +403,23 @@ impl NetworkSettings {
     }
     pub fn validate_runtime(&self, profile: MachineProfile) -> Result<(), String> {
         self.validate(profile)?;
+        if self.mode == NetMode::Stream {
+            if !crate::compat::STREAM_NETWORK {
+                return Err("Private stream networking is unavailable in this Iris build".into());
+            }
+            if self.installation.enabled() {
+                self.installation.validate_runtime()?;
+            }
+            #[cfg(not(unix))]
+            if !self.installation.enabled()
+                && self
+                    .stream
+                    .as_deref()
+                    .is_some_and(|s| s.starts_with("unix:"))
+            {
+                return Err("Unix stream sockets are unavailable on this platform; use TCP".into());
+            }
+        }
         if self.mode == NetMode::Pcap {
             if !cfg!(feature = "pcap") {
                 return Err(
@@ -325,9 +434,14 @@ impl NetworkSettings {
         Ok(())
     }
     pub fn resolve_paths(&mut self, directory: &Path) -> Result<(), String> {
-        for path in [&mut self.nfs_dir, &mut self.tftp_dir, &mut self.rsh_dir]
-            .into_iter()
-            .flatten()
+        for path in [
+            &mut self.nfs_dir,
+            &mut self.tftp_dir,
+            &mut self.rsh_dir,
+            &mut self.installation.folder,
+        ]
+        .into_iter()
+        .flatten()
         {
             if Path::new(path).is_relative() {
                 *path = std::path::absolute(directory.join(&*path))
@@ -341,7 +455,7 @@ impl NetworkSettings {
     }
     /// Run on a worker: validate existing directories without creating or exporting them.
     pub fn validate_files(&mut self) -> Result<(), String> {
-        if self.mode != NetMode::Off
+        if matches!(self.mode, NetMode::Nat | NetMode::Pcap)
             && let Some(path) = &mut self.nfs_dir
         {
             *path = inspect_folder(Path::new(path))?;
@@ -354,11 +468,37 @@ impl NetworkSettings {
                 *path = inspect_folder(Path::new(path))?;
             }
         }
+        if self.mode == NetMode::Stream && self.installation.enabled() {
+            self.installation.validate_files()?;
+        }
         Ok(())
     }
     pub fn apply(&self, config: &mut MachineConfig) -> Result<(), String> {
         self.validate_runtime(config.machine.profile)?;
-        config.network.mode = self.mode;
+        config.network.mode = match self.mode {
+            NetMode::Nat => iris::config::NetMode::Nat,
+            NetMode::Pcap => iris::config::NetMode::Pcap,
+            NetMode::Off => iris::config::NetMode::Off,
+            #[cfg(iris_stream_network)]
+            NetMode::Stream => iris::config::NetMode::Stream,
+            #[cfg(not(iris_stream_network))]
+            NetMode::Stream => {
+                return Err("Private stream networking is unavailable in this Iris build".into());
+            }
+        };
+        #[cfg(iris_stream_network)]
+        {
+            config.network.stream = if self.mode == NetMode::Stream {
+                // Replaced by the worker's private socket before constructing Iris.
+                Some(if self.installation.enabled() {
+                    "tcp:127.0.0.1:1".into()
+                } else {
+                    self.stream.clone().unwrap()
+                })
+            } else {
+                None
+            };
+        }
         config.network.mac = self.mac.clone();
         config.network.rsh_dir = if self.mode == NetMode::Nat {
             self.rsh_dir.clone()
@@ -368,7 +508,7 @@ impl NetworkSettings {
         config.nat_subnet = Some(self.nat_subnet.clone());
         config.network.pcap_interface = self.pcap_interface.clone();
         config.network.nfs_pcap_ip = self.nfs_pcap_ip;
-        config.nfs = if self.mode == NetMode::Off {
+        config.nfs = if !matches!(self.mode, NetMode::Nat | NetMode::Pcap) {
             None
         } else {
             self.nfs_dir.as_ref().map(|dir| NfsConfig {
@@ -447,7 +587,10 @@ impl NetworkSettings {
                     NetMode::Pcap if !cfg!(feature = "pcap") => "PCAP (unavailable in this build)",
                     NetMode::Pcap => "PCAP (LAN bridge)",
                     NetMode::Off => "Off (unplugged)",
-                    NetMode::Stream => "Stream (not configured)",
+                    NetMode::Stream if !crate::compat::STREAM_NETWORK => {
+                        "Stream (unavailable in this build)"
+                    }
+                    NetMode::Stream => "Stream (private Ethernet)",
                 }
                 .into(),
             ),
@@ -471,8 +614,8 @@ impl NetworkSettings {
             ),
             (
                 "NFS shared folder",
-                if self.mode == NetMode::Off {
-                    "Network off (saved value retained)".into()
+                if !matches!(self.mode, NetMode::Nat | NetMode::Pcap) {
+                    "NAT / PCAP only (saved value retained)".into()
                 } else {
                     self.nfs_dir
                         .clone()
@@ -535,10 +678,25 @@ impl NetworkSettings {
                     "NAT only (saved value retained)".into()
                 },
             ),
+            (
+                "Stream endpoint",
+                if self.mode != NetMode::Stream {
+                    "Stream only".into()
+                } else if self.installation.enabled() {
+                    "Managed by installation helper".into()
+                } else {
+                    self.stream
+                        .clone()
+                        .unwrap_or_else(|| "Unset - Enter to edit".into())
+                },
+            ),
         ]
     }
     pub fn hints(&self, row: usize) -> Vec<String> {
         let detail = match row {
+            11 => {
+                "QEMU stream Ethernet to an external server. The peer supplies BOOTP/TFTP/RSH; Iris NAT is inactive."
+            }
             0 => {
                 "NAT shares host connectivity. PCAP joins your LAN and needs host capture permission."
             }
@@ -575,6 +733,8 @@ impl NetworkSettings {
                 .unwrap_or_default()
         } else if self.mode == NetMode::Pcap {
             "PCAP uses your LAN's addresses and DNS. NAT forwarding and TFTP are inactive.".into()
+        } else if self.mode == NetMode::Stream {
+            "Private segment: addresses come from the install server configuration; Iris provides no NAT or DNS.".into()
         } else {
             "The guest Ethernet cable is unplugged.".into()
         };
@@ -651,17 +811,99 @@ mod tests {
     #[test]
     fn stream_configuration_is_rejected_before_startup() {
         let settings = super::NetworkSettings {
-            mode: iris::config::NetMode::Stream,
+            mode: NetMode::Stream,
             ..Default::default()
         };
         let error = settings
             .validate(iris::config::MachineProfile::OctaneIp30)
             .unwrap_err();
-        assert!(error.contains("Stream") && error.contains("not configured"));
+        assert!(error.contains("Stream") && error.contains("endpoint"));
     }
 
     use super::*;
     use crate::settings::{MachineSettings, Settings};
+
+    #[test]
+    fn stream_preferences_roundtrip_and_inactive_services_stay_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prismatic.cfg");
+        let mut settings = Settings::default();
+        settings.network.mode = NetMode::Stream;
+        Field::Stream
+            .apply(&mut settings.network, "tcp:127.0.0.1:7000")
+            .unwrap();
+        let missing = |name| Some(dir.path().join(name).to_str().unwrap().to_owned());
+        settings.network.nfs_dir = missing("old-share");
+        settings.network.tftp_dir = missing("old-tftp");
+        settings.network.rsh_dir = missing("old-rsh");
+        settings.network.installation.folder = missing("setup");
+        settings.save_as_machine("Network installation").unwrap();
+        settings.save(&path).unwrap();
+        let loaded = Settings::load(&path).unwrap();
+        assert_eq!(loaded.network, settings.network);
+        let old = settings.network.clone();
+        assert!(
+            Field::Stream
+                .apply(&mut settings.network, "tcp:localhost:7000")
+                .is_err()
+        );
+        assert_eq!(settings.network, old);
+        let mut net = old.clone();
+        net.validate_files().unwrap(); // No inactive service checks in stream mode.
+        Field::Stream.apply(&mut net, "tcp:127.0.0.1:7001").unwrap();
+        assert!(net.requires_restart(&old));
+        let mut config = MachineConfig::default();
+        let result = net.apply(&mut config);
+        if crate::compat::STREAM_NETWORK {
+            result.unwrap();
+            assert!(config.nfs.is_none());
+            assert!(config.network.tftp_dir.is_none());
+            assert!(config.network.rsh_dir.is_none());
+            assert!(config.port_forward.is_empty());
+            #[cfg(iris_stream_network)]
+            assert_eq!(config.network.stream, net.stream);
+        } else {
+            assert!(result.unwrap_err().contains("unavailable"));
+        }
+    }
+
+    #[test]
+    fn stream_endpoint_validation_and_mode_cycle() {
+        for value in [
+            "tcp:127.0.0.1:7000",
+            "tcp:[::1]:7000",
+            "unix:/tmp/private socket",
+        ] {
+            validate_stream(value).unwrap();
+        }
+        for value in [
+            "tcp:0.0.0.0:7000",
+            "tcp:127.0.0.1:0",
+            "tcp:host:7000",
+            "unix:relative",
+            "unix:C:/socket",
+            "",
+            "unix:/tmp/x\0",
+        ] {
+            assert!(validate_stream(value).is_err(), "{value}");
+        }
+        let mut net = NetworkSettings::default();
+        let mut seen = vec![net.mode];
+        loop {
+            net.cycle_mode(MachineProfile::IndyIp24);
+            if net.mode == NetMode::Nat {
+                break;
+            }
+            assert!(!seen.contains(&net.mode));
+            seen.push(net.mode);
+        }
+        assert_eq!(
+            seen.contains(&NetMode::Stream),
+            crate::compat::STREAM_NETWORK
+        );
+        assert_eq!(seen.contains(&NetMode::Pcap), cfg!(feature = "pcap"));
+        assert!(!seen.contains(&NetMode::Off));
+    }
 
     #[test]
     fn remaining_network_settings_persist_and_live_fields_are_classified() {
@@ -772,7 +1014,7 @@ mod tests {
             )
             .unwrap();
             let net = config.network();
-            assert_eq!(net.mode, NetMode::Nat);
+            assert_eq!(net.mode, iris::config::NetMode::Nat);
             assert_eq!(
                 net.nat_subnet.unwrap().gateway_ip,
                 Ipv4Addr::new(10, 23, 0, 1)
@@ -865,13 +1107,12 @@ mod tests {
         assert!(config.network.tftp_dir.is_none());
         network.reconcile_profile(MachineProfile::IndyIp24);
         assert_eq!(network.mode, NetMode::Nat);
-        network.cycle_mode(MachineProfile::IndyIp24);
-        assert_eq!(network.mode, NetMode::Pcap);
+        network.mode = NetMode::Pcap;
         assert!(network.validate_runtime(MachineProfile::IndyIp24).is_err());
         network.nfs_pcap_ip = Some(Ipv4Addr::new(192, 168, 5, 77));
         if cfg!(feature = "pcap") {
             network.apply(&mut config).unwrap();
-            assert_eq!(config.network.mode, NetMode::Pcap);
+            assert_eq!(config.network.mode, iris::config::NetMode::Pcap);
             assert!(config.nfs.is_some());
             assert!(config.network.tftp_dir.is_none());
             assert!(config.port_forward.is_empty());
@@ -884,6 +1125,10 @@ mod tests {
             );
         }
         network.cycle_mode(MachineProfile::IndyIp24);
+        if crate::compat::STREAM_NETWORK {
+            assert_eq!(network.mode, NetMode::Stream);
+            network.cycle_mode(MachineProfile::IndyIp24);
+        }
         assert_eq!(network.mode, NetMode::Nat);
     }
 }
