@@ -12,6 +12,11 @@ It opens **PAUSED** with a diskless Indy by default. Configure the machine in
 **F9 > General**, attach disks or CDs in **Media**, then press **Ctrl+P** to boot.
 Saved machine labels let you keep multiple configurations and switch with **F2**.
 
+Both **O2 and Octane** have been verified installing **IRIX 6.5.30** from scratch
+and running its graphical desktop under emulation. See the
+[step-by-step IRIX installation guide](docs/installing-irix.md) for the tested
+machine settings and procedure.
+
 The SDL3 interface provides keyboard and mouse capture, guest audio, per-CPU
 and storage activity LEDs, screenshots and GIF recording. Enable **General >
 Tinker** for Advanced, Network and Extensions controls. Available features depend
@@ -19,11 +24,19 @@ on the linked Iris core and guest OS; unsupported controls are greyed out.
 
 ## Screenshots
 
-IRIX 6.5 running in Prismatic, captured at the guest's native 1282×1024 resolution.
+IRIX 6.5 desktop screenshots, captured at the guest's native 1282×1024 resolution.
 
 ![IRIX 6.5 desktop with the console and Icon Catalog](images/irix65-desktop.png)
 
 ![Xmahjongg running on the IRIX 6.5 desktop](images/irix65-xmahjongg.png)
+
+SGI O2 booting IRIX:
+
+![SGI O2 booting IRIX in Prismatic](images/O2-booting.gif)
+
+SGI Octane displaying its hardware inventory with `hinv`:
+
+![SGI Octane hardware inventory in Prismatic](images/Octane-hinv.gif)
 
 ## Build and run
 
