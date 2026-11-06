@@ -28,6 +28,16 @@
   revision changes. Check the build date and core revision rather than assuming
   an existing binary is current. Keep an active guest on its current build
   until it can be shut down safely before restarting with the rebuilt frontend.
+- Bundle Instigator as a separate executable with Prismatic. Its default source
+  is `https://github.com/jamesbraid/instigator.git`, branch `main`; keep
+  `INSTIGATOR_REPO` and `INSTIGATOR_BRANCH` editable in the Makefile. Before
+  every task, also fetch/check this managed checkout for new commits with
+  `make fetch` (which checks both upstreams). Never reset local helper changes.
+  Rebuild both components at least daily and whenever either revision changes;
+  record both commits in build-info.json. Source builds and release packaging
+  must fetch both repos, pin the commits used, and include the helper's licenses.
+  Do not update or download executables when starting a guest. Test helper
+  BOOTP/TFTP transport after updating it, and preserve explicit executable paths.
 - Match the native Happy Years UI conventions in `../1984`, `../1985`,
   `../1986`, and especially `../1989`: emulator-first window, F9 overlay,
   keyboard navigation, status hints, notifications and Tinker-gated controls.

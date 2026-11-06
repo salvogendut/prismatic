@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch a managed Iris checkout and build the current Prismatic sources."""
+"""Fetch Iris and Instigator, then build the current Prismatic bundle."""
 
 import argparse
 from contextlib import contextmanager
@@ -55,17 +55,17 @@ def source_directory(cache, repository, branch):
     return cache / hashlib.sha256(identity).hexdigest()[:20]
 
 
-def fetch_iris(directory, repository, branch):
+def fetch_source(directory, repository, branch, project="iris"):
     """Update only our cache, never a developer's sibling checkout."""
     directory.mkdir(parents=True, exist_ok=True)
     git(directory, "check-ref-format", "--branch", branch)
-    source = directory / "iris"
+    source = directory / project
     if source.is_symlink():
-        raise BuildError(f"Managed Iris checkout must not be a symlink: {source}")
+        raise BuildError(f"Managed {project} checkout must not be a symlink: {source}")
     if not source.exists():
-        print(f"Cloning Iris branch {branch} into {source}", flush=True)
+        print(f"Cloning {project} branch {branch} into {source}", flush=True)
         with tempfile.TemporaryDirectory(prefix=".clone-", dir=directory) as temporary:
-            staged = Path(temporary) / "iris"
+            staged = Path(temporary) / project
             execute(["git", "clone", "--depth", "1", "--single-branch",
                      "--branch", branch, "--", repository, staged], cwd=directory)
             staged.rename(source)
@@ -73,12 +73,12 @@ def fetch_iris(directory, repository, branch):
         if source.is_symlink() or git(source, "rev-parse", "--show-toplevel") != str(source.resolve()):
             raise BuildError(f"Not a managed Git checkout: {source}")
         if git(source, "remote", "get-url", "origin") != repository:
-            raise BuildError(f"The cached Iris origin has changed: {source}")
+            raise BuildError(f"The cached {project} origin has changed: {source}")
         if git(source, "symbolic-ref", "--quiet", "--short", "HEAD") != branch:
-            raise BuildError(f"The cached Iris branch has changed: {source}")
+            raise BuildError(f"The cached {project} branch has changed: {source}")
         if git(source, "status", "--porcelain", "--untracked-files=all"):
-            raise BuildError(f"Cached Iris has local changes; preserve or resolve them before retrying: {source}")
-        print(f"Fetching Iris branch {branch}", flush=True)
+            raise BuildError(f"Cached {project} has local changes; preserve or resolve them before retrying: {source}")
+        print(f"Fetching {project} branch {branch}", flush=True)
         execute(["git", "fetch", "--no-tags", "origin", branch], cwd=source)
         upstream = git(source, "rev-parse", "FETCH_HEAD")
         current = git(source, "rev-parse", "HEAD")
@@ -87,11 +87,15 @@ def fetch_iris(directory, repository, branch):
                 ["git", "merge-base", "--is-ancestor", current, upstream], cwd=source,
             )
             if ancestor.returncode != 0:
-                raise BuildError(f"Cached Iris has local or divergent commits; refusing to reset it: {source}")
+                raise BuildError(f"Cached {project} has local or divergent commits; refusing to reset it: {source}")
             execute(["git", "merge", "--ff-only", upstream], cwd=source)
     revision = git(source, "rev-parse", "HEAD")
-    print(f"Iris {branch} at {revision[:12]}", flush=True)
+    print(f"{project} {branch} at {revision[:12]}", flush=True)
     return source, revision
+
+
+def fetch_iris(directory, repository, branch):
+    return fetch_source(directory, repository, branch)
 
 
 def write_generated(path, data):
@@ -146,9 +150,9 @@ def cargo_steps(action, manifest, features, profile, run_args):
 
 def arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, epilog=(
-        "Makefile settings: IRIS_REPO, IRIS_BRANCH, FEATURES, PROFILE, CARGO, ARGS. "
+        "Makefile settings: IRIS_REPO, IRIS_BRANCH, INSTIGATOR_REPO, INSTIGATOR_BRANCH, FEATURES, PROFILE, CARGO, ARGS. "
         "Source caches live under target/bootstrap; ../iris is never modified. "
-        "Requires Git, Python 3, Rust and the SDL3/native build dependencies (Unix)."
+        "Requires Git, Python 3.11+, Rust and the SDL3/native build dependencies (Unix)."
     ))
     parser.add_argument("action", nargs="?", default="build", choices=("fetch", "build", "run", "check"))
     parser.add_argument("--repo", default=os.environ.get("IRIS_REPO", DEFAULT_REPO))
@@ -161,15 +165,17 @@ def arguments(argv=None):
 def main(argv=None):
     options = arguments(argv)
     if not shutil.which("git"):
-        raise BuildError("Git is required to fetch Iris.")
+        raise BuildError("Git is required to fetch Iris and Instigator.")
     cargo = shlex.split(os.environ.get("CARGO", "cargo"))
     if options.action != "fetch" and (not cargo or not shutil.which(cargo[0])):
         raise BuildError("Cargo is not on PATH. Install Rust with rustup or run make in your Rust/SDL3 build environment (for example, your distrobox).")
     run_args = shlex.split(os.environ.get("ARGS", "")) if options.action == "run" else []
     cache = ROOT / "target" / "bootstrap"
     with build_lock(cache):
+        import instigator
         directory = source_directory(cache, options.repo, options.branch)
         source, revision = fetch_iris(directory, options.repo, options.branch)
+        helper_source, helper_info = instigator.fetch(cache)
         if options.action == "fetch":
             return
         manifest = prepare_frontend(ROOT, directory)
@@ -178,6 +184,8 @@ def main(argv=None):
         if not target.is_absolute():
             target = ROOT / target
         env["CARGO_TARGET_DIR"] = str(target)
+        helper = target / ("debug" if options.action == "check" or options.profile == "dev" else "release") / "instigator"
+        instigator.build(helper_source, helper, cache, helper.parent / "licenses/instigator")
         # Checks must not write the user's Iris shader corpus or exit on poweroff.
         if options.action == "check":
             env.setdefault("IRIS_REX_JIT_PROFILE", str(directory / "test-rex-profile.bin"))
@@ -186,7 +194,7 @@ def main(argv=None):
             profile = "" if options.action == "check" else f"{options.profile}, "
             print(f"Cargo {step[0]} ({profile}features: {options.features or 'default'})", flush=True)
             execute([*cargo, *step], cwd=ROOT, env=env)
-        info = {"iris_repository": options.repo, "iris_branch": options.branch,
+        info = {**helper_info, "iris_repository": options.repo, "iris_branch": options.branch,
                 "iris_revision": revision, "iris_source": str(source),
                 "manifest": str(manifest), "features": options.features,
                 "profile": None if options.action == "check" else options.profile,
@@ -198,6 +206,8 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    # Shared helper imports must use this BuildError class, not a second module.
+    sys.modules.setdefault("build", sys.modules[__name__])
     try:
         main()
     except (BuildError, OSError, ValueError) as error:

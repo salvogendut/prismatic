@@ -29,19 +29,18 @@ From the Prismatic repository, in your Rust/SDL3 development environment:
 
 ```sh
 make
-make install-server
 ```
 
-`make` fetches our Iris fork's `xiri` branch. `make install-server` requires
-rootless Podman and builds the pinned helper, then extracts a native binary
-to `target/install-server/instigator`. Run that command where Podman is
-available; a Distrobox container may not have it even when the host does.
-See [building](building.md) for dependencies and manual Cargo builds.
+`make` fetches our Iris fork's `xiri` branch and Instigator's `main` branch,
+then builds `target/release/prismatic` and `target/release/instigator`. The
+required Go toolchain is downloaded into the private build cache; Podman is
+not required. Release packages also include the helper. See [building](building.md)
+for dependencies and manual Cargo builds.
 
-The resulting native helper is sufficient for the installation below. You
-can alternatively select the built Podman image; its setup is described in
-the [helper reference](installation.md). Real-media validation here used
-Native Instigator, while Podman transport was tested with synthetic media.
+The native helper is sufficient for this procedure. Select **Native Instigator**
+and keep the executable at **Automatic (bundled / PATH)**. The optional Podman
+backend is described in the [helper reference](installation.md). Real-media
+validation here used native Linux; other hosts need separate installation tests.
 
 ## 2. Prepare the installation media
 
@@ -88,7 +87,7 @@ Check the setup **from inside its folder**, using the absolute helper path:
 
 ```sh
 cd /absolute/path/to/IRIX-setup/6.5.22
-/absolute/path/to/prismatic/target/install-server/instigator check --full instigator.yaml
+/absolute/path/to/prismatic/target/release/instigator check --full instigator.yaml
 ```
 
 Use the `6.5.30` folder for O2 or Octane. Correct missing paths or merge conflicts
@@ -158,7 +157,8 @@ Open **F9 > Network > Installation**; Tab switches Network sub-tabs.
 
 1. Set **Install server > Native Instigator**.
 2. Set **Setup folder** to the folder containing your `instigator.yaml`.
-3. Set **Instigator executable** to the helper's absolute path.
+3. Leave **Instigator executable** at **Automatic (bundled / PATH)**, or select
+   an explicit helper path if using a manual Cargo build.
 4. Select **Use installation network**. This chooses Stream on Connection.
 5. Save with **F9**, then press **Ctrl+P** to start the machine and helper.
 

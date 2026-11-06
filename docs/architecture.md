@@ -155,7 +155,7 @@ including when the hints are hidden.
 | `src/sound.rs` | Embedded Happy Years screenshot shutter through a main-thread SDL audio stream |
 | `src/audio.rs` | Bounded per-machine guest PCM handoff and main-thread SDL3 playback |
 | `src/network.rs` | Per-machine network settings, validation, Iris configuration mapping, Network rows and hints |
-| `src/installation.rs`, `tools/install_server.py` | Per-machine Instigator process/container ownership, private stream setup, bounded logs and optional helper builds |
+| `src/installation.rs`, `tools/instigator.py`, `tools/install_server.py` | Per-machine Instigator process/container ownership, private stream setup, bounded logs and bundled helper builds |
 | `src/display.rs` | Packed RGBA frame type, startup/UI-preview pixels and aspect-preserving placement |
 | `src/view.rs` | SDL drawing, status strip, LEDs, options, confirmations and notifications |
 | `src/media.rs` | Native file/folder choosers, background validation and interface enumeration, media settings and Iris block-node adapters |
@@ -340,12 +340,20 @@ backend. Prismatic never changes host capture privileges.
 `installation.rs` holds per-label helper preferences under `network.installation`.
 Save checks paths without starting processes. On boot, the machine worker holds
 the instance/disk leases, runs Instigator's full media check, starts its native
-process or a temporary Podman container and waits for the private socket before
+process or a temporary Podman container and waits for the private endpoint before
 constructing Iris. It never opens a probe connection: Instigator accepts one
 emulator. Each worker has a unique temporary directory/socket/container name.
+The automatic executable setting resolves a helper beside the actual app binary,
+then Linux's private libexec directory, then PATH. Explicit paths/commands are
+preserved. Windows uses a loopback port selected by the OS and waits for the
+helper's ready log; other hosts use the private socket file. A failed bind or
+missing readiness times out with the helper log, without booting the guest.
+Build scripts fetch both repositories, pin their commits and package Instigator
+with its notices; boot never downloads executables.
 The helper guard is declared before the owned workstation, so unwind teardown
 stops Iris before removing the server. Stop during validation/startup is polled;
-shutdown sends SIGTERM, then uses bounded termination and container removal.
+Unix shutdown sends SIGTERM before bounded termination; Windows terminates the
+owned process. Container removal is bounded too.
 
 Child output is drained by readers into a bounded 32-line ring, with bounded
 line fragments even for output lacking newlines. Runtime status includes this

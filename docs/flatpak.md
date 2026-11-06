@@ -59,6 +59,16 @@ The runtime includes FFmpeg for the optional GIF optimizer. The sandbox does
 not grant raw-packet privileges for PCAP bridging. Use NAT in this package;
 use the native build for host bridge configurations that need those privileges.
 
+Instigator is bundled at `/app/libexec/instigator`. In Network > Installation,
+choose **Native Instigator** and leave the executable at its automatic default.
+The helper runs inside the sandbox, with access to the same allowed media
+folders as Prismatic; host Podman is unnecessary. See [the installation guide](installation.md).
+To check the included executable inside the sandbox:
+
+```sh
+flatpak run --command=/app/libexec/instigator io.github.salvogendut.Prismatic --version
+```
+
 Use **TCP serial routing** for terminals running on the host. A PTY created
 inside the sandbox belongs to its device namespace, so its displayed `/dev/pts`
 path is not a host terminal path. Host camera devices are also not granted by
@@ -81,7 +91,7 @@ make flatpak
 
 The result is `target/flatpak/Prismatic-x86_64.flatpak`, with `SHA256SUMS` and
 `build-info.json` beside it. Build data and downloaded sources stay under
-`target/flatpak/`; rebuilding reuses Flatpak Builder's cache there.
+`target/flatpak/` and `target/bootstrap/`; rebuilding reuses Flatpak Builder's cache there.
 
 The helper reads the same editable `IRIS_REPO` and `IRIS_BRANCH` defaults as
 the [normal Makefile build](building.md#choosing-an-iris-repository-and-branch):
@@ -89,7 +99,13 @@ the [normal Makefile build](building.md#choosing-an-iris-repository-and-branch):
 resolves that branch to a commit, then Flatpak Builder fetches that exact Iris
 source into its own build directory. It never changes the developer's `../iris`
 checkout. The generated manifest pins the commit even if the remote branch
-advances while compilation is running.
+advances while compilation is running. `INSTIGATOR_REPO` and `INSTIGATOR_BRANCH`
+select the helper (default: `https://github.com/jamesbraid/instigator.git`, `main`).
+Preparation fetches that branch, snapshots its tracked files, verifies and vendors
+its Go modules, and records the commit in `build-info.json`. The builder compiles
+this snapshot offline using a checksum-pinned Go archive. The Go compiler and
+source caches are build tools; the installed app contains only the helper binary
+and its license notices.
 
 The package enables `pcap,idle-pause,jitv2`, with SGIEmu optimizations still
 off by default and selectable per machine. Its Rust compiler is checksum-pinned

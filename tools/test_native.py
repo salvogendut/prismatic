@@ -26,7 +26,7 @@ class NativeTests(unittest.TestCase):
     def test_release_plan_honors_makefile_and_checks_version(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            (root / 'Makefile').write_text('IRIS_REPO ?= https://example.invalid/iris.git\nIRIS_BRANCH ?= custom\n')
+            (root / 'Makefile').write_text('IRIS_REPO ?= https://example.invalid/iris.git\nIRIS_BRANCH ?= custom\nINSTIGATOR_REPO ?= https://example.invalid/helper.git\nINSTIGATOR_BRANCH ?= helper-main\n')
             (root / 'Cargo.toml').write_text('[package]\nversion="1.2.3"\n')
             def git(_root, *args):
                 if args[0] == 'ls-remote':
@@ -34,10 +34,12 @@ class NativeTests(unittest.TestCase):
                     self.assertEqual(args[-1], 'refs/heads/custom')
                     return 'a' * 40 + '\trefs/heads/custom'
                 return 'b' * 40
-            with patch.object(native, 'ROOT', root), patch.dict(native.os.environ, {}, clear=True), patch.object(native, 'git', side_effect=git):
+            with patch.object(native, 'ROOT', root), patch.dict(native.os.environ, {}, clear=True), patch.object(native, 'git', side_effect=git), patch.object(native.instigator, 'resolve', return_value={'instigator_revision': 'c' * 40}) as resolve:
                 info = native.plan('v1.2.3')
                 self.assertEqual(info['iris_revision'], 'a' * 40)
                 self.assertEqual(info['iris_branch'], 'custom')
+                self.assertEqual(info['instigator_revision'], 'c' * 40)
+                resolve.assert_called_once_with('https://example.invalid/helper.git', 'helper-main')
                 with self.assertRaisesRegex(BuildError, 'does not match'):
                     native.plan('v1.2.4')
 

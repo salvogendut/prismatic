@@ -19,6 +19,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 from build import BuildError, ROOT, execute, git
+import instigator
 
 APP_ID = 'io.github.salvogendut.Prismatic'
 ART = ROOT / 'packaging/flatpak'
@@ -53,7 +54,8 @@ def plan(tag=''):
     if len(remote) != 2 or not re.fullmatch('[0-9a-f]{40}', remote[0]):
         raise BuildError('Cannot resolve the requested Iris branch')
     return {'version': version, 'prismatic_revision': git(ROOT, 'rev-parse', 'HEAD'),
-            'iris_repository': repository, 'iris_branch': branch, 'iris_revision': remote[0]}
+            'iris_repository': repository, 'iris_branch': branch, 'iris_revision': remote[0],
+            **instigator.resolve(make_default('INSTIGATOR_REPO'), make_default('INSTIGATOR_BRANCH'))}
 
 
 def checkout_iris(directory, info):
@@ -119,6 +121,10 @@ def notices(destination, iris, metadata):
 
 
 def smoke(binary, *, env=None):
+    helper = binary.parent / ('instigator.exe' if os.name == 'nt' else 'instigator')
+    if not helper.is_file():
+        helper = binary.parent.parent / 'libexec/prismatic/instigator'
+    subprocess.run([str(helper), '--version'], check=True, timeout=30)
     environment = dict(env or os.environ, SDL_VIDEODRIVER='dummy', SDL_RENDER_DRIVER='software',
                        SDL_AUDIODRIVER='dummy', IRIS_NO_EXIT_ON_POWEROFF='1')
     with tempfile.TemporaryDirectory(prefix='prismatic-native-smoke-') as temporary:
@@ -130,6 +136,7 @@ def smoke(binary, *, env=None):
 
 
 def linux_payload(stage, binary, licenses, info):
+    copy_file(binary.parent / 'instigator', stage / 'usr/libexec/prismatic/instigator', True)
     copy_file(binary, stage / 'usr/bin/prismatic', True)
     copy_file(ART / f'{APP_ID}.desktop', stage / f'usr/share/applications/{APP_ID}.desktop')
     copy_file(ART / f'{APP_ID}.png', stage / f'usr/share/icons/hicolor/512x512/apps/{APP_ID}.png')
@@ -186,6 +193,7 @@ def fedora_package(stage, output, info, work):
 
 def windows_package(stage, binary, licenses, info, sdl, output):
     copy_file(binary, stage / 'prismatic.exe', True)
+    copy_file(binary.parent / 'instigator.exe', stage / 'instigator.exe', True)
     copy_file(sdl / 'lib/x64/SDL3.dll', stage / 'SDL3.dll', True)
     copy_file(sdl / 'LICENSE.txt', stage / 'SDL3-LICENSE.txt')
     redist = Path(os.environ['VCToolsRedistDir']) / 'x64'
@@ -213,6 +221,8 @@ def macos_package(stage, binary, licenses, info, output):
     resources.mkdir(parents=True)
     frameworks.mkdir()
     copy_file(binary, executable, True)
+    helper = contents / 'MacOS/instigator'
+    copy_file(binary.parent / 'instigator', helper, True)
     # macOS normally uses a case-insensitive filesystem: the launcher name
     # must differ from the binary by more than capitalization.
     launcher = contents / 'MacOS/prismatic-launcher'
@@ -244,7 +254,7 @@ def macos_package(stage, binary, licenses, info, output):
     run(['dylibbundler', '-od', '-b', '-x', executable, '-d', frameworks,
          '-p', '@executable_path/../Frameworks/', '-s', f'{prefix}/lib',
          '-s', run(['brew', '--prefix', 'libpcap'], capture=True) + '/lib'])
-    for library in [executable, *frameworks.glob('*')]:
+    for library in [helper, executable, *frameworks.glob('*')]:
         if not library.is_file():
             continue
         dependencies = run(['otool', '-L', library], capture=True).splitlines()[1:]
@@ -273,6 +283,8 @@ def build(info, target_platform, output, install_test=False):
         work = Path(temporary)
         iris, frontend = work / 'iris', work / 'prismatic'
         checkout_iris(iris, info)
+        helper_source = work / 'instigator'
+        instigator.checkout(helper_source, info)
         snapshot(frontend)
         features = 'idle-pause,jitv2' if target_platform == 'windows' else 'pcap,idle-pause,jitv2'
         environment = dict(os.environ, CARGO_TARGET_DIR=str(cache / 'cargo'),
@@ -297,6 +309,11 @@ def build(info, target_platform, output, install_test=False):
         licenses = work / 'licenses'
         notices(licenses, iris, metadata)
         binary = cache / 'cargo/release' / ('prismatic.exe' if target_platform == 'windows' else 'prismatic')
+        instigator.build(helper_source, binary.parent / ('instigator.exe' if target_platform == 'windows' else 'instigator'),
+                         cache, licenses / 'instigator')
+        environment['PRISMATIC_INSTALL_HELPER'] = str(binary.parent / ('instigator.exe' if target_platform == 'windows' else 'instigator'))
+        run(['cargo', 'test', '--release', '--locked', '--features', features,
+             'native_instigator_answers_bootp_and_tftp', '--', '--ignored'], cwd=frontend, env=environment)
         arch = 'arm64' if platform.machine().lower() in ('arm64', 'aarch64') else 'x86_64'
         info = dict(info, platform=target_platform, architecture=arch, features=features,
                     rust_toolchain=tomllib.loads((ROOT / 'rust-toolchain.toml').read_text())['toolchain']['channel'])

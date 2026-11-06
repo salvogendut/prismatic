@@ -23,6 +23,7 @@ cp -a payload/usr %{buildroot}/
 
 %files
 %{_bindir}/prismatic
+%{_libexecdir}/prismatic/
 %{_datadir}/applications/io.github.salvogendut.Prismatic.desktop
 %{_datadir}/metainfo/io.github.salvogendut.Prismatic.metainfo.xml
 %{_datadir}/icons/hicolor/512x512/apps/io.github.salvogendut.Prismatic.png

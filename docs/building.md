@@ -14,12 +14,12 @@
 
 Run shell commands in these guides from the Prismatic repository root.
 Direct Cargo commands require the [sibling checkout](#manual-cargo-builds);
-`make` manages its own Iris sources.
+`make` manages its own Iris and Instigator sources.
 
 Run `make` in a Rust/SDL3 build environment:
 
 ```sh
-make                          # Fetch/update Iris, then build a release
+make                          # Fetch/update Iris and Instigator, then build a release
 ./target/release/prismatic
 # Or build and launch in one step:
 make run
@@ -32,6 +32,8 @@ The first settings in [Makefile](../Makefile) choose the source:
 ```make
 IRIS_REPO ?= https://github.com/salvogendut/iris.git
 IRIS_BRANCH ?= xiri
+INSTIGATOR_REPO ?= https://github.com/jamesbraid/instigator.git
+INSTIGATOR_BRANCH ?= main
 ```
 
 Edit these lines to change the defaults, or override them for one invocation:
@@ -39,6 +41,7 @@ Edit these lines to change the defaults, or override them for one invocation:
 ```sh
 make IRIS_BRANCH=main
 make IRIS_REPO=https://github.com/YOUR-NAME/iris.git IRIS_BRANCH=your-branch
+make INSTIGATOR_REPO=https://github.com/YOUR-NAME/instigator.git INSTIGATOR_BRANCH=main
 make FEATURES=pcap,idle-pause,perfetto,jitv2
 ```
 
@@ -55,15 +58,24 @@ repository's current `src`, assets and build script. This builds your latest
 Prismatic edits together with the fetched core without rewriting the root Cargo
 manifest or lockfile. Cargo builds use `--locked`; if a newer Iris dependency
 requires a lockfile update, the build fails rather than silently resolving a new
-dependency set. The successful build's Iris revision and settings are recorded
+dependency set. The successful build's Iris and Instigator revisions and settings are recorded
 in `target/bootstrap/<source-key>/build-info.json`.
+Instigator checkouts live under `target/bootstrap/instigator/<source-key>/instigator`
+with the same clean-worktree and fast-forward rules. Every `make` fetches both
+branches. The build downloads a checksum-pinned Go 1.27.1 toolchain into this
+private cache, verifies modules against `go.sum`, and compiles Instigator beside
+Prismatic in `target/release` (or `target/debug`). No system Go installation or
+Podman is needed. A failed helper build preserves the previous helper and fails
+the overall build. Upstream dependency/toolchain changes may require updating
+the checked-in build inputs before a build succeeds.
+
 Check results use a separate `check-info.json`, preserving the build record.
 
 ## Build commands
 
 | Command / setting | Purpose |
 | --- | --- |
-| `make fetch` | Fetch Iris without requiring Rust or compiling. |
+| `make fetch` | Fetch both repositories without requiring Rust or compiling. |
 | `make run ARGS='--config "my machine.cfg"'` | Build and run from this repository, so relative config/capture paths behave normally. |
 | `make PROFILE=dev` | Build into `target/debug` instead of `target/release`. |
 | `make FEATURES=` | Use the interpreter with optional Cargo features disabled. |
@@ -72,13 +84,13 @@ Check results use a separate `check-info.json`, preserving the build record.
 | `CARGO=...`, `PYTHON=...` | Select the Cargo command or Python interpreter. |
 | `CARGO_TARGET_DIR=...` | Choose the Cargo artifact directory; default is this repository's `target`. |
 | `make flatpak` | Build an installable x86_64 Linux Flatpak with isolated Iris sources; see the [Flatpak guide](flatpak.md). |
-| `make flatpak-prepare` | Generate the Flatpak manifest with a pinned Iris commit and locked Cargo sources. |
+| `make flatpak-prepare` | Pin both repositories and prepare offline Rust/Go sources. |
 | `make install-server-image` | Build the optional Instigator Podman image; see [network installation](installation.md). |
-| `make install-server` | Build that image and extract a native Linux helper into `target/install-server/instigator`. |
+| `make install-server` | Build only the native helper into `target/install-server/instigator`. |
 
 `make help` lists the helper options. Without Make, run `python3 tools/build.py`;
 its `--repo` and `--branch` options select other sources. The helper requires
-Git and Python 3 on Unix, plus the Rust/native build dependencies below for
+Git and Python 3.11+ on Unix, plus the Rust/native build dependencies below for
 compilation. Use your Distrobox or other development environment with Cargo on
 `PATH` and the native libraries installed. It does not install system packages
 or change your Rust environment.
@@ -93,6 +105,10 @@ Dev/
   iris/        # our Iris fork
   prismatic/
 ```
+
+Direct `cargo build` still builds only the frontend using `../iris`. To supply
+the helper, run `make install-server` and select that executable in Network >
+Installation, or put Instigator on `PATH`. Ordinary `make` bundles it automatically.
 
 ## Iris compatibility
 

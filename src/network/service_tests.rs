@@ -239,7 +239,7 @@ fn private_stream_transports_frames_to_an_external_peer() {
     }
 }
 
-#[cfg(all(iris_stream_network, unix))]
+#[cfg(iris_stream_network)]
 fn install_server_exchange(
     backend: &mut Backend,
     sport: u16,
@@ -292,8 +292,8 @@ fn install_server_exchange(
     }
 }
 
-#[cfg(all(iris_stream_network, unix))]
-fn real_install_helper(backend: crate::installation::Backend) {
+#[cfg(iris_stream_network)]
+fn real_install_helper(backend: crate::installation::Backend, tcp: bool) {
     use crate::installation::{Server, Settings};
     let fixture = tempfile::tempdir().unwrap();
     let setup = fixture.path().join("setup with spaces");
@@ -329,8 +329,8 @@ services:
         ..Default::default()
     };
     settings.validate_files().unwrap();
-    let mut server = Server::start(&settings, &AtomicBool::new(false)).unwrap();
-    let socket = server.endpoint().strip_prefix("unix:").unwrap().to_owned();
+    let mut server = Server::start_with_transport(&settings, &AtomicBool::new(false), tcp).unwrap();
+    let socket = server.endpoint().strip_prefix("unix:").map(str::to_owned);
     let net = NetworkSettings {
         mode: NetMode::Stream,
         stream: Some(server.endpoint().into()),
@@ -359,19 +359,28 @@ services:
     assert!(server.report().contains("Running"));
     drop(peer);
     drop(server);
-    assert!(!std::path::Path::new(&socket).exists());
+    if let Some(socket) = socket {
+        assert!(!std::path::Path::new(&socket).exists());
+    }
 }
 
 #[test]
-#[cfg(all(iris_stream_network, unix))]
+#[cfg(iris_stream_network)]
 #[ignore = "requires Instigator: set PRISMATIC_INSTALL_HELPER to its absolute path"]
 fn native_instigator_answers_bootp_and_tftp_over_iris_stream() {
-    real_install_helper(crate::installation::Backend::Native);
+    real_install_helper(crate::installation::Backend::Native, cfg!(windows));
 }
 
 #[test]
 #[cfg(all(iris_stream_network, target_os = "linux"))]
 #[ignore = "requires rootless Podman and make install-server-image"]
 fn podman_instigator_answers_bootp_and_tftp_over_iris_stream() {
-    real_install_helper(crate::installation::Backend::Podman);
+    real_install_helper(crate::installation::Backend::Podman, false);
+}
+
+#[test]
+#[cfg(iris_stream_network)]
+#[ignore = "requires Instigator: set PRISMATIC_INSTALL_HELPER to its absolute path"]
+fn native_instigator_answers_bootp_and_tftp_over_tcp_stream() {
+    real_install_helper(crate::installation::Backend::Native, true);
 }

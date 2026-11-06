@@ -40,7 +40,7 @@ jobs:
       - name: Test packaging helpers
         run: python3 -m unittest discover -s tools -p 'test_*.py' -v
 
-      - name: Fetch Iris xiri and build the bundle
+      - name: Fetch Iris xiri and Instigator main; build the bundle
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name || (github.ref_type == 'tag' && github.ref_name) || '' }}
         run: |
@@ -57,6 +57,7 @@ jobs:
       - name: Install and smoke-test the sandboxed app
         run: |
           flatpak install --user --assumeyes --noninteractive target/flatpak/Prismatic-x86_64.flatpak
+          timeout 30s flatpak run --command=/app/libexec/instigator io.github.salvogendut.Prismatic --version
           timeout 30s flatpak run --env=SDL_VIDEODRIVER=dummy --env=SDL_RENDER_DRIVER=software \
             --env=SDL_AUDIODRIVER=dummy io.github.salvogendut.Prismatic \
             --config /tmp/prismatic-flatpak-ci.cfg --smoke-test

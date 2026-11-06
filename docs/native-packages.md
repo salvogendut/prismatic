@@ -65,7 +65,15 @@ FFmpeg is optional and is not bundled in the Windows/macOS archives. The Rust
 GIF recorder works without it; install FFmpeg on `PATH` to use its optimization
 option. Linux package metadata recommends FFmpeg.
 
+Instigator is included and selected automatically by Network > Installation.
+Linux installs it at `/usr/libexec/prismatic/instigator`; Windows places
+`instigator.exe` beside `prismatic.exe`, and macOS puts it inside the app's
+`Contents/MacOS`. No separate helper installation or Go runtime is needed.
+Explicit helper paths continue to work. Windows uses a loopback TCP stream;
+Linux/macOS use a private Unix socket.
+
 The packages include the frontend's BSD-3-Clause license, Iris's notices,
+Instigator's BSD-3-Clause license and Go dependency notices,
 patched dependency licenses and available Cargo dependency notices. Bundled
 SDL/libpcap runtime libraries retain their own licenses.
 
@@ -74,7 +82,9 @@ SDL/libpcap runtime libraries retain their own licenses.
 [`.github/workflows/native.yml`](../.github/workflows/native.yml) first resolves
 the editable `IRIS_REPO` and `IRIS_BRANCH` defaults in [Makefile](../Makefile).
 These default to `https://github.com/salvogendut/iris.git`, branch **`xiri`**.
-All five jobs consume the same resolved Iris commit, even if the branch advances
+The plan also resolves `INSTIGATOR_REPO` / `INSTIGATOR_BRANCH` (default:
+`https://github.com/jamesbraid/instigator.git`, `main`). All five jobs consume
+the same two resolved commits, even if either branch advances
 while the builds run. Each job creates its own temporary sibling layout under
 `target/native`; a developer's `../iris` checkout is never changed.
 
@@ -82,7 +92,8 @@ Cargo builds use `--locked`. Windows downloads a checksum-pinned official SDL3
 SDK. Debian computes runtime dependencies with `dpkg-shlibdeps`; RPM computes
 its ELF dependencies through `rpmbuild`. macOS rewrites library paths into the
 app bundle and checks that no Homebrew library paths remain. Each platform
-runs raw/CHD disk-creation tests, plus dummy-video UI and diskless PROM checks
+runs raw/CHD disk-creation tests, real-helper BOOTP/TFTP transport tests,
+plus dummy-video UI and diskless PROM checks
 against the packaged application.
 The Linux jobs also install the resulting RPM/DEB in their disposable containers
 and repeat the smoke checks against the installed executable. Those containers
@@ -91,7 +102,8 @@ provide 1 GiB of shared memory for Iris's guest RAM mappings.
 Published-release builds attach packages only after all platforms succeed.
 Each package has a uniquely named checksum file and `build-info.json`, avoiding
 collisions with other native builds or the Flatpak assets. Build information
-records the frontend and Iris revisions, platform, architecture, toolchain and
+records the frontend, Iris and Instigator revisions, platform, architecture,
+Rust/Go toolchains and
 enabled features. A release tag must match Cargo's numeric `MAJOR.MINOR.PATCH`
 version. Pushing a tag provides Actions artifacts; publishing the GitHub release
 triggers the attachment job, as with the Flatpak workflow.

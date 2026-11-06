@@ -1,5 +1,6 @@
 """Runs inside flatpak-builder, with all sources already downloaded."""
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -22,6 +23,15 @@ if revision != info['iris_revision']:
 # runtime loader does not search. Catch a missing runtime dependency early.
 if not Path('/app/lib/libpcap.so.1').is_file():
     raise SystemExit('libpcap must be installed in /app/lib before building Prismatic')
+
+# Exercise the bundled helper through Iris inside the builder's sandbox.
+# Synthetic files only; no user media or privileged network ports.
+subprocess.run(['cargo', 'test', '--manifest-path', str(source / 'Cargo.toml'),
+                '--release', '--frozen', '--features', info['features'],
+                'native_instigator_answers', '--', '--ignored'], check=True,
+               env=dict(os.environ, PRISMATIC_INSTALL_HELPER='/app/libexec/instigator',
+                        IRIS_REX_JIT_PROFILE='/tmp/prismatic-helper-rex.bin',
+                        IRIS_NO_EXIT_ON_POWEROFF='1'))
 
 subprocess.run(['cargo', 'build', '--manifest-path', str(source / 'Cargo.toml'),
                 '--release', '--frozen', '--features', info['features']], check=True)

@@ -327,13 +327,6 @@ impl Session {
                     "This Iris build has no private stream network API. Saved installation settings are retained.",
                 )
             }
-            (Tab::Network, 0 | 4)
-                if self.network_page == NetworkPage::Installation && !cfg!(unix) =>
-            {
-                Some(
-                    "Managed installation servers currently require Linux or macOS; use an external TCP stream server.",
-                )
-            }
             (Tab::Network, 11)
                 if self.network_page == NetworkPage::Connection && !c::STREAM_NETWORK =>
             {
@@ -1610,7 +1603,7 @@ mod tests {
         overlay.session.as_mut().unwrap().tab = Tab::Network;
         assert!(overlay.select_subtab(1));
         assert_eq!(overlay.key(Key::Enter, &live), Effect::None);
-        if !crate::compat::STREAM_NETWORK || !cfg!(unix) {
+        if !crate::compat::STREAM_NETWORK {
             assert_eq!(overlay.session.as_ref().unwrap().draft, live);
             return;
         }

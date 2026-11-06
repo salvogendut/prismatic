@@ -162,14 +162,20 @@ draft isolation, disabled controls, real Iris frame transport, helper error
 reporting/cancellation and bounded diagnostic output. It needs no container
 runtime or IRIX media.
 
-Build the optional helper with `make install-server`. These ignored tests use
-synthetic files, then exercise BOOTP and TFTP through Iris's actual stream
-backend and the managed server lifecycle:
+Use the bundled helper from `make`, or build it alone with `make install-server`.
+These ignored tests use synthetic files, then exercise BOOTP and TFTP over Unix
+and loopback TCP through Iris's actual stream backend and the managed server
+lifecycle:
 
 ```sh
-PRISMATIC_INSTALL_HELPER="$PWD/target/install-server/instigator" cargo test --locked native_instigator_answers -- --ignored --nocapture
+PRISMATIC_INSTALL_HELPER="$PWD/target/release/instigator" cargo test --locked native_instigator_answers -- --ignored --nocapture
 cargo test --locked podman_instigator_answers -- --ignored --nocapture
 ```
+
+For the standalone build, use `target/install-server/instigator` instead.
+Native package CI runs these tests on each host; Flatpak runs them inside its
+offline builder. Packaging tests also cover helper discovery, preserved overrides,
+source pinning, archive checksums and failed-build preservation.
 
 Run the Podman test where rootless Podman and the built image are available.
 When compiling in distrobox without Podman inside it, run the compiled test

@@ -29,15 +29,16 @@ IRIX 6.5 running in Prismatic, captured at the guest's native 1282×1024 resolut
 
 Release CI builds [native packages](docs/native-packages.md) for Fedora (`.rpm`),
 Debian (`.deb`), Windows and macOS (Intel/ARM), plus a [Linux Flatpak](docs/flatpak.md).
-All builds fetch our Iris `xiri` sources. See the guides for installation and
-platform requirements.
+Packaged builds include Iris and the Instigator installation helper. Builds fetch
+our Iris `xiri` branch and Instigator `main`, recording both source revisions.
+See the guides for installation and platform requirements.
 
-Use a Rust/SDL3 development environment with Git, Python 3 and the native build
+Use a Rust/SDL3 development environment with Git, Python 3.11+ and the native build
 libraries installed. Linux is the validated platform; see the
 [build guide](docs/building.md#dependencies-and-features) for prerequisites.
 
 ```sh
-make                          # Fetch/update Iris and build a release
+make                          # Fetch/update Iris and Instigator; build a release
 ./target/release/prismatic
 # Or build and launch together:
 make run
@@ -51,9 +52,11 @@ override them for one build:
 make IRIS_REPO=https://github.com/YOUR-NAME/iris.git IRIS_BRANCH=your-branch
 ```
 
-Managed Iris sources live under `target/bootstrap`; an existing `../iris`
-checkout stays independent. **F9 > About** shows the branch used to build the
-executable. See [building and Iris compatibility](docs/building.md) for manual
+`INSTIGATOR_REPO` and `INSTIGATOR_BRANCH` are editable in the same Makefile.
+Managed sources live under `target/bootstrap`; an existing `../iris` checkout
+stays independent. **F9 > About** shows the Iris branch used to build Prismatic.
+The bundled `target/release/instigator` helper is found automatically; Podman is
+optional. See [building and Iris compatibility](docs/building.md) for manual
 Cargo builds, optional features and `main` compatibility.
 
 ## Essential controls
@@ -111,11 +114,11 @@ caching and real-time clock caching techniques inspired the optional performance
 optimizations adapted into our Iris fork, now available in Prismatic through
 **Advanced > Performance > SGIEmu optimizations**.
 
-The optional installation helper uses James Braid's
+The bundled installation helper is James Braid's
 [Instigator](https://github.com/jamesbraid/instigator), which serves SGI
 installation media and provides a private emulator network.
 
 ## License
 
 Prismatic is licensed under the [BSD 3-Clause license](LICENSE).
-Iris, other dependencies and attributed assets retain their own licenses.
+Iris, Instigator, other dependencies and attributed assets retain their own licenses.

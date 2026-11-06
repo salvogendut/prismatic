@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 import build
+import instigator
 
 
 class BootstrapTests(unittest.TestCase):
@@ -28,6 +29,8 @@ class BootstrapTests(unittest.TestCase):
         self.git(self.seed, "remote", "add", "origin", self.remote.as_uri())
         self.git(self.seed, "push", "origin", "xiri")
         self.directory = self.root / "cache"
+        self.enterContext(patch.dict(os.environ, INSTIGATOR_REPO=self.remote.as_uri(), INSTIGATOR_BRANCH="xiri"))
+        self.enterContext(patch.object(instigator, "build"))
 
     def git(self, directory, *args):
         return subprocess.check_output(
@@ -164,10 +167,12 @@ class BootstrapTests(unittest.TestCase):
         shutil.copy(build.ROOT / "Makefile", root)
         (root / "tools").mkdir()
         shutil.copy(Path(build.__file__), root / "tools/build.py")
+        (root / "tools/instigator.py").write_text(Path(instigator.__file__).read_text() + "\ndef build(*args, **kwargs): pass\n")
         log = self.root / "cargo.jsonl"
         env = dict(os.environ, BOOTSTRAP_LOG=str(log))
         subprocess.run([
             "make", "run", f"IRIS_REPO={self.remote.as_uri()}", "IRIS_BRANCH=topic/custom",
+            f"INSTIGATOR_REPO={self.remote.as_uri()}", "INSTIGATOR_BRANCH=topic/custom",
             f"CARGO={self.fake_cargo()}", f"PYTHON={sys.executable}", "FEATURES=", "PROFILE=dev",
             'ARGS=--config "settings with spaces.cfg"',
         ], cwd=root, env=env, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -179,6 +184,8 @@ class BootstrapTests(unittest.TestCase):
         info = json.loads(next((root / "target/bootstrap").glob("*/build-info.json")).read_text())
         self.assertEqual(info["iris_revision"], newest)
         self.assertEqual(info["iris_branch"], "topic/custom")
+        self.assertEqual(info["instigator_revision"], newest)
+        self.assertEqual(info["instigator_branch"], "topic/custom")
 
     def test_cargo_failure_propagates_and_does_not_publish_success(self):
         root = self.frontend()

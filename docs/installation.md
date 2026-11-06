@@ -9,27 +9,31 @@ installer still runs inside the emulated SGI. This first version accepts an
 Instigator setup folder; it does not yet assemble installation profiles or
 drive partitioning and installer prompts for you.
 
-## Build the helper on Linux
+## Bundled helper and optional builds
 
-With rootless Podman installed, run either:
+Normal `make` builds, Linux RPM/DEB packages, Windows ZIPs, macOS apps and the
+Flatpak include Instigator. Select **Native Instigator** and leave **Instigator
+executable** at **Automatic (bundled / PATH)**. An explicit absolute path or
+another executable name still overrides this default. Existing saved paths
+remain unchanged; enter `instigator` to return to automatic discovery.
+
+Source builds fetch `INSTIGATOR_REPO` / `INSTIGATOR_BRANCH` from the Makefile
+(default: James Braid's repository, `main`) and record the exact commit alongside
+Iris. A checksum-pinned Go toolchain is downloaded into the build cache; no
+system Go or Podman installation is needed. The source bundle places the helper
+at `target/release/instigator`. Updates occur during builds, never during boot.
+
+Optional standalone targets remain available:
 
 ```sh
-make install-server-image   # Build the image for managed containers
-make install-server         # Also extract a native Linux helper executable
+make install-server         # Native helper at target/install-server/instigator
+make install-server-image   # Alternate Linux container backend; requires Podman
 ```
 
-Both commands fetch the source revision pinned in `tools/install_server.py`
-into `target/install-server/source`. They use the pinned Go version in
-`packaging/install-server/Containerfile` and leave your Iris checkout alone.
-The native binary is `target/install-server/instigator`. The image name is
-printed when the build finishes and matches the default Installation setting.
-Downloads happen during this explicit build; boot uses `--pull=never`.
-
-The helper is optional. Normal builds and NAT networking do not require Podman
-or Go. A native Instigator build can also be selected on macOS. Managed servers
-currently use Unix sockets, so Windows users must run an external server with
-a loopback TCP endpoint. Native macOS and Windows attachment still need host
-integration testing.
+The image command prints its revision-specific image name; copy that into the
+Installation setting if using Podman. Boot uses `--pull=never`. Managed native
+servers use Unix sockets on Linux/macOS and a temporary loopback TCP port on
+Windows. Neither mode needs privileged host BOOTP/TFTP/RSH ports.
 
 ## Prepare a setup folder
 
@@ -73,8 +77,8 @@ Its example profile must be adapted to the images you actually have.
 2. Enable **General > Tinker**, then open **Network > Installation**. Tab and
    Shift+Tab switch between Connection and Installation.
 3. Choose **Native Instigator** or **Temporary Podman container**. Select the
-   setup folder. For Native, enter the executable's absolute path or a command
-   name on PATH. For Podman, retain the locally built image name.
+   setup folder. For Native, keep **Automatic (bundled / PATH)**, or enter an
+   explicit executable path. For Podman, enter the locally built image name.
 4. Select **Use installation network**, then **F9** to save. This selects Stream
    on Connection. A running machine requires restart confirmation and returns
    to the normal pre-boot PAUSED state.
@@ -98,10 +102,9 @@ network side effects. Settings are saved per label, for example:
 mode = "stream"
 
 [machines."O2 install".network.installation]
-backend = "podman"
+backend = "native"
 folder = "/home/user/IRIX setup"
 program = "instigator"
-image = "localhost/prismatic-instigator:2db7231aa257"
 ```
 
 Each boot gets a separate runtime directory, socket and container name. The
@@ -132,9 +135,10 @@ temporary runtime directory is writable. SELinux labelling is disabled for
 this container to avoid relabelling your source media; user and network
 namespaces still apply. The image includes Instigator's licence and notices.
 
-Flatpak does not currently launch host Podman. Use a native helper executable
-accessible inside the sandbox, or an external TCP stream server. Building and
-bundling the helper into release packages remains separate work.
+The Flatpak uses its bundled native helper inside the sandbox and does not
+launch host Podman. Keep the setup folder and media in an allowed location
+(such as Downloads), or grant access as described in the [Flatpak guide](flatpak.md).
+An external TCP stream server remains an option.
 
 ## Install IRIX
 
@@ -149,8 +153,13 @@ for exact failure messages and recovery steps.
 
 Tests cover saved-label isolation, Save/Discard, endpoint validation, bounded
 logs, failed checks, cancellation and stream packet transport. Optional tests
-exercise the real helper with synthetic media over Iris's BOOTP/TFTP path;
-see [testing](testing.md#installation-helper-checks).
+exercise the real helper with synthetic media over Iris's BOOTP/TFTP path,
+using both Unix sockets and loopback TCP;
+see [testing](testing.md#installation-helper-checks). Linux bundling checks also
+cover RPM contents, Flatpak export, and a diskless PROM boot in the Platform
+runtime using automatic helper discovery and synthetic media. Windows x86_64
+and macOS Intel/ARM helpers cross-compile successfully; native execution checks
+run in release CI. Full IRIX installation on those hosts remains unverified.
 
 Local 6.5.22 and 6.5.30 installation sets have passed Instigator's full media
 check. With Iris `xiri` at `fb24628`, a diskless Indy R4400 with 128 MB reached

@@ -53,7 +53,11 @@ impl Settings {
     pub fn cycle(&mut self) {
         self.backend = match self.backend {
             Backend::Off => Backend::Native,
-            Backend::Native if cfg!(target_os = "linux") => Backend::Podman,
+            Backend::Native
+                if cfg!(target_os = "linux") && !Path::new("/.flatpak-info").exists() =>
+            {
+                Backend::Podman
+            }
             _ => Backend::Off,
         };
     }
@@ -71,9 +75,6 @@ impl Settings {
     }
     pub fn validate_runtime(&self) -> Result<(), String> {
         self.validate()?;
-        if !cfg!(unix) {
-            return Err("Managed install servers currently require Linux or macOS; use an external TCP stream server".into());
-        }
         if self.backend == Backend::Podman
             && (!cfg!(target_os = "linux") || Path::new("/.flatpak-info").exists())
         {
@@ -128,7 +129,14 @@ impl Settings {
                     .clone()
                     .unwrap_or_else(|| "Unset - Enter to choose".into()),
             ),
-            ("Instigator executable", self.program.clone()),
+            (
+                "Instigator executable",
+                if self.program == "instigator" {
+                    "Automatic (bundled / PATH)".into()
+                } else {
+                    self.program.clone()
+                },
+            ),
             ("Podman image", self.image.clone()),
             (
                 "Use installation network",
@@ -148,6 +156,28 @@ impl Settings {
         ]
     }
 }
+/// Explicit paths/commands win; the default uses the app's own helper before PATH.
+fn resolve_program(program: &str, executable: Option<&Path>) -> PathBuf {
+    if program == "instigator"
+        && let Some(directory) = executable.and_then(Path::parent)
+    {
+        let name = if cfg!(windows) {
+            "instigator.exe"
+        } else {
+            "instigator"
+        };
+        for candidate in [
+            directory.join(name),
+            directory.join("../libexec/prismatic").join(name),
+        ] {
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+    PathBuf::from(program)
+}
+
 pub fn validate_program(text: &str) -> Result<(), String> {
     if text.is_empty()
         || text.contains('\0')
@@ -227,6 +257,12 @@ struct Process {
 }
 impl Process {
     fn spawn(mut command: Command, container: Option<String>) -> Result<Self, String> {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // Keep the helper's console in the bounded Installation log.
+            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -330,7 +366,17 @@ pub struct Server {
 }
 impl Server {
     pub fn start(settings: &Settings, stop: &AtomicBool) -> Result<Self, String> {
+        Self::start_with_transport(settings, stop, cfg!(windows))
+    }
+    pub(crate) fn start_with_transport(
+        settings: &Settings,
+        stop: &AtomicBool,
+        tcp: bool,
+    ) -> Result<Self, String> {
         settings.validate_runtime()?;
+        if tcp && settings.backend == Backend::Podman {
+            return Err("Managed Podman uses a Unix socket".into());
+        }
         if stop.load(Ordering::Acquire) {
             return Err("Installation helper startup cancelled".into());
         }
@@ -338,23 +384,20 @@ impl Server {
             .prefix("prismatic-install-")
             .tempdir()
             .map_err(|e| e.to_string())?;
-        let socket = runtime.path().join("net.sock");
-        // sockaddr_un is small, including on macOS where temp paths can be long.
-        if socket.as_os_str().len() >= 100 {
-            return Err("Installation socket path is too long; use a shorter TMPDIR".into());
-        }
         let name = runtime
             .path()
             .file_name()
             .unwrap()
             .to_string_lossy()
             .to_string();
-        let (command, container) = helper_command(settings, runtime.path(), &name, false)?;
+        let (command, container) = helper_command(settings, runtime.path(), &name, None)?;
         Process::spawn(command, container)?.wait(stop, Duration::from_secs(120))?;
         if stop.load(Ordering::Acquire) {
             return Err("Installation helper startup cancelled".into());
         }
-        let (command, container) = helper_command(settings, runtime.path(), &name, true)?;
+        let endpoint = Endpoint::new(runtime.path(), tcp)?;
+        let (command, container) =
+            helper_command(settings, runtime.path(), &name, Some(&endpoint))?;
         let mut process = Process::spawn(command, container)?;
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
@@ -368,12 +411,12 @@ impl Server {
                     process.log.tail()
                 ));
             }
-            if socket.exists() {
+            if endpoint.ready(&process.log) {
                 break;
             } // Never probe-connect: Instigator accepts one emulator.
             if Instant::now() > deadline {
                 return Err(format!(
-                    "Install helper did not create its socket:\n{}",
+                    "Install helper did not report a ready network endpoint:\n{}",
                     process.log.tail()
                 ));
             }
@@ -381,7 +424,7 @@ impl Server {
         }
         Ok(Self {
             process,
-            endpoint: format!("unix:{}", socket.display()),
+            endpoint: endpoint.address(),
             _runtime: runtime,
         })
     }
@@ -405,11 +448,50 @@ impl Server {
     }
 }
 
+// Instigator accepts just one emulator: probing its listener would consume it.
+// Windows uses a loopback port selected by the OS, then waits for Instigator's
+// ready log. A competing bind fails visibly at startup, never redirects a guest.
+enum Endpoint {
+    Unix(PathBuf),
+    Tcp(std::net::SocketAddr),
+}
+impl Endpoint {
+    fn new(runtime: &Path, tcp: bool) -> Result<Self, String> {
+        if tcp {
+            let reservation =
+                std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+            Ok(Self::Tcp(
+                reservation.local_addr().map_err(|e| e.to_string())?,
+            ))
+        } else {
+            let socket = runtime.join("net.sock");
+            if socket.as_os_str().len() >= 100 {
+                return Err("Installation socket path is too long; use a shorter TMPDIR".into());
+            }
+            Ok(Self::Unix(socket))
+        }
+    }
+    fn address(&self) -> String {
+        match self {
+            Self::Unix(path) => format!("unix:{}", path.display()),
+            Self::Tcp(address) => format!("tcp:{address}"),
+        }
+    }
+    fn ready(&self, log: &Log) -> bool {
+        match self {
+            Self::Unix(path) => path.exists(),
+            Self::Tcp(address) => log.tail().contains(&format!(
+                "private network {address}: waiting for the machine to connect"
+            )),
+        }
+    }
+}
+
 fn helper_command(
     settings: &Settings,
     runtime: &Path,
     name: &str,
-    serve: bool,
+    endpoint: Option<&Endpoint>,
 ) -> Result<(Command, Option<String>), String> {
     let folder = settings
         .folder
@@ -417,7 +499,10 @@ fn helper_command(
         .ok_or("No installation setup folder")?;
     let (mut cmd, container, socket, config, cache) = match settings.backend {
         Backend::Native => (
-            Command::new(&settings.program),
+            Command::new(resolve_program(
+                &settings.program,
+                std::env::current_exe().ok().as_deref(),
+            )),
             None,
             runtime.join("net.sock"),
             PathBuf::from(folder).join(CONFIG),
@@ -463,8 +548,16 @@ fn helper_command(
     cmd.current_dir(folder)
         .env("XDG_CACHE_HOME", cache)
         .env_remove("NOTIFY_SOCKET");
-    if serve {
-        cmd.arg("serve").arg("--network-socket").arg(socket);
+    if let Some(endpoint) = endpoint {
+        cmd.arg("serve");
+        match endpoint {
+            Endpoint::Tcp(address) => {
+                cmd.arg("--network-tcp").arg(address.to_string());
+            }
+            Endpoint::Unix(_) => {
+                cmd.arg("--network-socket").arg(socket);
+            }
+        }
     } else {
         cmd.args(["check", "--full"]);
     }
@@ -475,6 +568,64 @@ fn helper_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_helper_prefers_bundle_and_preserves_explicit_overrides() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let exe = bin.join("prismatic");
+        let name = if cfg!(windows) {
+            "instigator.exe"
+        } else {
+            "instigator"
+        };
+        assert_eq!(
+            resolve_program("instigator", Some(&exe)),
+            PathBuf::from("instigator")
+        );
+        let libexec = root.path().join("libexec/prismatic");
+        fs::create_dir_all(&libexec).unwrap();
+        fs::write(libexec.join(name), b"packaged").unwrap();
+        assert_eq!(
+            fs::read(resolve_program("instigator", Some(&exe))).unwrap(),
+            b"packaged"
+        );
+        fs::write(bin.join(name), b"beside app").unwrap();
+        assert_eq!(resolve_program("instigator", Some(&exe)), bin.join(name));
+        let explicit = root.path().join("custom helper");
+        assert_eq!(
+            resolve_program(explicit.to_str().unwrap(), Some(&exe)),
+            explicit
+        );
+        assert_eq!(
+            resolve_program("custom-instigator", Some(&exe)),
+            PathBuf::from("custom-instigator")
+        );
+    }
+
+    #[test]
+    fn tcp_readiness_requires_the_selected_address_without_a_probe() {
+        let address = "127.0.0.1:32768".parse().unwrap();
+        let endpoint = Endpoint::Tcp(address);
+        let log = Log::default();
+        log.push(b"private network 127.0.0.1:1111: waiting for the machine to connect");
+        assert!(!endpoint.ready(&log));
+        log.push(b"private network 127.0.0.1:32768: waiting for the machine to connect");
+        assert!(endpoint.ready(&log));
+        let settings = Settings {
+            backend: Backend::Native,
+            folder: Some("setup".into()),
+            ..Default::default()
+        };
+        let (command, _) =
+            helper_command(&settings, Path::new("runtime"), "test", Some(&endpoint)).unwrap();
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect();
+        assert!(args.starts_with(&["serve", "--network-tcp", "127.0.0.1:32768"]));
+    }
 
     #[test]
     fn helper_fields_reject_arguments_and_bad_paths() {
@@ -522,8 +673,13 @@ mod tests {
             folder: Some("/downloads/IRIX media".into()),
             ..Default::default()
         };
-        let (cmd, name) =
-            helper_command(&settings, Path::new("/tmp/run"), "unique-machine", true).unwrap();
+        let (cmd, name) = helper_command(
+            &settings,
+            Path::new("/tmp/run"),
+            "unique-machine",
+            Some(&Endpoint::Unix("/tmp/run/net.sock".into())),
+        )
+        .unwrap();
         assert_eq!(cmd.get_program(), "podman");
         assert_eq!(name.as_deref(), Some("unique-machine"));
         let args: Vec<_> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();

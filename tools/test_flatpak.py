@@ -101,7 +101,8 @@ class FlatpakTests(unittest.TestCase):
             with patch.multiple(flatpak, ROOT=root, OUTPUT=output,
                                 PACKAGING=root / 'packaging/flatpak'), \
                     patch.object(flatpak, 'resolve_iris', return_value='a' * 40), \
-                    patch.object(flatpak, 'git', side_effect=git):
+                    patch.object(flatpak, 'git', side_effect=git), \
+                    patch.object(flatpak, 'prepare_instigator', return_value=({'instigator_revision': 'c' * 40}, {'name': 'instigator'})):
                 manifest_path = flatpak.prepare('https://example.invalid/iris.git', 'xiri', 'v1.2.3', 2)
                 manifest = json.loads(manifest_path.read_text())
                 source = manifest['modules'][-1]['sources'][1]
@@ -110,6 +111,8 @@ class FlatpakTests(unittest.TestCase):
                 self.assertEqual(source['url'], 'https://example.invalid/iris.git')
                 info = json.loads((output / 'build-info.json').read_text())
                 self.assertEqual(info['version'], '1.2.3')
+                self.assertEqual(info['instigator_revision'], 'c' * 40)
+                self.assertEqual(manifest['modules'][-2]['name'], 'instigator')
                 self.assertFalse(info['prismatic_dirty'])
                 self.assertTrue((output / 'prismatic/src/fixture').exists())
                 self.assertTrue((output / 'prismatic/LICENSE').exists())

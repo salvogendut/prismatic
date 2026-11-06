@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import instigator
 
 from build import BuildError, ROOT, DEFAULT_REPO, DEFAULT_BRANCH, build_lock, execute, git, write_generated
 
@@ -66,6 +67,39 @@ def resolve_iris(repository, branch):
     return lines[0][0]
 
 
+def prepare_instigator():
+    cache = ROOT / 'target/bootstrap'
+    with build_lock(cache):
+        source, info = instigator.fetch(cache)
+        with tempfile.TemporaryDirectory(prefix='.instigator-', dir=OUTPUT) as temporary:
+            staged = Path(temporary) / 'instigator'
+            instigator.vendor(source, staged, cache)
+            instigator.notices(staged, staged / 'prismatic-notices', cache)
+            destination = OUTPUT / 'instigator'
+            if destination.is_symlink():
+                raise BuildError(f'Refusing to replace a symlink: {destination}')
+            if destination.exists():
+                shutil.rmtree(destination)
+            staged.rename(destination)
+    module = {
+        'name': 'instigator', 'buildsystem': 'simple',
+        'build-options': {'env': {'CGO_ENABLED': '0', 'GOTOOLCHAIN': 'local',
+                                'GOPROXY': 'off', 'GOSUMDB': 'off',
+                                'GOCACHE': '/run/build/instigator/go-cache'}},
+        'build-commands': [
+            'mkdir -p /app/libexec /app/share/licenses/prismatic/instigator',
+            './go/bin/go build -mod=vendor -trimpath -buildvcs=false -ldflags="-s -w" -o /app/libexec/instigator ./cmd/instigator',
+            '/app/libexec/instigator --version',
+            'cp -a prismatic-notices/. /app/share/licenses/prismatic/instigator/',
+        ],
+        'sources': [
+            {'type': 'dir', 'path': 'instigator'},
+            {'type': 'archive', **instigator.go_archive('linux-amd64'), 'dest': 'go'},
+        ],
+    }
+    return info, module
+
+
 def prepare(repository, branch, version, jobs):
     manifest = json.loads((PACKAGING / f'{APP_ID}.json').read_text())
     toolchain = tomllib.loads((ROOT / 'rust-toolchain.toml').read_text())['toolchain']['channel']
@@ -93,6 +127,9 @@ def prepare(repository, branch, version, jobs):
         'architecture': 'x86_64',
         'cargo_lock_sha256': hashlib.sha256((ROOT / 'Cargo.lock').read_bytes()).hexdigest(),
     }
+    helper_info, helper_module = prepare_instigator()
+    info.update(helper_info)
+    manifest['modules'].insert(-1, helper_module)
     # Snapshot only project build inputs. Never copy local disks, captures,
     # preferences, target/, or the developer's sibling Iris checkout.
     destination = OUTPUT / 'prismatic'
@@ -116,7 +153,7 @@ def prepare(repository, branch, version, jobs):
         (f'{APP_ID}.json', manifest),
     ]:
         write_generated(OUTPUT / path, (json.dumps(value, indent=2) + '\n').encode())
-    print(f'Flatpak sources: Iris {branch} at {revision}; Rust {toolchain}', flush=True)
+    print(f"Flatpak sources: Iris {branch} at {revision}; Instigator {helper_info['instigator_revision']}; Rust {toolchain}", flush=True)
     return OUTPUT / f'{APP_ID}.json'
 
 
