@@ -6,7 +6,7 @@
 - [Connect from the host to the guest (SSH)](#connect-from-the-host-to-the-guest-ssh)
 - [Guest setup, NFS and TFTP](#guest-setup-nfs-and-tftp)
 - [Network installation helper](installation.md)
-- [Future IRIX installation reference](#future-irix-installation-reference)
+- [Installing IRIX](#installing-irix)
 - [PCAP bridging](#pcap-bridging)
 - [Configuration example](#configuration-example)
 
@@ -107,7 +107,7 @@ For TFTP booting, place the appropriate boot files in the selected folder and
 use the guest PROM's `bootp()` command; for example, O2 accepts
 `boot -f bootp():FILE`. The guest/PROM must have a suitable network address.
 
-## Future IRIX installation reference
+## Installing IRIX
 
 Keep [Tech-Pubs: installing IRIX 6.5 over the network from Linux](https://tech-pubs.net/tutorials/remote-irix-6.5-installation-from-linux.html)
 as a reference for a future installation from scratch. It covers preparing
@@ -119,7 +119,7 @@ tools and overlays appropriate for the machine.
 The tutorial targets physical SGI systems and a separate Linux server. When
 adapting it to Prismatic, evaluate Iris's built-in NAT TFTP and RSH services
 through the Network overlay and use the guest/gateway addresses shown there.
-The [Indy 6.5.22 walkthrough](installation.md#indy--irix-6522-walkthrough)
+The [step-by-step installation guide](installing-irix.md)
 adapts this procedure to the managed helper and records the tested PROM
 commands, media layout and installation caveats.
 
@@ -130,8 +130,9 @@ images directly and supplies BOOTP, TFTP and RSH installation services. Its
 uses QEMU stream framing over a Unix socket or loopback TCP, matching the
 stream backend in the current Iris `xiri` sources. Prismatic can manage a
 temporary install-server container with read-only media and a private socket,
-or a native helper process. A fresh Indy R4400 installation of IRIX 6.5.22f
-has booted to the graphical desktop with the helper disabled.
+or a native helper process. Fresh Indy R4400 / IRIX 6.5.22f and O2 R5000 /
+IRIX 6.5.30f installations have booted to the graphical desktop with the
+helper disabled.
 Flatpak host-container management remains future work.
 
 ## PCAP bridging

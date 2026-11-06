@@ -136,99 +136,12 @@ Flatpak does not currently launch host Podman. Use a native helper executable
 accessible inside the sandbox, or an external TCP stream server. Building and
 bundling the helper into release packages remains separate work.
 
-## Indy / IRIX 6.5.22 walkthrough
+## Install IRIX
 
-This sequence uses the 6.5.22 example's addresses and distribution names, an
-Indy R4400 with 128 MB, and a **new** disk at SCSI ID 1. It follows the
-[remote installation procedure](https://tech-pubs.net/tutorials/remote-irix-6.5-installation-from-linux.html)
-with Instigator providing the network services. Keep graphics enabled, even
-when using a serial console, so Inst selects the graphics and desktop packages.
-
-With the tested `xiri` core (`fb24628`), turn **Advanced > Performance > Idle
-parking** off during installation. `fx` polls the serial hardware; the idle
-detector can park that loop even while input or output is pending. Turning
-parking off restored progress with JIT dispatch still enabled.
-
-Choose **PROM boot > Keep existing**. In the PROM command monitor, clear any
-normal installed-OS boot overrides and start the partitioning utility:
-
-```text
-setenv netaddr 192.168.0.2
-setenv AutoLoad No
-unsetenv OSLoader
-unsetenv OSLoadFilename
-unsetenv OSLoadOptions
-bootp():/6.5.22/stand/fx.ARCS -x
-```
-
-Accept `dksc`, controller `0`, drive `1`. In `fx`, choose `repartition`,
-`rootdrive`, and `xfs`, confirming the destructive operation **only for the
-new disk**. Return to the main menu, choose `label`, then `sync`, and exit.
-The 4 GiB test disk used a 128 MiB swap partition and the remaining space for
-XFS root, apart from its volume header.
-
-Return to the PROM command monitor and explicitly select the Indy loader:
-
-```text
-setenv SystemPartition scsi(0)disk(1)rdisk(0)partition(8)
-setenv OSLoadPartition scsi(0)disk(1)rdisk(0)partition(0)
-setenv tapedevice bootp():/6.5.22/dist/sa
-boot -f $tapedevice(sashARCS) --m
-```
-
-This command copied the miniroot over the network and booted
-`miniroot/unix.IP22` to the filesystem-creation prompt on a separate fresh
-disk, with no CD attached. Accept creating the root filesystem and choose
-XFS with 4096-byte blocks. The warning about runtime symbols from a BOOTP
-kernel did not prevent reaching Inst.
-
-At `Inst>`, use `set page_output off`, then
-`from 192.168.0.1:/6.5.22/dist`. Supply the guest hostname and netmask when
-asked; the example uses `prismatic-indy`, `192.168.0.2` and a `/24` netmask.
-Select the feature stream (`2`). At the repeated source prompt, add:
-
-```text
-192.168.0.1:/overlays2/dist
-192.168.0.1:/overlays3/dist
-192.168.0.1:/foundations/dist
-192.168.0.1:/applications/dist
-done
-```
-
-Then select `keep *`, `install standard`, and inspect `conflicts`. With the
-tested media, the optional `java2_plugin.sw32.mozilla_freeware`,
-`inventor_dev.sw.base` and `inventor_dev.sw.lib` selections lacked prerequisites.
-Deselecting those through the conflict resolver produced **No conflicts**;
-no dependency-rule override was used. Review your own conflict list before
-running `go`. After installation, `quit` performs requickstarting and kernel
-configuration; let those finish before restarting.
-
-The earlier PROM **Install System Software > Remote Directory** attempt hit
-a UTLB exception with normal installed-OS boot overrides present. The explicit
-`sashARCS` command above succeeded with a clean boot environment; the precise
-cause of the menu-path failure remains unconfirmed. The main installation
-trial used Overlay 1 at SCSI ID 6 to copy the miniroot before the corrected
-network-only sequence was verified:
-
-```text
-boot -f dksc(0,6,8)sashARCS --m
-```
-
-Clear `OSLoadOptions` and `OSLoadFilename` before that alternative as well.
-The IRIX preset writes `auto` and `/unix`; those values made `sash` try to
-boot the empty disk instead of the installer. If the miniroot copy completed
-but its kernel did not load, `bootp():/6.5.22/dist/miniroot/unix.IP22` booted
-the already-copied miniroot in the test.
-
-After installation, select the normal **IRIX** PROM preset again and switch
-back to NAT. Keep the disk image and all its `.overlay*` sidecars together,
-including `.overlay.dirty`; they contain the installation writes and the
-sector map needed to read them.
-
-The fresh installation accepts `root` with no password. It initially uses
-IRIX's default `IRIS` hostname. Use the graphical login manager or the serial
-console to configure the installed guest. If the PROM displays its maintenance
-menu, choose **Start System**; the OS preset leaves `AutoLoad` unchanged.
+Follow [Installing IRIX step by step](installing-irix.md) for media preparation,
+saved machine settings, blank-disk creation, PROM network boot, `fx`, Inst
+package selection and the first desktop boot. It covers Indy / 6.5.22 and
+O2 / 6.5.30, including the tested workarounds and disk-overlay backup rules.
 
 ## Validation status
 
@@ -264,6 +177,19 @@ core completed the following checks:
   reaching the filesystem-creation prompt. A second full package installation
   was not repeated on that disk.
 
-The O2 serial test connected to the helper but did not reach a console prompt;
-6.5.30 guest boot remains unverified. Real-media installation used the native
-helper; managed Podman transport was checked separately with synthetic media.
+The O2 R5000 test used 256 MB RAM and a fresh 8 GiB raw disk. With the same
+core and PROM 4.18, the network-only bootstrap loaded `sashARCS`, copied the
+miniroot, and booted `unix.IP32`. Inst completed installation, requickstarting
+and kernel configuration without dependency overrides. `uname -R` reported
+`6.5 6.5.30f`; hardware inventory showed R5000, 256 MB and CRM graphics. A
+subsequent cold boot with NAT and the helper disabled reached the graphical
+login manager and 4Dwm desktop, with guest address `192.168.0.2`. No CD was
+attached at any stage. The final XFS root used about 1.23 GiB of its 7.87 GiB.
+Another cold boot confirmed PROM autoboot. A graphical `halt -y` returned to
+firmware with a corrupted display; its cause remains unconfirmed. Explicit
+`shutdown -p -g0 -y` successfully powered off the O2 and Prismatic displayed
+**Machine powered off**. Use that command for normal graphical shutdown.
+
+Both real-media installations used the native helper; managed Podman
+transport was checked separately with synthetic media. See the
+[step-by-step guide](installing-irix.md) for the complete procedure.

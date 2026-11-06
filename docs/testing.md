@@ -188,8 +188,10 @@ fresh label, verify PROM network boot and miniroot, complete `inst`, then boot
 the resulting disk with the helper disabled. A BOOTP/TFTP packet test or an
 installer return marker alone does not establish a successful OS installation.
 
-The [recorded Indy test](installation.md#validation-status) completed IRIX
-6.5.22f installation and a graphical disk boot with the helper disabled.
+The [recorded installation tests](installation.md#validation-status) completed
+Indy R4400 / IRIX 6.5.22f and O2 R5000 / IRIX 6.5.30f installations and
+graphical disk boots with the helper disabled. The O2 used a network-only
+bootstrap; the Indy also has a separately verified network-only miniroot test.
 Repeat this real-media check when changing the helper, boot environment or
 stream lifecycle; keep the new disk and its overlay sidecars separate from
 existing machines.

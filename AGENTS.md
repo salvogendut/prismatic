@@ -21,6 +21,13 @@
   in an isolated checkout as well as the active `xiri` core. Do not switch the active Iris checkout merely
   for compatibility tests or use the former `xiri/netbsd-newport` branch. Preserve NetBSD and other
   guest OS compatibility when integrating changes; do not assume IRIX-only use.
+- Before every task, check the branch and worktree in `../iris` and fetch its
+  remote `xiri` branch to look for new commits. Update a clean `xiri` checkout
+  by fast-forward only; never reset local changes or switch another branch.
+  Rebuild Prismatic against `xiri` at least once per day and whenever the core
+  revision changes. Check the build date and core revision rather than assuming
+  an existing binary is current. Keep an active guest on its current build
+  until it can be shut down safely before restarting with the rebuilt frontend.
 - Match the native Happy Years UI conventions in `../1984`, `../1985`,
   `../1986`, and especially `../1989`: emulator-first window, F9 overlay,
   keyboard navigation, status hints, notifications and Tinker-gated controls.
