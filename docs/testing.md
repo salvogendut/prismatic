@@ -189,9 +189,12 @@ the resulting disk with the helper disabled. A BOOTP/TFTP packet test or an
 installer return marker alone does not establish a successful OS installation.
 
 The [recorded installation tests](installation.md#validation-status) completed
-Indy R4400 / IRIX 6.5.22f and O2 R5000 / IRIX 6.5.30f installations and
-graphical disk boots with the helper disabled. The O2 used a network-only
-bootstrap; the Indy also has a separately verified network-only miniroot test.
+Indy R4400 / IRIX 6.5.22f, O2 R5000 / IRIX 6.5.30f and Octane R10000 /
+IRIX 6.5.30f installations and graphical disk boots with the helper disabled.
+The Octane used 512 MB and Solid IMPACT. O2 used a network-only bootstrap;
+Octane used network media with the documented cold-PROM kernel-load and
+helper-restart recovery. Indy also has a separately verified network-only
+miniroot test. See [installation errors and workarounds](irix-installation-troubleshooting.md).
 Repeat this real-media check when changing the helper, boot environment or
 stream lifecycle; keep the new disk and its overlay sidecars separate from
 existing machines.

@@ -8,17 +8,20 @@ host BOOTP service or host firewall changes are needed. Prismatic starts the
 helper; you answer the SGI partitioning and installation prompts yourself.
 
 The procedure adapts the [Tech-Pubs remote installation guide](https://tech-pubs.net/tutorials/remote-irix-6.5-installation-from-linux.html)
-to Prismatic. The real-media tests use native Linux, Iris `xiri` at `fb24628`,
-and the native Instigator helper. Other host platforms need separate testing.
+to Prismatic. The real-media tests use native Linux and the native Instigator
+helper: Iris `xiri` at `fb24628` for Indy/O2 and `b23f674` for Octane.
+Other host platforms need separate testing.
 
 | Guest | Machine settings | New disk | Installation media |
 | --- | --- | --- | --- |
 | IRIX 6.5.22f | Indy IP24, R4400, 128 MB, Newport | 4096 MiB | 6.5.22 overlays and matching Applications |
 | IRIX 6.5.30f | O2 IP32, R5000, 256 MB, integrated graphics | 8192 MiB | 6.5.30 overlays and matching Applications |
+| IRIX 6.5.30f | Octane IP30, one R10000, 512 MB, Solid IMPACT (SI) | 8192 MiB | 6.5.30 overlays and matching Applications |
 
-Both also need IRIX 6.5 Foundation 1 and Foundation 2. Use **6.5.22 for the
-Indy**; 6.5.30 does not support it. Both machines in this guide use
-**`fx.ARCS` and `sashARCS`**, including the O2. Do not substitute `fx.64`.
+All also need IRIX 6.5 Foundation 1 and Foundation 2. Use **6.5.22 for the
+Indy**; 6.5.30 does not support it. Indy and O2 use **`fx.ARCS` and
+`sashARCS`**. Octane uses **`fx.64` and `sash64`**. The Octane test needed
+additional PROM and helper recovery steps, described below.
 
 ## 1. Build Prismatic and the helper
 
@@ -88,7 +91,7 @@ cd /absolute/path/to/IRIX-setup/6.5.22
 /absolute/path/to/prismatic/target/install-server/instigator check --full instigator.yaml
 ```
 
-Use the `6.5.30` folder for the O2. Correct missing paths or merge conflicts
+Use the `6.5.30` folder for O2 or Octane. Correct missing paths or merge conflicts
 before proceeding. The helper reads the images directly; do not extract or
 modify their contents to install.
 
@@ -106,8 +109,12 @@ Ctrl+P. In **F9 > General**:
 5. Choose **Save machine as...**, enter a new label such as `O2 IRIX 6.5.30`,
    and save with **F9**. Use a new label to isolate its firmware and settings.
 
+For Octane, retain one CPU and choose **Solid IMPACT** in **Extensions**.
+The test used the bundled 4.9 PROM. Keep the graphics board present while
+installing through the serial console so Inst selects its graphics software.
+
 In **Advanced > Performance**, set **Idle parking > Off**. In the tested core,
-idle parking could stall the Indy's serial `fx` polling loop. Both installation
+idle parking could stall the Indy's serial `fx` polling loop. These installation
 tests used it disabled, with JIT enabled. Leave the other performance settings
 at their defaults. Save with F9.
 
@@ -117,6 +124,7 @@ In **Advanced > Connections**, choose TCP routing on the console channel:
 | --- | --- | --- |
 | Indy | Serial B | 2323 |
 | O2 | Serial A | 2324 |
+| Octane | Serial A | 2325 |
 
 Choose an unused port, or leave `auto` and read the assigned port from
 **Connection status** after boot. Fixed ports must differ between simultaneous
@@ -126,11 +134,11 @@ can be used instead of TCP.
 
 ## 4. Create and attach the blank disk
 
-Open **F9 > Media**. On O2, select **SCSI controller 0**. Choose **SCSI ID 1 >
+Open **F9 > Media**. On O2 or Octane, select **SCSI controller 0**. Choose **SCSI ID 1 >
 New disk…**, then:
 
 1. Select **Raw** for the tested path.
-2. Enter **4096 MiB** for Indy or **8192 MiB** for O2.
+2. Enter **4096 MiB** for Indy or **8192 MiB** for O2/Octane.
 3. Choose a new filename in a permanent machine folder outside `target/`.
 4. Select **Create disk and attach to draft**, then **F9 Save**.
 
@@ -163,6 +171,7 @@ Connect a host terminal to the configured serial port, for example:
 ```sh
 telnet 127.0.0.1 2323          # Indy example
 # telnet 127.0.0.1 2324        # O2 example
+# telnet 127.0.0.1 2325        # Octane example
 ```
 
 Use the actual port from Connection status if it was allocated automatically.
@@ -203,6 +212,12 @@ For O2, load:
 
 ```text
 bootp():/6.5.30/stand/fx.ARCS -x
+```
+
+For Octane, load:
+
+```text
+bootp():/6.5.30/stand/fx.64 -x
 ```
 
 At `fx`'s prompts, accept **dksc**, controller **0**, drive **1** by pressing
@@ -252,6 +267,24 @@ Wait for **Copy complete**, the IRIX banner and the filesystem prompt.
 The miniroot is copied to swap; the installation kernel loads over the network.
 A warning about runtime symbols from a BOOTP kernel did not prevent installation.
 
+For Octane, use this sequence instead:
+
+```text
+setenv tapedevice bootp():/6.5.30/dist/sa
+boot -f $tapedevice(sash64) --m
+```
+
+In the Octane test, the copy completed but the PROM raised an XUT exception
+when loading the kernel. After a cold restart and restarting the disconnected
+helper, the following command booted the already-copied miniroot:
+
+```text
+bootp():/6.5.30/dist/miniroot/unix.IP30
+```
+
+Follow the [exact recovery steps](irix-installation-troubleshooting.md#octane-prom-exception-after-copying-the-miniroot)
+if this occurs. Do not skip the miniroot copy.
+
 For the newly partitioned disk, answer:
 
 | Prompt | Answer |
@@ -261,7 +294,8 @@ For the newly partitioned disk, answer:
 | Block size, 512 or 4096? | `4096` |
 
 When prompted for networking, use a hostname such as `prismatic-indy` or
-`prismatic-o2`, address `192.168.0.2`, and accept `0xffffff00` for the netmask.
+`prismatic-o2` or `prismatic-octane`, address `192.168.0.2`, and accept
+`0xffffff00` for the netmask.
 These prompts can appear before Inst or when opening the first distribution.
 
 ## 8. Load the software catalogs
@@ -278,7 +312,7 @@ For Indy:
 from 192.168.0.1:/6.5.22/dist
 ```
 
-For O2:
+For O2 or Octane:
 
 ```text
 from 192.168.0.1:/6.5.30/dist
@@ -288,7 +322,7 @@ Select **2, feature stream**, when asked. After reading the first catalog,
 Inst repeatedly prompts **Install software from**. Enter the additional
 paths below one at a time, waiting for each catalog to finish:
 
-| Indy / 6.5.22 | O2 / 6.5.30 |
+| Indy / 6.5.22 | O2 or Octane / 6.5.30 |
 | --- | --- |
 | `192.168.0.1:/overlays2/dist` | Already merged into `6.5.30/dist` |
 | `192.168.0.1:/overlays3/dist` | Already merged into `6.5.30/dist` |
@@ -409,6 +443,9 @@ when backing up or moving the machine. See [configuration and state paths](confi
 
 ## Troubleshooting
 
+See [IRIX installation errors and workarounds](irix-installation-troubleshooting.md)
+for exact error messages, recovery steps and the Octane investigation.
+
 | Symptom | What to check |
 | --- | --- |
 | Serial fx stops responding | Disable Advanced > Performance > Idle parking; the Indy test stalled with it enabled. |
@@ -436,6 +473,11 @@ the corrected network-only miniroot sequence was separately verified on
 another fresh disk. The O2 6.5.30f run used the network-only bootstrap,
 completed package installation, and reached both a serial root login and the
 4Dwm desktop after a cold boot with NAT and the helper disabled. No CD was
-attached during that run. Both tests retained graphics hardware while using
-the serial console for installation.
+attached during that run.
+
+The Octane 6.5.30f run used network media throughout, with a cold-PROM
+kernel-load recovery and manual helper restart as described above. It
+completed installation and reached a serial root login, then a cold graphical
+boot and 4Dwm desktop with NAT and the helper disabled. All three tests
+retained graphics hardware while using the serial console for installation.
 See the [validation record](installation.md#validation-status) for details.

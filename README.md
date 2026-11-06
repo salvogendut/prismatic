@@ -91,6 +91,7 @@ instructions, full shortcuts, input handling, capture options and audio.
 | [Media and activity LEDs](docs/media.md) | Create empty disks, disk/CD formats, SCSI IDs, copy-on-write overlays and status lights |
 | [Networking and file sharing](docs/networking.md) | SSH through localhost port forwarding, NAT, PCAP, NFS, TFTP and RSH |
 | [Install IRIX step by step](docs/installing-irix.md) | Media preparation, blank disks, PROM boot, partitioning, Inst and the first desktop login |
+| [IRIX installation errors and workarounds](docs/irix-installation-troubleshooting.md) | Observed PROM failures, helper disconnects, package conflicts and recovery steps |
 | [Network installation helper](docs/installation.md) | Private Ethernet, native/Podman Instigator setup, platform limits and validation |
 | [Configuration and saved state](docs/configuration.md) | `prismatic.cfg`, TOML examples, paths and persistent firmware state |
 | [Testing and smoke checks](docs/testing.md) | Formatting, Clippy, unit tests, diskless PROM checks and coverage limits |

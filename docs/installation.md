@@ -141,7 +141,9 @@ bundling the helper into release packages remains separate work.
 Follow [Installing IRIX step by step](installing-irix.md) for media preparation,
 saved machine settings, blank-disk creation, PROM network boot, `fx`, Inst
 package selection and the first desktop boot. It covers Indy / 6.5.22 and
-O2 / 6.5.30, including the tested workarounds and disk-overlay backup rules.
+O2 / 6.5.30 and Octane / 6.5.30, including the tested workarounds and
+disk-overlay backup rules. See [installation errors and workarounds](irix-installation-troubleshooting.md)
+for exact failure messages and recovery steps.
 
 ## Validation status
 
@@ -190,6 +192,27 @@ firmware with a corrupted display; its cause remains unconfirmed. Explicit
 `shutdown -p -g0 -y` successfully powered off the O2 and Prismatic displayed
 **Machine powered off**. Use that command for normal graphical shutdown.
 
-Both real-media installations used the native helper; managed Podman
+An Octane test with Iris `xiri` at `b23f674` used one R10000, 512 MB RAM,
+Solid IMPACT and a fresh 8 GiB raw disk at controller 0, ID 1. The bundled
+4.9 PROM ran `fx.64` and copied the miniroot through `sash64`, but raised an
+XUT exception when loading `unix.IP30`. A cold restart, helper restart after
+an internal hardware reset, and direct network loading of `unix.IP30`
+recovered the copied miniroot. No CD or replacement PROM was used.
+
+Inst reported successful installation, completed requickstarting and built
+the kernel without dependency overrides. The installed system reported
+`IRIX64 ... 6.5 ... IP30` and `6.5 6.5.30f`; `hinv` confirmed one 195 MHz
+R10000, 512 MB and SI graphics. XFS root used about 1.44 GiB of its 7.87 GiB.
+A cold boot with NAT and the helper disabled reached graphical login and
+the 4Dwm desktop. `gfxinfo` reported IMPACTSR, one GE, one RE, no TRAMs and
+1280×1024 at 60 Hz. The guest used `192.168.0.2` and received all three
+ping replies from the NAT gateway. The RAD timer warning remained; audio
+was not validated. The [troubleshooting document](irix-installation-troubleshooting.md)
+records the boot failures and the native-helper recovery in detail.
+Setting `AutoLoad` through the PROM then passed another cold autoboot to X.
+Explicit `shutdown -p -g0 -y` reached **Machine powered off** from both
+serial and graphical sessions.
+
+These real-media installations used the native helper; managed Podman
 transport was checked separately with synthetic media. See the
 [step-by-step guide](installing-irix.md) for the complete procedure.
