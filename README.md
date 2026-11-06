@@ -90,7 +90,7 @@ instructions, full shortcuts, input handling, capture options and audio.
 | [Extensions](docs/extensions.md) | Graphics, extra CPUs, optional devices, checkpoints, CD changer and scratch storage |
 | [Media and activity LEDs](docs/media.md) | Create empty disks, disk/CD formats, SCSI IDs, copy-on-write overlays and status lights |
 | [Networking and file sharing](docs/networking.md) | SSH through localhost port forwarding, NAT, PCAP, NFS, TFTP and RSH |
-| [Network installation helper](docs/installation.md) | Private Ethernet and optional native/Podman Instigator server; full IRIX installation validation pending |
+| [Network installation helper](docs/installation.md) | Private Ethernet and optional native/Podman Instigator server; tested Indy / IRIX 6.5.22 installation |
 | [Configuration and saved state](docs/configuration.md) | `prismatic.cfg`, TOML examples, paths and persistent firmware state |
 | [Testing and smoke checks](docs/testing.md) | Formatting, Clippy, unit tests, diskless PROM checks and coverage limits |
 | [Integration architecture](docs/architecture.md) | Frontend/core boundaries, worker lifecycle, display/audio handoff and design details |

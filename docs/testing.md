@@ -187,3 +187,9 @@ Full real-media installation is a separate check: use a new blank disk and
 fresh label, verify PROM network boot and miniroot, complete `inst`, then boot
 the resulting disk with the helper disabled. A BOOTP/TFTP packet test or an
 installer return marker alone does not establish a successful OS installation.
+
+The [recorded Indy test](installation.md#validation-status) completed IRIX
+6.5.22f installation and a graphical disk boot with the helper disabled.
+Repeat this real-media check when changing the helper, boot environment or
+stream lifecycle; keep the new disk and its overlay sidecars separate from
+existing machines.

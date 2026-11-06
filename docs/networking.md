@@ -119,8 +119,9 @@ tools and overlays appropriate for the machine.
 The tutorial targets physical SGI systems and a separate Linux server. When
 adapting it to Prismatic, evaluate Iris's built-in NAT TFTP and RSH services
 through the Network overlay and use the guest/gateway addresses shown there.
-An end-to-end installation following this guide still needs validation in
-Prismatic; this is a planning reference, not a tested installation recipe.
+The [Indy 6.5.22 walkthrough](installation.md#indy--irix-6522-walkthrough)
+adapts this procedure to the managed helper and records the tested PROM
+commands, media layout and installation caveats.
 
 The optional [installation helper](installation.md) uses
 [Instigator](https://github.com/jamesbraid/instigator), which serves SGI CD
@@ -129,7 +130,8 @@ images directly and supplies BOOTP, TFTP and RSH installation services. Its
 uses QEMU stream framing over a Unix socket or loopback TCP, matching the
 stream backend in the current Iris `xiri` sources. Prismatic can manage a
 temporary install-server container with read-only media and a private socket,
-or a native helper process. Complete installations still need testing.
+or a native helper process. A fresh Indy R4400 installation of IRIX 6.5.22f
+has booted to the graphical desktop with the helper disabled.
 Flatpak host-container management remains future work.
 
 ## PCAP bridging
