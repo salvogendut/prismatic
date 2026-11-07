@@ -8,8 +8,8 @@ following the desktop conventions of the Happy Years emulators
 [1986](https://github.com/salvogendut/1986), and [1989](https://github.com/salvogendut/1989)).
 
 Prismatic supports SGI Indy, Indigo2, Indigo2 IMPACT, O2 and Octane models.
-It opens **PAUSED** with a diskless Indy by default. Configure the machine in
-**F9 > General**, attach disks or CDs in **Media**, then press **Ctrl+P** to boot.
+It opens **PAUSED** with the Prismatic logo and a diskless Indy by default.
+Configure the machine in **F9 > General**, attach disks or CDs in **Media**, then press **Ctrl+P** to boot.
 Saved machine labels let you keep multiple configurations and switch with **F2**.
 
 Both **O2 and Octane** have been verified installing **IRIX 6.5.30** from scratch

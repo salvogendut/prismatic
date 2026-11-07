@@ -24,6 +24,7 @@ const TEXT: Color = Color::RGB(240, 240, 240);
 const MUTED: Color = Color::RGB(170, 190, 215);
 
 pub struct Presentation<'a> {
+    pub startup_logo: Option<&'a Texture<'a>>,
     pub status: &'a str,
     pub placeholder: Option<&'a str>,
     pub captured: bool,
@@ -100,18 +101,46 @@ pub fn draw(
     }
     if let Some(message) = presentation.placeholder {
         shade(canvas, 100)?;
-        let x = 256;
-        let y = area.height() as i32 / 2 - 56;
-        text(canvas, x, y, "P R I S M A T I C", TEXT)?;
-        text(canvas, x, y + 28, "Happy Years / SGI", BORDER)?;
-        text(canvas, x, y + 68, message, MUTED)?;
-        text(
-            canvas,
-            x,
-            y + 92,
-            "Ctrl+P Boot/resume  F2 Machine  F5 Reset  F9 Options",
-            MUTED,
-        )?;
+        if let Some(logo) = presentation.startup_logo {
+            let info = logo.query();
+            let top = area.height() as i32 / 2 - 250;
+            canvas.copy(
+                logo,
+                None,
+                fit(info.width, info.height, Rect::new(350, top, 260, 260)),
+            )?;
+            for (offset, value, color) in [
+                (300, "P R I S M A T I C", TEXT),
+                (328, "Happy Years / SGI", BORDER),
+                (380, message, MUTED),
+                (
+                    440,
+                    "Ctrl+P Boot/resume  F2 Machine  F5 Reset  F9 Options",
+                    MUTED,
+                ),
+            ] {
+                text(
+                    canvas,
+                    (WIDTH as i32 - value.len() as i32 * 8) / 2,
+                    top + offset,
+                    value,
+                    color,
+                )?;
+            }
+        } else {
+            let x = 256;
+            let y = area.height() as i32 / 2 - 56;
+            text(canvas, x, y, "P R I S M A T I C", TEXT)?;
+            text(canvas, x, y + 28, "Happy Years / SGI", BORDER)?;
+            text(canvas, x, y + 68, message, MUTED)?;
+            text(
+                canvas,
+                x,
+                y + 92,
+                "Ctrl+P Boot/resume  F2 Machine  F5 Reset  F9 Options",
+                MUTED,
+            )?;
+        }
     }
 
     draw_debug(canvas, settings, presentation.debug_lines)?;

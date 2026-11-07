@@ -2738,6 +2738,7 @@ dependencies = [
  "jiff",
  "libchdman-rs",
  "nix 0.31.3",
+ "png",
  "sdl3",
  "serde",
  "tempfile",

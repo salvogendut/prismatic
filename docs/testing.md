@@ -20,6 +20,7 @@ For the managed Iris checkout selected in the Makefile:
 make test-bootstrap
 make check FEATURES=
 SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software make run ARGS=--smoke-test
+SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software make run ARGS='--startup-smoke-test --screenshot /tmp/prismatic-startup.bmp'
 IRIS_REX_JIT_PROFILE=/tmp/prismatic-rex-profile.bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software make run ARGS='--boot-smoke-test --screenshot /tmp/prismatic-prom.bmp'
 ```
 
@@ -48,8 +49,10 @@ tracing/developer coverage. Keep `developer` off in performance builds.
 ## Smoke test behavior
 
 `--smoke-test` renders three UI frames with the options open and exits without
-starting Iris. `--boot-smoke-test` uses fresh temporary NVRAM, waits for a
-nonuniform guest framebuffer, renders for ten more seconds, optionally captures
+starting Iris. `--startup-smoke-test` renders the initial paused screen with its
+embedded logo and boot instructions, using the same temporary-state safeguards.
+Both accept `--screenshot` for visual inspection. `--boot-smoke-test` uses fresh
+temporary NVRAM, waits for a nonuniform guest framebuffer, renders for ten more seconds, optionally captures
 the SDL output, and stops Iris. It fails if startup, display output (120-second
 timeout), or shutdown fails. This checks the display path; it does not identify
 PROM text or prove that a complete OS boot works.

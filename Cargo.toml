@@ -25,6 +25,7 @@ toml = "0.9"
 tempfile = "3"
 blake3 = "1"
 gif = "0.14.2"
+png = "0.18"
 jiff = { version = "0.2.38", default-features = false, features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]

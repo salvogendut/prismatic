@@ -9,6 +9,11 @@ pub struct Frame {
 }
 
 impl Frame {
+    /// Decode the embedded artwork once, separately from the guest framebuffer.
+    pub fn logo() -> Result<Self, Box<dyn std::error::Error>> {
+        decode_logo(include_bytes!("../assets/prismatic_logo.png"))
+    }
+
     pub fn blank(width: u32, height: u32) -> Self {
         Self {
             width,
@@ -60,6 +65,30 @@ impl Frame {
     }
 }
 
+fn decode_logo(bytes: &[u8]) -> Result<Frame, Box<dyn std::error::Error>> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info()?;
+    let mut pixels = vec![0; reader.output_buffer_size().ok_or("Logo is too large")?];
+    let info = reader.next_frame(&mut pixels)?;
+    pixels.truncate(info.buffer_size());
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => pixels,
+        png::ColorType::Rgb => pixels
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect(),
+        _ => return Err("Logo must be RGB or RGBA".into()),
+    };
+    Ok(Frame {
+        width: info.width,
+        height: info.height,
+        rgba,
+    })
+}
+
 pub fn fit(width: u32, height: u32, area: Rect) -> Rect {
     let scale = (area.width() as f64 / width as f64).min(area.height() as f64 / height as f64);
     let w = (width as f64 * scale).round() as u32;
@@ -99,6 +128,16 @@ pub fn window_to_view(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_logo_decodes_with_transparency_and_invalid_png_is_rejected() {
+        let logo = Frame::logo().unwrap();
+        assert!(logo.width > 0 && logo.height > 0);
+        assert_eq!(logo.rgba.len(), (logo.width * logo.height * 4) as usize);
+        assert!(logo.rgba.as_chunks::<4>().0.iter().any(|p| p[3] < 255));
+        assert!(logo.rgba.as_chunks::<4>().0.iter().any(|p| p[3] > 0));
+        assert!(decode_logo(b"invalid PNG").is_err());
+    }
 
     #[test]
     fn pointer_conversion_accounts_for_hidpi_and_letterboxing() {

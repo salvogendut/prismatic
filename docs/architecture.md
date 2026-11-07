@@ -420,7 +420,13 @@ through normal stop, media flushing and complete worker reconstruction. It boots
 a replacement immediately only if the old machine was running/starting; otherwise
 it leaves the selected configuration PAUSED. This also recreates renderer and
 CPU/device state instead of relying on an in-place reset. F5 confirmation does
-not save or apply an options draft. Smoke runs retain automatic boot.
+not save or apply an options draft. Machine smoke runs retain automatic boot.
+
+The initial screen embeds `assets/prismatic_logo.png` and decodes it once into
+an SDL texture on the main thread. Its placement follows Heliacal's centered
+logo and boot instructions, with alpha blending and proportional scaling.
+The logo is separate from the guest framebuffer and its captures; pausing a
+booted machine retains the guest display instead of showing the startup logo.
 
 `machine_label` selects a `[machines."label"]` stanza. Each entry stores hardware,
 media and Advanced machine options; presentation/capture preferences stay global.

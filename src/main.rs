@@ -53,6 +53,7 @@ use std::{
 struct Options {
     config: Option<PathBuf>,
     smoke_test: bool,
+    startup_smoke_test: bool,
     boot_smoke_test: bool,
     input_smoke_test: bool,
     settings_smoke_test: bool,
@@ -71,6 +72,10 @@ struct RestartRequest {
 }
 
 impl Options {
+    fn ui_smoke(&self) -> bool {
+        self.smoke_test || self.startup_smoke_test
+    }
+
     fn parse() -> Result<Option<Self>, String> {
         let mut options = Self::default();
         let mut args = std::env::args_os().skip(1);
@@ -82,7 +87,7 @@ impl Options {
 
 Usage: prismatic [--config PATH] [--machine-label LABEL] [--state-dir PATH]
                  [--keyboard ansi|iso|jis]
-                 [--smoke-test | --boot-smoke-test | --input-smoke-test |
+                 [--smoke-test | --startup-smoke-test | --boot-smoke-test | --input-smoke-test |
                   --settings-smoke-test | --media-smoke-test | --advanced-smoke-test]
                  [--screenshot PATH.bmp]
 
@@ -107,7 +112,8 @@ VINO/camera, DaynaPort and Ultra64 are available on the Indy/Indigo2 family.
 Checkpoints support single-head Newport Indy/IP22 with raw COW disks or no disks.
 Media selects both SCSI buses where supported and IDs 1-15 on Octane.
 --keyboard overrides the saved keyboard type for this session.
---smoke-test renders the UI without starting Iris.
+--smoke-test renders the options UI without starting Iris.
+--startup-smoke-test renders the paused startup screen and logo without starting Iris.
 --boot-smoke-test waits for guest display output, captures ten seconds later, and stops.
 --input-smoke-test drives the PROM through SDL events and checks capture.
 --settings-smoke-test edits General options and tests a confirmed machine restart.
@@ -136,6 +142,7 @@ Menu Save persists machine, media, Advanced, Network, Extensions and desktop set
                     );
                 }
                 Some("--smoke-test") => options.smoke_test = true,
+                Some("--startup-smoke-test") => options.startup_smoke_test = true,
                 Some("--boot-smoke-test") => options.boot_smoke_test = true,
                 Some("--input-smoke-test") => options.input_smoke_test = true,
                 Some("--settings-smoke-test") => options.settings_smoke_test = true,
@@ -168,6 +175,7 @@ Menu Save persists machine, media, Advanced, Network, Extensions and desktop set
         }
         if [
             options.smoke_test,
+            options.startup_smoke_test,
             options.boot_smoke_test,
             options.input_smoke_test,
             options.settings_smoke_test,
@@ -182,7 +190,7 @@ Menu Save persists machine, media, Advanced, Network, Extensions and desktop set
             return Err("Choose only one smoke test".into());
         }
         if options.screenshot.is_some()
-            && !options.smoke_test
+            && !options.ui_smoke()
             && !options.boot_smoke_test
             && !options.input_smoke_test
             && !options.settings_smoke_test
@@ -224,12 +232,13 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     compat::initialize_host()?;
     let sdl = sdl3::init()?;
     let video = sdl.video()?;
+    let ui_smoke = options.ui_smoke();
     let machine_smoke = options.boot_smoke_test
         || options.input_smoke_test
         || options.settings_smoke_test
         || options.media_smoke_test
         || options.advanced_smoke_test;
-    let testing = options.smoke_test || machine_smoke;
+    let testing = ui_smoke || machine_smoke;
     // Keep test preferences and NVRAM away from the normal machine state.
     let temporary = if testing {
         Some(tempfile::tempdir()?)
@@ -280,6 +289,13 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         sdl3::sys::render::SDL_RendererLogicalPresentation::LETTERBOX,
     )?;
     let creator = canvas.texture_creator();
+    let logo = display::Frame::logo()?;
+    let mut logo_texture =
+        creator.create_texture_streaming(PixelFormat::RGBA32, logo.width, logo.height)?;
+    logo_texture.update(None, &logo.rgba, logo.width as usize * 4)?;
+    logo_texture.set_blend_mode(sdl3::render::BlendMode::Blend);
+    logo_texture.set_scale_mode(ScaleMode::Linear);
+    drop(logo);
     let mut frame = Arc::new(display::Frame::preview());
     let mut texture =
         creator.create_texture_streaming(PixelFormat::RGBA32, frame.width, frame.height)?;
@@ -416,7 +432,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         if !guest.captured && mouse.relative_mouse_mode(canvas.window()) {
             mouse.set_relative_mouse_mode(canvas.window(), false);
         }
-        let timeout = if options.smoke_test {
+        let timeout = if ui_smoke {
             1
         } else if emulator.is_some() {
             16
@@ -549,7 +565,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                         }
                         KeyRoute::Pause => {
                             release_input(&mut guest, &mouse, canvas.window());
-                            if stopping.is_none() && !options.smoke_test {
+                            if stopping.is_none() && !ui_smoke {
                                 let result = if matches!(
                                     status.phase,
                                     Phase::Running | Phase::Paused | Phase::Halted
@@ -913,7 +929,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             draft.window_scale = settings.window_scale;
             draft.remember_machine();
             overlay.busy = false;
-            let needs_restart = !options.smoke_test
+            let needs_restart = !ui_smoke
                 && !(emulator.is_none() && status.phase == Phase::Paused)
                 && (draft.machine_differs_from(&active)
                     || matches!(status.phase, Phase::Failed(_) | Phase::PoweredOff));
@@ -1236,7 +1252,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             debug_lines = lines;
             redraw = true;
         }
-        if redraw || options.smoke_test || capture_boot {
+        if redraw || ui_smoke || capture_boot {
             texture.set_scale_mode(if settings.smoothing {
                 ScaleMode::Linear
             } else {
@@ -1280,6 +1296,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 &overlay,
                 toast.as_ref().map(|(text, _)| text.as_str()),
                 view::Presentation {
+                    startup_logo: emulator.is_none().then_some(&logo_texture),
                     status: label,
                     placeholder,
                     captured: guest.captured,
@@ -1291,7 +1308,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 },
             )?;
             frames += 1;
-            if (capture_boot || (options.smoke_test && frames == 3))
+            if (capture_boot || (ui_smoke && frames == 3))
                 && let Some(path) = &options.screenshot
             {
                 canvas.read_pixels(None)?.save_bmp(path)?;
@@ -1304,7 +1321,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             stopping = Some(Instant::now());
             redraw = true;
         }
-        if options.smoke_test && frames >= 3 {
+        if ui_smoke && frames >= 3 {
             break;
         }
         if let Some(time) = stopping {
