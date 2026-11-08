@@ -1,0 +1,216 @@
+{
+  "schema": 1,
+  "status": "completed",
+  "scope": "User-requested Prismatic workspace cleanup; generated caches and superseded test executables only",
+  "started_utc": "2026-11-08T09:45:06Z",
+  "measurement": {
+    "measured_utc": "2026-11-08T09:48:13Z",
+    "filesystem": "/var",
+    "filesystem_bytes": 1997604388864,
+    "available_bytes_before": 283001143296,
+    "available_bytes_after": 369430138880,
+    "recovered_available_bytes": 86428995584,
+    "repository_du_bytes_before": 96571674624,
+    "repository_du_bytes_after": 9205395456,
+    "active_emulators_or_builds": []
+  },
+  "measurement_note": "Recovered bytes are the observed increase in filesystem available space. Per-file and du sizes include shared Btrfs extents and hard-link accounting, and do not measure exclusive physical usage.",
+  "removed_categories": {
+    "Rust incremental compiler cache": {
+      "files": 33827,
+      "allocated_bytes_including_shared": 48096092160
+    },
+    "Rust dependency and intermediate build cache": {
+      "files": 20936,
+      "allocated_bytes_including_shared": 35898372096
+    },
+    "Rust dependency fingerprints": {
+      "files": 268,
+      "allocated_bytes_including_shared": 1097728
+    },
+    "Go compiler cache": {
+      "files": 7953,
+      "allocated_bytes_including_shared": 933367808
+    },
+    "Flatpak builder cache and clean generated source copies": {
+      "files": 62232,
+      "allocated_bytes_including_shared": 3617394688
+    },
+    "Flatpak staging directory; exported package retained": {
+      "files": 802,
+      "allocated_bytes_including_shared": 53538816
+    },
+    "Old libpcap packaging stage": {
+      "files": 266,
+      "allocated_bytes_including_shared": 662990848
+    },
+    "Python bytecode cache": {
+      "files": 9,
+      "allocated_bytes_including_shared": 159744
+    },
+    "Superseded compatibility-test executable; logs and source pins retained": {
+      "files": 11,
+      "allocated_bytes_including_shared": 813043712
+    }
+  },
+  "verification": {
+    "status": "passed",
+    "protected_hashes_matched": 1499,
+    "removed_paths_absent": 126304,
+    "retained_source_checkouts": {
+      ".": {
+        "head": "ca4ff1cd463333ec78d6e522556bdb097cfc3acb",
+        "status": ""
+      },
+      "target/bootstrap/8255adb05aead2e37072/iris": {
+        "head": "b23f674c235b37c3ac83808085d28ac128bb79c4",
+        "status": ""
+      },
+      "target/bootstrap/aba957647bdc45200903/iris": {
+        "head": "2eb811f43a69a9dec7f0ceb50cb439b7e088845c",
+        "status": ""
+      },
+      "target/bootstrap/2768a85d249b3d725ff8/iris": {
+        "head": "6dc5676af6698649588f62f3d5dd5e1a66c2de85",
+        "status": ""
+      },
+      "target/bootstrap/instigator/abb567d47fd24d012575/instigator": {
+        "head": "2db7231aa2572222c13b7db626b145ad42c66a45",
+        "status": ""
+      },
+      "target/install-server/source": {
+        "head": "2db7231aa2572222c13b7db626b145ad42c66a45",
+        "status": ""
+      }
+    },
+    "retired_clean_generated_source_copies": {
+      "target/flatpak/cache/build/prismatic-1/iris": {
+        "head": "1aed0dfc842a427e32a53ad083e1be0a9d46a613",
+        "status": ""
+      },
+      "target/flatpak/cache/build/prismatic-2/iris": {
+        "head": "1aed0dfc842a427e32a53ad083e1be0a9d46a613",
+        "status": ""
+      }
+    },
+    "checked_utc": "2026-11-08T09:46:56Z",
+    "scope_note": "Hash verification preceded the intentional cleanup report and build-guide documentation updates."
+  },
+  "preserved_executables": {
+    "target/release/prismatic": "895e5f8a69068866ea11eee6a3af9de0b25f1c05c9523965be522f711f60ce80",
+    "target/release/instigator": "ee6227feae11594d08757ad243372b14743fbe8383563638e056e9240a109a39",
+    "target/debug/prismatic": "31145be875b41793253eb5d0d390032c883aba6f0c9ccd35f859cc80c8146224",
+    "target/debug/instigator": "ee6227feae11594d08757ad243372b14743fbe8383563638e056e9240a109a39",
+    "target/install-server/instigator": "ee6227feae11594d08757ad243372b14743fbe8383563638e056e9240a109a39"
+  },
+  "preserved": "Current executables, source/asset files, licenses, final native/Flatpak packages, build-info records, IRIX installation media, captures, configuration/NVRAM, managed source checkouts, pinned Go toolchain and offline modules, test logs and screenshots",
+  "upstream_checks": {
+    "commands": [
+      "make fetch",
+      "git -C ../iris fetch origin xiri"
+    ],
+    "exit_status": 0,
+    "iris_revision": "b23f674c235b37c3ac83808085d28ac128bb79c4",
+    "remote_iris_revision": "b23f674c235b37c3ac83808085d28ac128bb79c4",
+    "instigator_revision": "2db7231aa2572222c13b7db626b145ad42c66a45",
+    "changes_found": false,
+    "maintenance_scope": "Existing successful builds and revision records preserved; cache cleanup did not rebuild or change runtime code."
+  },
+  "smoke_checks": {
+    "checked_utc": "2026-11-08T09:46:47Z",
+    "checks": [
+      {
+        "name": "frontend-version",
+        "command": [
+          "/var/home/salvogendut/Dev/prismatic/target/release/prismatic",
+          "--version"
+        ],
+        "exit_status": 0
+      },
+      {
+        "name": "helper-help",
+        "command": [
+          "/var/home/salvogendut/Dev/prismatic/target/release/instigator",
+          "--help"
+        ],
+        "exit_status": 0
+      },
+      {
+        "name": "ui-smoke",
+        "command": [
+          "/var/home/salvogendut/Dev/prismatic/target/release/prismatic",
+          "--smoke-test"
+        ],
+        "exit_status": 0
+      },
+      {
+        "name": "startup-smoke",
+        "command": [
+          "/var/home/salvogendut/Dev/prismatic/target/release/prismatic",
+          "--startup-smoke-test"
+        ],
+        "exit_status": 0
+      }
+    ],
+    "ui_environment": {
+      "SDL_VIDEODRIVER": "dummy",
+      "SDL_RENDER_DRIVER": "software",
+      "SDL_AUDIODRIVER": "dummy",
+      "IRIS_REX_JIT_PROFILE": "/tmp/prismatic-cleanup-rex-20261108.bin"
+    }
+  },
+  "local_ledgers": {
+    "target/maintenance/cleanup-20261108/before.json": {
+      "sha256": "fde8f97e93a59d420c27afa955d85c1451d327a3da05e45e26f06ad6c152fd9e",
+      "bytes": 349
+    },
+    "target/maintenance/cleanup-20261108/plan-summary.json": {
+      "sha256": "756f9d3793f3711e9a841e0afd2a8e9bf7f74a8ef1e3e28f8f8f6bd9ec326a75",
+      "bytes": 1081
+    },
+    "target/maintenance/cleanup-20261108/protected.json": {
+      "sha256": "18aa958dcac123b713218bc303f8588bbc0685dc9a1c9f75e89ff15b00220db0",
+      "bytes": 296467
+    },
+    "target/maintenance/cleanup-20261108/source-checkouts.json": {
+      "sha256": "ce4417768d02a76c1099f6c62ea12ba710e0c7c39c136704ca4dc25c93c7b3e8",
+      "bytes": 991
+    },
+    "target/maintenance/cleanup-20261108/removals.jsonl.gz": {
+      "sha256": "558326cce0e67b1d79884b92e611bc643455ae8e0da0c5482f2ebf632b1f350c",
+      "bytes": 3169555
+    },
+    "target/maintenance/cleanup-20261108/completed.json": {
+      "sha256": "e7ca3c9ed1d33904a4ac97a7c36ec7e32dedb876d777ce93861f4d3436713870",
+      "bytes": 141
+    },
+    "target/maintenance/cleanup-20261108/verification.json": {
+      "sha256": "f095f1d8135c5ca615fa65c1ca9d03218c5477ac7673d8d68c09673de1b4f063",
+      "bytes": 2231
+    },
+    "target/maintenance/cleanup-20261108/smoke-checks.json": {
+      "sha256": "1c9504dfc242b2dc6958b692c284679226469a3d72c37e14e30fe3f1f2c41b43",
+      "bytes": 1016
+    },
+    "target/maintenance/cleanup-20261108/space-measurement.json": {
+      "sha256": "6fa562f2ea464451b1f7fa708480e889b3ca2e816b2ad92b213fc015b5e420bc",
+      "bytes": 357
+    },
+    "target/maintenance/cleanup-20261108/upstream-checks.json": {
+      "sha256": "aaf64046b2fcaa988371a5962bb59b1edcd49461b16ab82acc2519b59fbfb580",
+      "bytes": 468
+    },
+    "target/maintenance/cleanup-20261108/du-after.txt": {
+      "sha256": "e23cd5548ed8ab97a509e14e7ded2a4b382f42d4ba8e1f50dbb8000fce1b91d3",
+      "bytes": 498
+    },
+    "target/maintenance/cleanup-20261108/ui-smoke.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "target/maintenance/cleanup-20261108/startup-smoke.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    }
+  }
+}

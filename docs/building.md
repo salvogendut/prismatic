@@ -9,6 +9,7 @@
 - [Manual Cargo builds](#manual-cargo-builds)
 - [Iris compatibility](#iris-compatibility)
 - [Dependencies and features](#dependencies-and-features)
+- [Workspace cleanup](#workspace-cleanup)
 
 ## Build and run
 
@@ -188,5 +189,25 @@ SDL is linked dynamically through the [`sdl3` Rust bindings](https://github.com/
 SDL_ttf and a separate widget toolkit are not required. The
 [native package workflow](native-packages.md) compiles and smoke-tests Fedora,
 Debian, Windows x86_64 and macOS Intel/ARM packages on their respective runners.
+
+## Workspace cleanup
+
+The [November 8 cleanup report](workspace-cleanup-2026-11-08.md) records cache
+removal, retained inputs, runtime checks and actual space recovered. Stop
+builds and guests before retiring caches. Rust `target/debug` and
+`target/release` subdirectories named `incremental`, `build`, `deps` and
+`.fingerprint` are regenerable; the top-level executables and licenses remain
+usable after removing those caches. `target/bootstrap/gocache` and
+`target/flatpak/cache` are also generated caches. Check generated source
+copies for local edits before removing them.
+
+Preserve the managed source checkouts, pinned toolchain/module inputs,
+`build-info.json`, current executables and helper licenses, finished packages,
+configuration/NVRAM, manual disks and captures. The installation sets under
+`target/install-server` are currently retained inputs. Keep their paths stable;
+new permanent machine data should use the locations described in the
+[installation guide](installing-irix.md). Keep compact test evidence when
+retiring superseded test executables or staging trees. Normal build commands
+recreate removed compiler/packaging caches as needed.
 
 Related: [configuration and runtime files](configuration.md#firmware-and-runtime-files), [testing](testing.md), [integration architecture](architecture.md).
