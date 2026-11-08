@@ -2,6 +2,7 @@
 """Build native release packages from an isolated, revision-pinned Iris checkout."""
 import argparse
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -13,7 +14,9 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import tomllib
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
@@ -82,8 +85,21 @@ def snapshot(directory):
 
 def windows_sdl(directory):
     archive = directory / 'sdl.zip'
-    with urllib.request.urlopen(SDL_URL, timeout=120) as source, archive.open('wb') as output:
-        shutil.copyfileobj(source, output)
+    attempts = 3
+    for attempt in range(1, attempts + 1):
+        print(f'Downloading SDL3 SDK (attempt {attempt}/{attempts}): {SDL_URL}', flush=True)
+        try:
+            # Reopen with wb on every attempt: never append to a partial ZIP.
+            with urllib.request.urlopen(SDL_URL, timeout=120) as source, archive.open('wb') as output:
+                shutil.copyfileobj(source, output)
+            break
+        except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.IncompleteRead) as error:
+            transient = not isinstance(error, urllib.error.HTTPError) or error.code in (429, 500, 502, 503, 504)
+            if not transient or attempt == attempts:
+                raise BuildError(f'SDL3 SDK download failed after {attempt} attempt(s): {SDL_URL}: {error}') from error
+            delay = 2 ** attempt
+            print(f'SDL3 download interrupted: {error}; retrying in {delay}s', flush=True)
+            time.sleep(delay)
     if hashlib.sha256(archive.read_bytes()).hexdigest() != SDL_SHA256:
         raise BuildError('SDL3 archive checksum mismatch')
     with zipfile.ZipFile(archive) as source:

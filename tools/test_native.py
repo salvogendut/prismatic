@@ -1,5 +1,6 @@
 """Native source pinning, draft/source isolation and packaging failure paths."""
 import hashlib
+import http.client
 import io
 import json
 from pathlib import Path
@@ -8,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import urllib.error
 import zipfile
 
 import native
@@ -89,6 +91,75 @@ class NativeTests(unittest.TestCase):
             with patch.object(native.urllib.request, 'urlopen', return_value=io.BytesIO(payload)), patch.object(native, 'SDL_SHA256', hashlib.sha256(payload).hexdigest()):
                 with self.assertRaisesRegex(BuildError, 'Unsafe path'):
                     native.windows_sdl(Path(temporary))
+
+    def test_sdl_transient_http_failure_retries_then_verifies_and_extracts(self):
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, 'w') as archive:
+            archive.writestr('SDL3-3.4.18/lib/x64/SDL3.dll', b'SDL fixture')
+        payload = data.getvalue()
+        for status in (429, 500, 502, 503, 504):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as temporary:
+                failure = urllib.error.HTTPError(native.SDL_URL, status, 'temporary', {}, None)
+                with patch.object(native.urllib.request, 'urlopen', side_effect=[failure, io.BytesIO(payload)]) as download, \
+                        patch.object(native.time, 'sleep') as sleep, \
+                        patch.object(native, 'SDL_SHA256', hashlib.sha256(payload).hexdigest()):
+                    result = native.windows_sdl(Path(temporary))
+                self.assertEqual((result / 'lib/x64/SDL3.dll').read_bytes(), b'SDL fixture')
+                self.assertEqual(download.call_count, 2)
+                sleep.assert_called_once_with(2)
+
+    def test_sdl_interrupted_download_replaces_partial_archive(self):
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, 'w') as archive:
+            archive.writestr('SDL3-3.4.18/LICENSE.txt', b'fixture')
+        payload = data.getvalue()
+
+        class Interrupted(io.BytesIO):
+            def read(self, size=-1):
+                if self.tell():
+                    raise http.client.IncompleteRead(b'', 100)
+                return super().read(size)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch.object(native.urllib.request, 'urlopen', side_effect=[Interrupted(b'partial'), io.BytesIO(payload)]), \
+                    patch.object(native.time, 'sleep'), \
+                    patch.object(native, 'SDL_SHA256', hashlib.sha256(payload).hexdigest()):
+                native.windows_sdl(Path(temporary))
+            self.assertEqual((Path(temporary) / 'sdl.zip').read_bytes(), payload)
+
+    def test_sdl_network_retries_are_bounded_and_report_the_url(self):
+        errors = [TimeoutError('timed out'), ConnectionResetError('reset'),
+                  urllib.error.URLError('connection unavailable'),
+                  urllib.error.HTTPError(native.SDL_URL, 504, 'Gateway Time-out', {}, None)]
+        for error in errors:
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as temporary:
+                with patch.object(native.urllib.request, 'urlopen', side_effect=error) as download, \
+                        patch.object(native.time, 'sleep') as sleep:
+                    with self.assertRaisesRegex(BuildError, 'failed after 3 attempt') as failure:
+                        native.windows_sdl(Path(temporary))
+                self.assertIn(native.SDL_URL, str(failure.exception))
+                self.assertEqual(download.call_count, 3)
+                self.assertEqual([call.args[0] for call in sleep.call_args_list], [2, 4])
+                self.assertFalse((Path(temporary) / 'sdl').exists())
+
+    def test_sdl_permanent_http_and_checksum_failures_are_not_retried(self):
+        for status in (403, 404):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as temporary:
+                error = urllib.error.HTTPError(native.SDL_URL, status, 'permanent', {}, None)
+                with patch.object(native.urllib.request, 'urlopen', side_effect=error) as download, \
+                        patch.object(native.time, 'sleep') as sleep:
+                    with self.assertRaisesRegex(BuildError, 'failed after 1 attempt'):
+                        native.windows_sdl(Path(temporary))
+                self.assertEqual(download.call_count, 1)
+                sleep.assert_not_called()
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch.object(native.urllib.request, 'urlopen', return_value=io.BytesIO(b'corrupt')) as download, \
+                    patch.object(native.time, 'sleep') as sleep:
+                with self.assertRaisesRegex(BuildError, 'checksum'):
+                    native.windows_sdl(Path(temporary))
+            self.assertEqual(download.call_count, 1)
+            sleep.assert_not_called()
+            self.assertFalse((Path(temporary) / 'sdl').exists())
 
     def test_mismatched_frontend_plan_fails_before_creating_build_files(self):
         with patch.object(native, 'git', return_value='b' * 40):

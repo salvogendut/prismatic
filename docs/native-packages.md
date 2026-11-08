@@ -89,7 +89,10 @@ while the builds run. Each job creates its own temporary sibling layout under
 `target/native`; a developer's `../iris` checkout is never changed.
 
 Cargo builds use `--locked`. Windows downloads a checksum-pinned official SDL3
-SDK. Debian computes runtime dependencies with `dpkg-shlibdeps`; RPM computes
+SDK. Transient HTTP failures (429, 500, 502–504), connection errors and interrupted
+transfers get up to three attempts, with two- and four-second delays. Retries
+start a fresh archive; checksum or extraction failures stop the build immediately.
+Debian computes runtime dependencies with `dpkg-shlibdeps`; RPM computes
 its ELF dependencies through `rpmbuild`. macOS rewrites library paths into the
 app bundle and checks that no Homebrew library paths remain. Each platform
 runs raw/CHD disk-creation tests, real-helper BOOTP/TFTP transport tests,
