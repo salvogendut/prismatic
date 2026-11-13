@@ -4,17 +4,21 @@ use iris::net::{
     GatewayConfig, Link, Rings,
     packet::{Ether, Ipv4Route},
 };
+#[cfg(any(iris_live_network, not(iris_net_running)))]
+use std::sync::{Arc, atomic::Ordering};
+#[cfg(not(iris_net_running))]
+use std::thread::JoinHandle;
 use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread::JoinHandle,
+    sync::atomic::AtomicBool,
     time::{Duration, Instant},
 };
 
 struct Backend {
+    #[cfg(iris_net_running)]
+    _running: iris::net::Running,
+    #[cfg(not(iris_net_running))]
     running: Arc<AtomicBool>,
+    #[cfg(not(iris_net_running))]
     thread: Option<JoinHandle<()>>,
     rings: Rings,
     route: Ipv4Route,
@@ -34,14 +38,24 @@ impl Backend {
             gateway.gateway_ip,
         );
         let mut link = Link::open(&config.network()).unwrap().unwrap();
+        #[cfg(not(iris_net_running))]
         let running = link.running();
         #[cfg(iris_live_network)]
         let control = link.nat();
-        let mut backend = link.backend().unwrap();
-        running.store(true, Ordering::Release);
-        let thread = Some(std::thread::spawn(move || backend.run()));
+        #[cfg(iris_net_running)]
+        let _running = link.spawn("prismatic-network-test").unwrap();
+        #[cfg(not(iris_net_running))]
+        let thread = {
+            let mut backend = link.backend().unwrap();
+            running.store(true, Ordering::Release);
+            Some(std::thread::spawn(move || backend.run()))
+        };
         Self {
+            #[cfg(iris_net_running)]
+            _running,
+            #[cfg(not(iris_net_running))]
             running,
+            #[cfg(not(iris_net_running))]
             thread,
             rings: link.into_rings(),
             route,
@@ -74,6 +88,7 @@ impl Backend {
     }
 }
 
+#[cfg(not(iris_net_running))]
 impl Drop for Backend {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Release);
@@ -223,11 +238,15 @@ fn private_stream_transports_frames_to_an_external_peer() {
         }
     };
     peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-    let outgoing = backend.route.udp(1, 68, 67, b"private frame");
+    let outgoing = backend
+        .route
+        .udp(1, 68, 67, b"private frame without Ethernet padding");
     backend.rings.to_net.push(outgoing.clone()).unwrap();
     backend.rings.tx_wake.notify();
     assert_eq!(read_frame(&mut peer).unwrap().unwrap(), outgoing);
-    let incoming = backend.route.udp(2, 67, 68, b"peer reply");
+    let incoming = backend
+        .route
+        .udp(2, 67, 68, b"peer reply without Ethernet padding");
     write_frame(&mut peer, &incoming).unwrap();
     loop {
         if let Ok(frame) = backend.rings.from_net.pop() {

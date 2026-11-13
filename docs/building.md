@@ -139,8 +139,9 @@ support and paused checkpoint saving. Saved PTY/Off routes fall back to TCP at t
 choose distinct ports if previously inactive ports conflict. TCP serial ports, normal graphics,
 raw disks, CDs, network services and supported CPU/JIT options remain usable.
 Protected CHD hard disks require the fork's CHD COW API; unavailable builds
-reject them before startup and accept raw images instead. `main` also requires
-external O2/Octane PROMs selected in General. Diagnostics stay on the console;
+reject them before startup and accept raw images instead. Current `main` has
+packed O2/Octane PROMs; older cores may require external firmware selected in
+General. Diagnostics stay on the console;
 guest audio is disabled when no SDL PCM hook exists. Network changes require
 restart on cores without persistent live-network overrides.
 
@@ -211,3 +212,9 @@ retiring superseded test executables or staging trees. Normal build commands
 recreate removed compiler/packaging caches as needed.
 
 Related: [configuration and runtime files](configuration.md#firmware-and-runtime-files), [testing](testing.md), [integration architecture](architecture.md).
+
+The November 2026 core API uses CPU part names, packed embedded PROMs and
+owned network sessions. `build.rs` detects these interfaces in the source;
+Prismatic retains adapters for older cores. The supported machine list stays
+Indy, Indigo2 IP22/IP28, O2 and Octane. New core-only machine profiles are
+rejected when loading a Prismatic configuration.

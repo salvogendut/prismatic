@@ -74,6 +74,15 @@ fn main() {
             "pub sgiemu_optimizations: bool",
         ),
         ("firmware", "lib.rs", "pub mod prombinip32;"),
+        ("firmware", "dev/embedded_prom.rs", "pub enum EmbeddedProm"),
+        (
+            "embedded_prom",
+            "dev/embedded_prom.rs",
+            "pub enum EmbeddedProm",
+        ),
+        ("net_running", "net/link.rs", "pub struct Running"),
+        ("cpu_parts", "cpu/parts.rs", "pub struct Part"),
+        ("octane_cpus", "cpu/parts.rs", "pub const R14000_600"),
         (
             "poweroff",
             "workstation.rs",

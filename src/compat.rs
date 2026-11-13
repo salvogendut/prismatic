@@ -87,6 +87,7 @@ impl CpuModel {
             Self::R14000 => "MIPS R14000",
         }
     }
+    #[cfg(not(iris_cpu_parts))]
     pub fn iris(self) -> Result<iris::config::CpuModel, String> {
         use iris::config::CpuModel as Core;
         Ok(match self {
@@ -105,6 +106,19 @@ impl CpuModel {
                 ));
             }
         })
+    }
+    #[cfg(iris_cpu_parts)]
+    pub fn iris(self) -> Result<Option<String>, String> {
+        Ok(Some(
+            match self {
+                Self::R4400 => "r4400",
+                Self::R5000 => "r5000",
+                Self::R10000 => "r10000",
+                Self::R12000 => "r12000",
+                Self::R14000 => "r14000",
+            }
+            .into(),
+        ))
     }
 }
 

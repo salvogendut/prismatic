@@ -178,10 +178,15 @@ The settings in these guides apply when the linked Iris core exposes the
 
 ## O2 and Octane firmware
 
-The `xiri` core embeds O2 4.18 and Octane 4.9 as Rust byte arrays,
-just like their Indy and Indigo2 PROMs. With that capability, leave **PROM
-firmware** at **Bundled with Iris**. On cores without it (currently `main`),
-**Use bundled** is greyed out and an external PROM is required before boot.
+Current `xiri` and upstream cores embed O2 4.18 and Octane 4.9 as packed
+release firmware. Leave **PROM firmware** at **Bundled with Iris**. On older
+cores without embedded firmware, **Use bundled** is greyed out and an external
+PROM is required before boot. Detection follows the core's available APIs.
+
+A fresh Octane release image has no initialized persistent environment. Boot
+once with **PROM boot > Keep existing** before applying an IRIX or NetBSD
+preset. Existing saved flash remains usable and is never replaced by this
+upgrade.
 
 To override the bundled image, use **General > PROM firmware > Choose file**.
 Choose the extracted `.bin` image, press F9, and confirm any requested restart.
@@ -195,21 +200,13 @@ it does not silently substitute the bundled image. Cancelling
 the picker or discarding the draft leaves the running machine untouched. These
 checks do not authenticate firmware contents or guarantee a successful guest boot.
 
-The bundled O2 4.18 PROM is 512 KiB; Octane 4.9 is 1 MiB. Octane accepts an external IP30 flash image up to
-1 MiB, including the 879,312-byte IRIX `IP30prom.bin`; Prismatic accepts images
-from 512 KiB to 1 MiB. MAME documents these full flash dumps:
-
-| Model | File | SHA-1 |
-| --- | --- | --- |
-| O2 | `ip32prom.rev4.18.bin` | `f2cfa7246d67f88fe5490e40dac6c04b1deb4d28` |
-| Octane | `ip30prom.rev4.9.bin` | `de250875c608add63749d3f9fb81a82cb58c3586` |
-
-References: [MAME O2 firmware definitions](https://github.com/mamedev/mame/blob/master/src/mame/sgi/o2.cpp),
-[MAME Octane firmware definition](https://github.com/mamedev/mame/blob/master/src/mame/sgi/octane.cpp).
-The matching arrays live in `src/prombinip32.rs` and `src/prombinip30.rs` in
-[our Iris fork](https://github.com/salvogendut/iris/tree/xiri),
-and are compiled into Prismatic. The fork's `tools/embed-prom.py` regenerates
-them from the original binaries without altering their bytes.
+The embedded payloads are 431,616 bytes for O2 and 879,312 bytes for Octane;
+the emulator pads them to their 512 KiB and 1 MiB flash capacities. The packed
+images and version catalog live in `data/proms/` in
+[our Iris fork](https://github.com/salvogendut/iris/tree/xiri).
+Older cores embedded full flash dumps with initialized environment records.
+The new release payloads therefore need not have the same hashes or initial
+settings as those dumps.
 
 Existing machine flash remains authoritative: switching firmware does not erase
 O2's `nvram.bin` or Octane's `flash.bin`. Use a new machine label for a fresh

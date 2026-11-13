@@ -174,6 +174,8 @@ impl MachineSettings {
             MachineProfile::OctaneIp30 => &[
                 64, 128, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192,
             ],
+            #[cfg(iris_cpu_parts)]
+            _ => &[],
         }
     }
 
@@ -184,6 +186,8 @@ impl MachineSettings {
             MachineProfile::O2Ip32 => &[CpuModel::R5000, CpuModel::R10000],
             MachineProfile::Indigo2Ip28 => &[CpuModel::R10000],
             MachineProfile::OctaneIp30 => &CpuModel::OCTANE,
+            #[cfg(iris_cpu_parts)]
+            _ => &[],
         }
     }
 
@@ -228,6 +232,9 @@ impl MachineSettings {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if !Self::PROFILES.contains(&self.profile) {
+            return Err("This machine model is not supported by Prismatic".into());
+        }
         if !(1..=2).contains(&self.cpus)
             || (self.cpus != 1 && self.profile != MachineProfile::OctaneIp30)
         {
@@ -301,6 +308,8 @@ impl MachineSettings {
             MachineProfile::Indigo2Ip28 => "Indigo2 IMPACT",
             MachineProfile::O2Ip32 => "O2",
             MachineProfile::OctaneIp30 => "Octane",
+            #[cfg(iris_cpu_parts)]
+            _ => self.profile.label(),
         };
         let cpu = self.cpu.label().trim_start_matches("MIPS ");
         let processors = if self.cpus == 2 { "2x " } else { "" };
@@ -314,6 +323,8 @@ impl MachineSettings {
             MachineProfile::Indigo2Ip28 => "indigo2-ip28",
             MachineProfile::O2Ip32 => "o2",
             MachineProfile::OctaneIp30 => "octane",
+            #[cfg(iris_cpu_parts)]
+            _ => self.profile.name(),
         };
         match override_dir {
             // Preserve the existing --state-dir layout for Indy sessions.
@@ -332,6 +343,8 @@ impl MachineSettings {
             MachineProfile::Indigo2Ip28 => &[SolidImpact, HighImpact, MaxImpact],
             MachineProfile::OctaneIp30 => &[SolidImpact, HighImpact, MaxImpact, V6, V8, V10, V12],
             MachineProfile::O2Ip32 => &[], // Integrated GBE, not a selectable board.
+            #[cfg(iris_cpu_parts)]
+            _ => &[],
         }
     }
 
@@ -342,6 +355,8 @@ impl MachineSettings {
                 Some(GraphicsBoard::SolidImpact)
             }
             MachineProfile::O2Ip32 => None,
+            #[cfg(iris_cpu_parts)]
+            _ => None,
         })
     }
 
@@ -910,6 +925,23 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(iris_cpu_parts)]
+    #[test]
+    fn newer_core_models_require_frontend_support() {
+        let unsupported = MachineSettings {
+            profile: MachineProfile::FuelIp34,
+            ..Default::default()
+        };
+        assert!(
+            unsupported
+                .validate()
+                .unwrap_err()
+                .contains("not supported by Prismatic")
+        );
+        assert!(unsupported.cpus().is_empty());
+        assert!(unsupported.ram_sizes().is_empty());
+    }
 
     #[test]
     fn prom_console_migrates_and_roundtrips_independently_per_label() {

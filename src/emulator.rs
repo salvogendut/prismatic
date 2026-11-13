@@ -253,7 +253,18 @@ pub fn machine_config(
     };
     config.machine.profile = hardware.profile;
     config.machine.cpu = hardware.cpu.iris()?;
-    config.machine.cpus = hardware.cpus;
+    #[cfg(iris_cpu_parts)]
+    {
+        config.machine.cpus = Some(hardware.cpus);
+    }
+    #[cfg(not(iris_cpu_parts))]
+    {
+        config.machine.cpus = hardware.cpus;
+    }
+    #[cfg(iris_embedded_prom)]
+    if hardware.prom_path().is_none() {
+        config.prom = "(embedded)".into();
+    }
     config.machine.cache = if hardware.newport() {
         advanced.cache
     } else {
@@ -432,6 +443,9 @@ impl Emulator {
                     // Iris's Indigo2 fallback also searches the current directory.
                     // Give it the bundled image explicitly so a local ROM cannot
                     // silently change a configured machine's firmware.
+                    #[cfg(iris_embedded_prom)]
+                    let bundled: Option<&[u8]> = None;
+                    #[cfg(not(iris_embedded_prom))]
                     let bundled: Option<&[u8]> = match config.machine.profile {
                         MachineProfile::Indigo2Ip22 => Some(&iris::prombini2::PROM0701367012),
                         MachineProfile::Indigo2Ip28 => Some(&iris::prombinip28::PROM0701477002),
@@ -779,6 +793,8 @@ mod tests {
                     );
                     assert_eq!(std::fs::read(path).unwrap(), image);
                 }
+                #[cfg(iris_cpu_parts)]
+                _ => unreachable!("only supported frontend profiles are tested"),
             }
             prepare_environment(&config, None, Some(Console::Serial)).unwrap();
             assert_eq!(std::fs::read(path).unwrap(), image);
@@ -837,6 +853,17 @@ mod tests {
             // Validation/config construction must not touch firmware files.
             assert_eq!(std::fs::read_dir(&state).unwrap().count(), 0);
             let (loader, filename, options) = hardware.prom_boot.environment().unwrap();
+            #[cfg(iris_embedded_prom)]
+            if profile == MachineProfile::OctaneIp30 {
+                // Fresh release firmware has no FPDS region yet. It must boot
+                // once with Keep existing before applying an offline preset.
+                let error =
+                    iris::prom_env::prepare_boot_environment(&config, loader, filename, options)
+                        .unwrap_err();
+                assert!(error.contains("Keep existing"));
+                assert_eq!(std::fs::read_dir(&state).unwrap().count(), 0);
+                continue;
+            }
             iris::prom_env::prepare_boot_environment(&config, loader, filename, options).unwrap();
             let path = match profile {
                 MachineProfile::Indigo2Ip22 | MachineProfile::Indigo2Ip28 => &config.nveeprom,
@@ -1772,6 +1799,9 @@ mod tests {
         .unwrap();
         assert_eq!(config.keyboard, KeyboardLayout::Iso);
         assert!(config.scsi.is_empty());
+        #[cfg(iris_embedded_prom)]
+        assert_eq!(config.prom, "(embedded)");
+        #[cfg(not(iris_embedded_prom))]
         assert!(config.prom.is_empty());
         assert_eq!(
             config.nvram,
@@ -1932,6 +1962,9 @@ mod tests {
                 .unwrap();
                 assert_eq!(config.graphics.board, Some(board));
                 assert_eq!(config.graphics.heads, hardware.heads);
+                #[cfg(iris_cpu_parts)]
+                assert_eq!(config.machine.cpus(), hardware.cpus);
+                #[cfg(not(iris_cpu_parts))]
                 assert_eq!(config.machine.cpus, hardware.cpus);
                 assert_eq!(config.banks.iter().sum::<u32>(), hardware.ram_mb);
                 for (&slot, device) in &config.scsi {
