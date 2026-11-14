@@ -188,11 +188,7 @@ impl GuestAudio {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        cell::RefCell,
-        rc::Rc,
-        sync::atomic::{AtomicBool, AtomicU64},
-    };
+    use std::{cell::RefCell, rc::Rc};
 
     #[derive(Default)]
     struct Recorded {
@@ -223,24 +219,14 @@ mod tests {
         }
     }
 
-    fn source(inbox: &Arc<Inbox>) -> iris::host_audio::HostOut {
-        let cfg = iris::config::AudioConfig {
-            output: Some(inbox.clone()),
-            ..Default::default()
-        };
-        iris::host_audio::open_output(
-            &cfg,
-            Arc::new(AtomicU64::new(0)),
-            Arc::new(AtomicBool::new(true)),
-            |_| 9600,
-            "test",
-            "IRIS_TEST_NO_CAPTURE",
-        )
-        .unwrap()
+    fn source(inbox: &Arc<Inbox>) -> impl FnMut(i16) -> bool {
+        let (mut producer, stream) = iris::host_audio::PcmStream::channel("test");
+        iris::host_audio::OutputFactory::open(inbox.as_ref(), stream).unwrap();
+        move |sample| producer.push(sample).is_ok()
     }
-    fn send(out: &mut iris::host_audio::HostOut, pair: [i16; 2]) {
+    fn send(out: &mut impl FnMut(i16) -> bool, pair: [i16; 2]) {
         for sample in pair {
-            out.producer.push(sample).unwrap();
+            assert!(out(sample));
         }
     }
     fn tick(
@@ -324,7 +310,7 @@ mod tests {
             for i in 0..4800 {
                 send(&mut out, [i, -i]);
             }
-            assert!(out.producer.push(1).is_err());
+            assert!(!out(1));
             tick(
                 &mut player,
                 &inbox,

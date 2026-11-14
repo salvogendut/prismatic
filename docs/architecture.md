@@ -270,13 +270,15 @@ follows the detected Iris storage API. Creation
 is an explicit host-file action; attachment changes only the draft and follows
 normal Save/restart validation. Discard keeps already-created files.
 
-Iris's current library still compiles winit/glutin, CPAL, and camera support.
+Iris's current library still compiles winit/glutin, iris-audio host backends,
+and camera support.
 Prismatic does not call `Ui::run`, so there is only the SDL window. Guest audio
 is enabled, with a runtime-only `AudioConfig.output` factory per worker. The
-shared HAL2/MACE/RAD output path sends resampled 48 kHz stereo i16 PCM into a
+shared iris-audio renderer mixes and resamples HAL2/MACE/RAD/ICE1724 voices,
+then a frontend backend sends 48 kHz stereo i16 PCM into a
 lock-free ring of at most 100 ms and hands the consumer to Prismatic's single
-pending-stream inbox. It never opens CPAL for a Prismatic machine. The normal
-standalone Iris configuration retains its CPAL backend.
+pending-stream inbox. A frontend refusal never falls back to another host
+backend. Standalone Iris selects its own iris-audio host backend.
 
 SDL audio opening, gain, queueing and teardown all run on the main thread.
 The event loop drains at most 40 ms at once and caps SDL's input queue at 60 ms,
@@ -806,8 +808,11 @@ Visual inspection of a screenshot establishes what PROM actually displayed;
 a nonuniform-frame check alone does not identify a PROM menu or an OS boot.
 
 Guest audio has unit coverage for bounded queues, stereo-frame alignment,
-closed producers, mute/pause flushing, device-open failures and retry. An
-isolated desktop check programs real HAL2 DMA on Indy and IP22, capturing SDL's
+closed producers, mute/pause flushing, device-open failures and retry. The
+fixtures use the bounded PcmStream channel directly; Iris separately tests
+real renderer delivery and last-voice teardown. The November 14 iris-audio
+migration passes both suites. The following audible captures predate that
+migration: an isolated desktop check programs real HAL2 DMA on Indy and IP22, capturing SDL's
 output: stereo peaks of 12000/6000 become 6000/3000 at saved 50% volume and zero
 while muted. It also checks draft isolation, pause/resume, cold reset, F2 label
 switching and clean teardown. IP28 and O2 PROM playback produced non-silent SDL

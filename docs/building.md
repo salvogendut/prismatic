@@ -182,9 +182,9 @@ disables it. PCAP, idle-pause and optional Perfetto controls remain available.
 These optimizations are workload-dependent; the original bare-metal results do
 not establish a Prismatic desktop or OS boot speedup.
 
-The current Iris library still compiles its winit/glutin, CPAL and camera
+The current Iris library still compiles its winit/glutin, iris-audio and camera
 modules. Prismatic uses its own SDL window. Guest audio uses a per-machine PCM handoff
-when that API is available; otherwise it is disabled without opening CPAL. libclang is needed to build the
+when that API is available; otherwise it is disabled without opening another host backend. libclang is needed to build the
 Linux camera bindings.
 SDL is linked dynamically through the [`sdl3` Rust bindings](https://github.com/vhspace/sdl3-rs).
 SDL_ttf and a separate widget toolkit are not required. The
