@@ -71,6 +71,9 @@ pub struct ExpertSettings {
     pub serial_port_b: u16,
     pub serial_a: crate::serial::Route,
     pub serial_b: crate::serial::Route,
+    /// Platform console, then Tezro serial C and D.
+    pub platform_serial: [crate::serial::Route; 3],
+    pub platform_ports: [u16; 3],
     pub gdb_port: Option<u16>,
     pub vnc_port: Option<u16>,
     pub vnc_max_fps: u32,
@@ -96,6 +99,8 @@ impl Default for ExpertSettings {
             serial_port_b: 0,
             serial_a: Default::default(),
             serial_b: Default::default(),
+            platform_serial: [crate::serial::Route::Tcp; 3],
+            platform_ports: [0; 3],
             gdb_port: None,
             vnc_port: None,
             vnc_max_fps: 30,
@@ -195,6 +200,39 @@ impl ExpertSettings {
     }
     fn validate_available(&self, profile: MachineProfile) -> Result<(), String> {
         self.validate()?;
+        let hardware = crate::settings::MachineSettings {
+            profile,
+            ..Default::default()
+        };
+        let mut ports = std::collections::BTreeSet::new();
+        for port in [
+            Some(self.monitor_port),
+            self.serial_a.tcp_port(self.serial_port_a),
+            self.serial_b.tcp_port(self.serial_port_b),
+            self.gdb_port,
+            self.vnc_port,
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|p| *p != 0)
+        {
+            ports.insert(port);
+        }
+        for i in 0..hardware.platform_serial_lines() {
+            let route = if cfg!(iris_platform_serial) {
+                self.platform_serial[i]
+            } else {
+                crate::serial::Route::Tcp
+            };
+            route.validate()?;
+            if let Some(port) = route.tcp_port(self.platform_ports[i]).filter(|p| *p != 0)
+                && !ports.insert(port)
+            {
+                return Err(format!(
+                    "Port {port} is assigned to more than one connection"
+                ));
+            }
+        }
         if self.boot_elf.is_some()
             && matches!(profile, MachineProfile::O2Ip32 | MachineProfile::OctaneIp30)
         {
@@ -357,6 +395,21 @@ impl ExpertSettings {
                     "Connection status",
                     "Show active ports and PTY paths".into(),
                 ),
+                ("L1 console route", self.platform_serial[0].label().into()),
+                (
+                    "L1 TCP port",
+                    serial_port_label(self.platform_serial[0], self.platform_ports[0]),
+                ),
+                ("Serial C route", self.platform_serial[1].label().into()),
+                (
+                    "Serial C TCP port",
+                    serial_port_label(self.platform_serial[1], self.platform_ports[1]),
+                ),
+                ("Serial D route", self.platform_serial[2].label().into()),
+                (
+                    "Serial D TCP port",
+                    serial_port_label(self.platform_serial[2], self.platform_ports[2]),
+                ),
             ],
             Page::Developer => vec![
                 (
@@ -414,6 +467,7 @@ pub enum Field {
     Monitor,
     SerialA,
     SerialB,
+    PlatformPort(usize),
     Gdb,
     Vnc,
     VncFps,
@@ -431,6 +485,9 @@ impl Field {
             Self::Monitor => "Monitor TCP port",
             Self::SerialA => "Serial A TCP port",
             Self::SerialB => "Serial B TCP port",
+            Self::PlatformPort(0) => "L1 TCP port",
+            Self::PlatformPort(1) => "Serial C TCP port",
+            Self::PlatformPort(_) => "Serial D TCP port",
             Self::Gdb => "GDB TCP port",
             Self::Vnc => "VNC TCP port",
             Self::VncFps => "VNC frame limit",
@@ -452,7 +509,7 @@ impl Field {
             Self::Monitor => {
                 "TCP port 1-65535, or 0/auto for automatic. Loopback only; applies after restart."
             }
-            Self::SerialA | Self::SerialB => {
+            Self::SerialA | Self::SerialB | Self::PlatformPort(_) => {
                 "0/auto or 1-65535. Used with TCP routing; retained with PTY/Off. Applies after restart."
             }
             Self::Gdb | Self::Vnc => {
@@ -484,6 +541,7 @@ impl Field {
             Self::Monitor => s.monitor_port.to_string(),
             Self::SerialA => s.serial_port_a.to_string(),
             Self::SerialB => s.serial_port_b.to_string(),
+            Self::PlatformPort(index) => s.platform_ports[index].to_string(),
             Self::Gdb => port(s.gdb_port),
             Self::Vnc => port(s.vnc_port),
             Self::VncFps => s.vnc_max_fps.to_string(),
@@ -531,6 +589,7 @@ impl Field {
             Self::Monitor => draft.monitor_port = port()?,
             Self::SerialA => draft.serial_port_a = port()?,
             Self::SerialB => draft.serial_port_b = port()?,
+            Self::PlatformPort(index) => draft.platform_ports[index] = port()?,
             Self::Gdb | Self::Vnc => {
                 let value = if text.is_empty() || text.eq_ignore_ascii_case("off") {
                     None
@@ -568,10 +627,10 @@ pub fn hint(page: Page, row: usize) -> &'static str {
             "Optional JIT integer and Indy/Indigo2 clock caches. Off by default. Changing this restarts the machine."
         }
         (Page::Connections, 0) => Field::Monitor.hint(),
-        (Page::Connections, 1 | 3) => {
+        (Page::Connections, 1 | 3 | 9 | 11 | 13) => {
             "TCP / Pseudoterminal / Off. Connection status shows the active port or PTY path after boot."
         }
-        (Page::Connections, 2 | 4) => Field::SerialA.hint(),
+        (Page::Connections, 2 | 4 | 10 | 12 | 14) => Field::SerialA.hint(),
         (Page::Connections, 5..=6) => Field::Gdb.hint(),
         (Page::Connections, 7) => Field::VncFps.hint(),
         (Page::Connections, 8) | (Page::Developer, 4) => {
@@ -670,7 +729,7 @@ impl Services {
         let mut lines = vec![
             format!("Monitor: {}", addr(monitor)),
             serial.describe(0),
-            serial.describe(1),
+            format!("{}{}", serial.describe(1), serial.platform_report()),
             "PTY: minicom -o -D PATH -b 9600; disable hardware/software flow control.".into(),
             format!("GDB: {} (CPU 0)", addr(self.gdb.as_ref().map(|s| s.addr()))),
             format!(

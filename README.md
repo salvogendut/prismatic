@@ -2,12 +2,17 @@
 
 ![Prismatic logo](images/Prismatic%20Rainbow%20Emulator%20Logo.png)
 
-Prismatic is the Rust/SDL3 frontend being developed for [our](https://github.com/salvogendut/iris) fork of [Iris](https://github.com/techomancer/iris),
+**Prismatic is a frontend for the [IRIS](https://github.com/techomancer/iris) emulator. It is not an emulator by itself: IRIS performs all CPU, device and machine emulation.**
+
+Prismatic provides a Rust/SDL3 desktop interface for [our](https://github.com/salvogendut/iris) fork of [Iris](https://github.com/techomancer/iris),
 following the desktop conventions of the Happy Years emulators
 ([1984](https://github.com/salvogendut/1984), [1985](https://github.com/salvogendut/1985),
 [1986](https://github.com/salvogendut/1986), and [1989](https://github.com/salvogendut/1989)).
 
-Prismatic supports SGI Indy, Indigo2, Indigo2 IMPACT, O2 and Octane models.
+Prismatic exposes all 12 machine profiles in the current IRIS core: Indy,
+Indigo2/IP28, O2, Octane, Origin 200/2000/3200, Onyx2/3000, Fuel and Tezro.
+See [machine support and validation](docs/machines.md#supported-models) for
+processors, graphics and the limits of the checks performed.
 It opens **PAUSED** with the Prismatic logo and a diskless Indy by default.
 Configure the machine in **F9 > General**, attach disks or CDs in **Media**, then press **Ctrl+P** to boot.
 Saved machine labels let you keep multiple configurations and switch with **F2**.

@@ -159,3 +159,14 @@ controller and device type (for example `HD1:*`). They still show actual reads
 and writes, with separate disk/CD colors and amber writes.
 
 Related: [CD changer and disk actions](extensions.md#cd-changer-and-disk-actions), [scratch transfer drive](extensions.md#scratch-transfer-drive), [machine settings](machines.md).
+
+## Remote CD images
+
+Choose a SCSI target in **Media**, then **CD URL...**, and enter an HTTP or HTTPS
+URL to a cooked ISO9660/EFS CD image. The server must support HTTP byte-range
+requests. IRIS fetches blocks on demand; URL validation and media I/O run off
+the SDL thread. Network failures are reported as media errors. Remote media is
+read-only; hard disks and CHDs must be local. URLs are saved intact in the
+machine label and are not resolved as filesystem paths.
+
+For NVMe and Fibre Channel disks, see [Extensions](extensions.md#nvme-fibre-channel-and-octane-pci-boards).

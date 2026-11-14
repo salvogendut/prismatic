@@ -971,3 +971,25 @@ does not touch an active user bridge.
 2. Exercise DaynaPort guest drivers and the external Ultra64/gopher64 bridge.
 3. Extend native snapshot coverage before enabling more profiles/devices: CHD
    overlays, second-head framebuffers, GR2/IMPACT and transient audio state.
+
+## Modern platform adapter
+
+`machines` keeps model-specific processor, memory and graphics choices, NUMA
+population and per-label platform flash/controller paths. A missing display is
+valid for a serial-only model. Worker telemetry uses Workstation CPU counters
+where available, independent of the SDL capture renderer. Activity flags cover
+16 CPUs and 30 SCSI targets without overlapping bit positions.
+
+`runtime` defines a finite typed schema shared by menu rows, validation and
+configuration application. Inactive device preferences remain saved but are
+not applied. Applying the schema preserves embedding-only fields skipped by
+Iris serde. Filesystem validation and storage leases precede construction;
+NVMe/FC are constructed by Iris's fallible device constructors. The optional
+frontend SCSI-bus interface enables activity wrappers and live tray/scratch
+operations on the newer machines. Without it, only their boot media is exposed.
+
+Platform serial injection covers L1 and Tezro C/D as well as A/B. It retains
+Iris's console CI fanout and logging and uses the same bounded, revocable host
+transports as existing models. The fallback probes chosen TCP ports before core
+construction and reports them in Connection status. As with other core-owned
+listeners, another process can race the short probe-to-bind interval.

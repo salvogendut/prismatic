@@ -46,6 +46,7 @@ pub struct Medium {
 pub struct MediaSettings {
     pub devices: BTreeMap<u8, Medium>,
     pub cd_changers: BTreeMap<u8, Vec<String>>,
+    pub write_cache: BTreeMap<u8, bool>,
     pub scratch: crate::storage::Scratch,
 }
 
@@ -62,6 +63,13 @@ impl MediaSettings {
             && (!(1..=7).contains(&slot) || self.devices.contains_key(&slot))
         {
             return Err("Scratch needs an unused controller-0 target from 1 through 7".into());
+        }
+        if self
+            .write_cache
+            .keys()
+            .any(|slot| *slot >= 32 || *slot % 16 == 0)
+        {
+            return Err("Write cache settings must name SCSI targets 1-15 on bus 0 or 1".into());
         }
         for (slot, paths) in &self.cd_changers {
             if self
@@ -93,6 +101,16 @@ impl MediaSettings {
 
     pub fn validate_for(&self, profile: MachineProfile) -> Result<(), String> {
         self.validate()?;
+        let hardware = crate::settings::MachineSettings {
+            profile,
+            ..Default::default()
+        };
+        if hardware.fibre_only() && (!self.devices.is_empty() || self.scratch.slot.is_some()) {
+            return Err(
+                "This model uses Fibre Channel storage; configure disks in Extensions > Disks"
+                    .into(),
+            );
+        }
         for &slot in self.devices.keys() {
             if slot / 16 >= profile.scsi_controllers() || slot % 16 > profile.max_scsi_id() {
                 return Err(format!(
@@ -108,7 +126,7 @@ impl MediaSettings {
 
     pub fn resolve_paths(&mut self, directory: &Path) -> Result<(), String> {
         for path in self.cd_changers.values_mut().flatten() {
-            if Path::new(path).is_relative() {
+            if !is_remote(path) && Path::new(path).is_relative() {
                 *path = std::path::absolute(directory.join(&*path))
                     .map_err(|e| e.to_string())?
                     .to_str()
@@ -117,7 +135,7 @@ impl MediaSettings {
             }
         }
         for medium in self.devices.values_mut() {
-            if Path::new(&medium.path).is_relative() {
+            if !is_remote(&medium.path) && Path::new(&medium.path).is_relative() {
                 medium.path = std::path::absolute(directory.join(&medium.path))
                     .map_err(|e| e.to_string())?
                     .to_str()
@@ -163,6 +181,8 @@ impl MediaSettings {
                             MediaKind::Cdrom => ScsiKind::Cdrom,
                         },
                         overlay: m.kind == MediaKind::Disk,
+                        #[cfg(iris_scsi_write_cache)]
+                        write_cache: self.write_cache.get(&id).copied().unwrap_or(false),
                         discs: self.cd_changers.get(&id).cloned().unwrap_or_default(),
                         ..Default::default()
                     },
@@ -194,8 +214,39 @@ pub(crate) fn is_chd(path: &Path) -> io::Result<bool> {
     Ok((count == 8 && &header == b"MComprHD") || iris::chd_disk::is_chd(&path.to_string_lossy()))
 }
 
+pub fn is_remote(path: &str) -> bool {
+    let path = path.to_ascii_lowercase();
+    path.starts_with("http://") || path.starts_with("https://")
+}
+
 impl Medium {
     pub fn inspect(path: &Path, kind: MediaKind) -> Result<Self, String> {
+        if let Some(url) = path.to_str().filter(|url| is_remote(url)) {
+            if kind != MediaKind::Cdrom {
+                return Err("HTTP media is read-only and must be attached as a CD-ROM".into());
+            }
+            #[cfg(iris_http_media)]
+            {
+                let mut node = iris::http_disk::open(url).map_err(|e| e.to_string())?;
+                if node.size() == 0 || !node.size().is_multiple_of(512) {
+                    return Err("Remote CD data must be aligned to 512-byte sectors".into());
+                }
+                let mut header = [0; 512];
+                node.read(0, &mut header).map_err(|e| e.to_string())?;
+                if header.starts_with(b"MComprHD")
+                    || header.starts_with(b"PK\x03\x04")
+                    || header.starts_with(&[0x1f, 0x8b])
+                {
+                    return Err("Remote CDs must be cooked data images; download and extract CHDs/archives first".into());
+                }
+                return Ok(Self {
+                    path: url.into(),
+                    kind,
+                });
+            }
+            #[cfg(not(iris_http_media))]
+            return Err("This Iris core has no HTTP media support".into());
+        }
         let path = path
             .canonicalize()
             .map_err(|e| format!("Cannot open {}: {e}", path.display()))?;
@@ -433,6 +484,15 @@ impl MediaJobs {
             settings.advanced.expert.validate_files()?;
             settings.machine.validate_prom()?;
             settings.media.validate_files()?;
+            settings.advanced.runtime.resolve_paths(&directory)?;
+            let config = crate::emulator::machine_config(
+                &directory,
+                &settings.machine,
+                &settings.media,
+                &settings.advanced,
+                &settings.network,
+            )?;
+            crate::runtime::RuntimeSettings::validate_files(&config, &settings.media)?;
             Ok(Completion::Validated {
                 settings: Box::new(settings),
                 confirmed,
@@ -700,6 +760,9 @@ pub fn attach(
             settings.cd_changers.get(&id).cloned().unwrap_or_default(),
             identity,
         );
+        #[cfg(iris_scsi_write_cache)]
+        let device =
+            device.with_write_cache(!cd && settings.write_cache.get(&id).copied().unwrap_or(false));
         let device: Box<dyn iris::scsi::ScsiTarget> = if cd {
             Box::new(crate::storage::ActivityTarget {
                 device,
@@ -716,6 +779,15 @@ pub fn attach(
 }
 
 pub(crate) fn open_node(medium: &Medium) -> io::Result<Box<dyn BlockNode>> {
+    if is_remote(&medium.path) {
+        if medium.kind != MediaKind::Cdrom {
+            return Err(io::Error::other("HTTP hard disks are unsupported"));
+        }
+        #[cfg(iris_http_media)]
+        return iris::http_disk::open(&medium.path);
+        #[cfg(not(iris_http_media))]
+        return Err(io::Error::other("This Iris core has no HTTP media support"));
+    }
     let path = Path::new(&medium.path);
     if is_chd(path)? {
         return match medium.kind {
@@ -754,6 +826,10 @@ pub(crate) fn with_bus<R>(
     controller: u8,
     f: impl FnOnce(&iris::scsi::ScsiBus) -> R,
 ) -> Result<R, String> {
+    #[cfg(iris_frontend_bus)]
+    if let Some(bus) = machine.frontend_scsi_bus(controller) {
+        return Ok(f(bus));
+    }
     let machine = machine.as_any_mut();
     if let Some(machine) = machine.downcast_ref::<iris::machine::Machine>() {
         let scsi = if controller == 0 {
@@ -786,6 +862,48 @@ pub(crate) fn with_bus<R>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[cfg(iris_http_media)]
+    fn remote_cd_uses_ranges_preserves_url_and_rejects_writes() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/install.iso", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for _ in 0..4 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                }
+                let header = String::from_utf8(request).unwrap().to_ascii_lowercase();
+                assert!(header.contains("range: bytes="));
+                let count = if header.contains("bytes=0-0\r\n") {
+                    1
+                } else {
+                    4096
+                };
+                write!(stream, "HTTP/1.1 206 Partial Content\r\nContent-Length: {count}\r\nContent-Range: bytes 0-{}/4096\r\nConnection: close\r\n\r\n", count - 1).unwrap();
+                stream.write_all(&vec![0x5a; count]).unwrap();
+            }
+        });
+        assert!(Medium::inspect(Path::new(&url), MediaKind::Disk).is_err());
+        let medium = Medium::inspect(Path::new(&url), MediaKind::Cdrom).unwrap();
+        let mut media = MediaSettings::default();
+        media.devices.insert(6, medium.clone());
+        media.resolve_paths(Path::new("/tmp")).unwrap();
+        assert_eq!(media.devices[&6].path, url);
+        let mut node = open_node(&medium).unwrap();
+        let mut data = [0; 512];
+        node.read(0, &mut data).unwrap();
+        assert_eq!(data, [0x5a; 512]);
+        assert!(node.write(0, &data).is_err());
+        server.join().unwrap();
+    }
     use super::*;
     use std::fs;
 
@@ -836,7 +954,12 @@ mod tests {
                         path: "disk.raw".into(),
                     },
                 );
-                let valid = slot / 16 < profile.scsi_controllers()
+                let valid = !(crate::settings::MachineSettings {
+                    profile,
+                    ..Default::default()
+                })
+                .fibre_only()
+                    && slot / 16 < profile.scsi_controllers()
                     && (1..=profile.max_scsi_id()).contains(&(slot % 16));
                 assert_eq!(
                     media.validate_for(profile).is_ok(),

@@ -82,6 +82,35 @@ fn main() {
         ),
         ("net_running", "net/link.rs", "pub struct Running"),
         ("cpu_parts", "cpu/parts.rs", "pub struct Part"),
+        ("scsi_write_cache", "scsi.rs", "pub fn with_write_cache("),
+        (
+            "headless_counters",
+            "ip27_machine.rs",
+            "fn cpu_counters(&self)",
+        ),
+        ("modern_models", "config.rs", "Onyx3000Ip35,"),
+        ("http_media", "http_disk.rs", "pub fn open(url:"),
+        (
+            "expansion",
+            "config.rs",
+            "pub fibre_channel: Option<FibreChannelConfig>",
+        ),
+        ("cpu_counters", "workstation.rs", "fn cpu_counters(&self)"),
+        (
+            "frontend_bus",
+            "workstation.rs",
+            "fn frontend_scsi_bus(&self",
+        ),
+        (
+            "platform_serial",
+            "dev/serial_host.rs",
+            "pub l1: Option<Arc<dyn SerialBackend>>",
+        ),
+        (
+            "serial_retry",
+            "dev/serial_host.rs",
+            "fn try_send_byte(&self",
+        ),
         ("octane_cpus", "cpu/parts.rs", "pub const R14000_600"),
         (
             "poweroff",

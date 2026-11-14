@@ -41,7 +41,7 @@ impl Route {
 mod native;
 #[cfg(iris_serial)]
 pub use native::Endpoints;
-#[cfg(not(iris_serial))]
+#[cfg(any(not(iris_serial), not(iris_platform_serial)))]
 mod legacy;
 #[cfg(not(iris_serial))]
 pub use legacy::Endpoints;

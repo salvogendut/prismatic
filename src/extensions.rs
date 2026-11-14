@@ -1,8 +1,6 @@
 //! Optional Iris devices. Draft validation never opens cameras or IPC bridges.
 use crate::{media::MediaSettings, network::NetworkSettings, settings::MachineSettings};
-use iris::config::{
-    MachineConfig, MachineProfile, ScsiDeviceConfig, ScsiKind, VinoSource, VinoStandard,
-};
+use iris::config::{MachineConfig, ScsiDeviceConfig, ScsiKind, VinoSource, VinoStandard};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -80,10 +78,8 @@ impl ExtensionsSettings {
         media: &MediaSettings,
         network: &NetworkSettings,
     ) -> Result<(), String> {
-        if matches!(
-            hardware.profile,
-            MachineProfile::O2Ip32 | MachineProfile::OctaneIp30
-        ) && (self.vino != Source::Off || self.daynaport.is_some() || self.ultra64)
+        if !hardware.legacy_devices()
+            && (self.vino != Source::Off || self.daynaport.is_some() || self.ultra64)
         {
             return Err("VINO, DaynaPort and Ultra64 require an Indy/Indigo2 machine in Iris; disable them before changing model".into());
         }
@@ -176,13 +172,21 @@ pub enum Page {
     Storage,
     Devices,
     Checkpoints,
+    Runtime(crate::runtime::Topic),
 }
 impl Page {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 11] = [
         Self::Hardware,
         Self::Storage,
         Self::Devices,
         Self::Checkpoints,
+        Self::Runtime(crate::runtime::Topic::Platform),
+        Self::Runtime(crate::runtime::Topic::Render),
+        Self::Runtime(crate::runtime::Topic::Disks),
+        Self::Runtime(crate::runtime::Topic::Pci),
+        Self::Runtime(crate::runtime::Topic::Sharing),
+        Self::Runtime(crate::runtime::Topic::Ports),
+        Self::Runtime(crate::runtime::Topic::Sound),
     ];
 
     pub fn label(self) -> &'static str {
@@ -191,6 +195,7 @@ impl Page {
             Self::Storage => "Storage",
             Self::Devices => "Devices",
             Self::Checkpoints => "Checkpoints",
+            Self::Runtime(topic) => topic.label(),
         }
     }
 }
@@ -259,6 +264,7 @@ impl Field {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iris::config::MachineProfile;
     #[test]
     fn device_conflicts_and_subnets_are_validated_without_side_effects() {
         let hardware = MachineSettings::default();

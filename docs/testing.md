@@ -207,3 +207,36 @@ miniroot test. See [installation errors and workarounds](irix-installation-troub
 Repeat this real-media check when changing the helper, boot environment or
 stream lifecycle; keep the new disk and its overlay sidecars separate from
 existing machines.
+
+## New platform and runtime checks
+
+The runtime schema suite exercises all current processor parts and graphics
+choices, protected NVMe/FC configuration, inactive-preference preservation,
+virtio slot conflicts, invalid settings and path resolution. The remote-CD
+regression serves a local HTTP byte-range fixture and verifies read-only access.
+
+For the seven newer platforms, run the opt-in diskless lifecycle test:
+
+```sh
+IRIS_REX_JIT_PROFILE=/tmp/prismatic-platform-rex.bin IRIS_NO_EXIT_ON_POWEROFF=1 \
+cargo test --locked --features pcap,idle-pause,jitv2 new_platforms_start -- --ignored --nocapture
+```
+
+It uses temporary state and bundled firmware for Origin 200/2000, Onyx2, Fuel,
+Tezro, Origin 3200 and Onyx 3000. It checks startup, CPU execution when counters
+are exposed, pause, stop and immediate serial-port reuse. It is **not an OS boot
+or graphics correctness test**. The current xiri integration supplies independent
+CPU counters for headless platforms; an upstream main lacking those hooks can
+only be checked for lifecycle/port handling on those machines.
+
+The existing Indy `--boot-smoke-test` still verifies real PROM framebuffer
+output. Existing O2/Octane IRIX installation results are separate, stronger
+coverage for those particular configurations.
+
+Validation of this integration on 2026-11-14: 185 default-feature frontend tests
+and 186 with `pcap,idle-pause,jitv2` passed against the xiri integration; 157
+passed against isolated upstream main. Both cores passed the seven-platform
+lifecycle check. The dummy-video UI and diskless Indy PROM framebuffer checks
+passed. The core's injected platform-serial regression passed, and
+`wgpu,gpujit,hostgl` passed a compilation check on Linux (runtime GPU validation
+is not claimed).

@@ -20,10 +20,12 @@ mod extensions;
 mod input;
 mod installation;
 mod instance;
+mod machines;
 mod media;
 mod network;
 mod overlay;
 mod profiles;
+mod runtime;
 mod serial;
 mod settings;
 mod smoke;
@@ -854,6 +856,13 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                         media_jobs.cancel();
                         ready_save = None;
                     }
+                    Effect::PickUrl { id, url } => {
+                        media_jobs.pick_path(
+                            id,
+                            media::MediaKind::Cdrom,
+                            std::path::PathBuf::from(url),
+                        );
+                    }
                     Effect::Pick { id, kind } => {
                         let current = overlay
                             .session
@@ -1281,6 +1290,8 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 Some("Display preview - no machine connected")
             } else if status.phase == Phase::PoweredOff {
                 Some("Machine powered off - Ctrl+P to boot, F9 Options")
+            } else if active.machine.serial_only() && status.phase == Phase::Running {
+                Some("Serial console: F9 > Advanced > Connections > Status")
             } else if !guest_frame_received
                 || matches!(status.phase, Phase::Failed(_) | Phase::Paused)
             {

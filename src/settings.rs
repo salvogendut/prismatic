@@ -1,10 +1,7 @@
 use crate::compat::CpuModel;
 use crate::media::MediaSettings;
 use iris::{
-    config::{
-        CacheModel, GraphicsBoard, KeyboardLayout, MAX_BANKS, MachineProfile, RtcOffset,
-        banks_from4,
-    },
+    config::{CacheModel, GraphicsBoard, KeyboardLayout, MAX_BANKS, MachineProfile, RtcOffset},
     dev::ng1::vc2_timings::NewportResolution,
 };
 use serde::{Deserialize, Serialize};
@@ -21,13 +18,18 @@ use std::{
 pub struct MachineSettings {
     pub profile: MachineProfile,
     pub cpu: CpuModel,
+    /// Optional exact upstream part name; old labels retain family defaults.
+    pub cpu_part: Option<String>,
     pub ram_mb: u32,
     pub cpus: u8,
+    /// Memory and CPU population is per node on NUMA machines.
+    pub nodes: u8,
     pub graphics: Option<GraphicsBoard>,
     pub heads: u8,
     pub keyboard: KeyboardLayout,
     pub o2_prom: Option<String>,
     pub octane_prom: Option<String>,
+    pub platform_prom: Option<String>,
     pub prom_boot: PromBoot,
     pub prom_console: PromConsole,
 }
@@ -142,13 +144,16 @@ impl Default for MachineSettings {
         Self {
             profile: MachineProfile::IndyIp24,
             cpu: CpuModel::R4400,
+            cpu_part: None,
             ram_mb: 64,
             cpus: 1,
+            nodes: 1,
             graphics: None,
             heads: 1,
             keyboard: KeyboardLayout::Ansi,
             o2_prom: None,
             octane_prom: None,
+            platform_prom: None,
             prom_boot: PromBoot::default(),
             prom_console: PromConsole::default(),
         }
@@ -156,6 +161,7 @@ impl Default for MachineSettings {
 }
 
 impl MachineSettings {
+    #[cfg(not(iris_modern_models))]
     pub const PROFILES: [MachineProfile; 5] = [
         MachineProfile::IndyIp24,
         MachineProfile::Indigo2Ip22,
@@ -163,6 +169,8 @@ impl MachineSettings {
         MachineProfile::O2Ip32,
         MachineProfile::OctaneIp30,
     ];
+    #[cfg(iris_modern_models)]
+    pub const PROFILES: [MachineProfile; 12] = MachineProfile::EVERY;
 
     pub fn ram_sizes(&self) -> &'static [u32] {
         match self.profile {
@@ -174,7 +182,19 @@ impl MachineSettings {
             MachineProfile::OctaneIp30 => &[
                 64, 128, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192,
             ],
-            #[cfg(iris_cpu_parts)]
+            #[cfg(iris_modern_models)]
+            MachineProfile::Origin200Ip29
+            | MachineProfile::Origin2000Ip27
+            | MachineProfile::Onyx2Ip27 => &[128, 256, 512, 1024, 1536, 2048],
+            #[cfg(iris_modern_models)]
+            MachineProfile::FuelIp34 => &[512],
+            #[cfg(iris_modern_models)]
+            MachineProfile::TezroIp53 => &[1024, 2048, 3072, 4096, 6144, 8192],
+            #[cfg(iris_modern_models)]
+            MachineProfile::Origin3200Ip35 | MachineProfile::Onyx3000Ip35 => {
+                &[512, 1024, 2048, 3072, 4096]
+            }
+            #[cfg(all(iris_cpu_parts, not(iris_modern_models)))]
             _ => &[],
         }
     }
@@ -182,17 +202,36 @@ impl MachineSettings {
     pub fn cpus(&self) -> &'static [CpuModel] {
         match self.profile {
             MachineProfile::IndyIp24 => &[CpuModel::R4400, CpuModel::R5000],
-            MachineProfile::Indigo2Ip22 => &[CpuModel::R4400],
+            MachineProfile::Indigo2Ip22 => {
+                if cfg!(iris_cpu_parts) {
+                    &[CpuModel::R4400, CpuModel::R5000]
+                } else {
+                    &[CpuModel::R4400]
+                }
+            }
             MachineProfile::O2Ip32 => &[CpuModel::R5000, CpuModel::R10000],
             MachineProfile::Indigo2Ip28 => &[CpuModel::R10000],
             MachineProfile::OctaneIp30 => &CpuModel::OCTANE,
-            #[cfg(iris_cpu_parts)]
+            #[cfg(iris_modern_models)]
+            MachineProfile::Origin200Ip29
+            | MachineProfile::Origin2000Ip27
+            | MachineProfile::Onyx2Ip27 => &[CpuModel::R10000, CpuModel::R12000],
+            #[cfg(iris_modern_models)]
+            MachineProfile::FuelIp34 => &[CpuModel::R14000],
+            #[cfg(iris_modern_models)]
+            MachineProfile::TezroIp53 => &[CpuModel::R16000],
+            #[cfg(iris_modern_models)]
+            MachineProfile::Origin3200Ip35 | MachineProfile::Onyx3000Ip35 => &[CpuModel::R12000],
+            #[cfg(all(iris_cpu_parts, not(iris_modern_models)))]
             _ => &[],
         }
     }
 
     pub fn cycle_profile(&mut self) {
         self.profile = next(self.profile, &Self::PROFILES);
+        self.platform_prom = None;
+        self.cpu_part = None;
+        self.nodes = 1;
         if self
             .graphics
             .is_some_and(|board| !self.graphics_choices().contains(&board))
@@ -202,16 +241,17 @@ impl MachineSettings {
         if !self.newport() {
             self.heads = 1;
         }
-        if self.profile != MachineProfile::OctaneIp30 {
-            self.cpus = 1;
-        }
+        self.cpus = self.cpu_counts()[0];
         if !self.cpus().contains(&self.cpu) {
             self.cpu = self.cpus()[0];
         }
         if !self.ram_sizes().contains(&self.ram_mb) {
             self.ram_mb = self
-                .ram_mb
-                .clamp(self.ram_sizes()[0], *self.ram_sizes().last().unwrap());
+                .ram_sizes()
+                .iter()
+                .copied()
+                .find(|&size| size >= self.ram_mb)
+                .unwrap_or(*self.ram_sizes().last().unwrap());
         }
     }
 
@@ -219,6 +259,7 @@ impl MachineSettings {
         self.ram_mb = next(self.ram_mb, self.ram_sizes());
     }
     pub fn cycle_cpu(&mut self) {
+        self.cpu_part = None;
         let available: Vec<_> = self
             .cpus()
             .iter()
@@ -235,10 +276,22 @@ impl MachineSettings {
         if !Self::PROFILES.contains(&self.profile) {
             return Err("This machine model is not supported by Prismatic".into());
         }
-        if !(1..=2).contains(&self.cpus)
-            || (self.cpus != 1 && self.profile != MachineProfile::OctaneIp30)
-        {
-            return Err("Only Octane supports two CPUs; other models require one CPU".into());
+        if !self.cpu_counts().contains(&self.cpus) {
+            return Err(format!(
+                "{} accepts CPU counts {:?}",
+                self.profile.label(),
+                self.cpu_counts()
+            ));
+        }
+        if !(1..=if self.numa() { 2 } else { 1 }).contains(&self.nodes) {
+            return Err("This machine does not support the selected node count".into());
+        }
+        #[cfg(iris_cpu_parts)]
+        if let Some(part) = &self.cpu_part {
+            let part = self.profile.part(Some(part))?;
+            if crate::machines::family(part) != self.cpu {
+                return Err("Processor part and CPU family disagree".into());
+            }
         }
         if self
             .graphics
@@ -272,19 +325,34 @@ impl MachineSettings {
     pub fn banks(&self) -> Result<[u32; MAX_BANKS], String> {
         self.validate()?;
         let mut remaining = self.ram_mb;
-        let mut banks = [0; 4];
+        let mut banks = [0; MAX_BANKS];
+        #[cfg(iris_modern_models)]
+        let count = self.profile.memory_banks();
+        #[cfg(not(iris_modern_models))]
+        let count = 4;
         let max_bank = match self.profile {
             MachineProfile::IndyIp24 | MachineProfile::Indigo2Ip22 => 128,
             MachineProfile::O2Ip32 => 256,
             MachineProfile::OctaneIp30 => 2048,
+            #[cfg(iris_modern_models)]
+            MachineProfile::TezroIp53 => 1024,
             _ => 512,
         };
-        for bank in &mut banks {
+        #[cfg(iris_modern_models)]
+        let avoid_256 = self.profile.is_ip27()
+            && self
+                .profile
+                .part(self.cpu_part.as_deref().or(self.cpu.iris()?.as_deref()))?
+                == &iris::cpu::parts::R10000_180;
+        #[cfg(not(iris_modern_models))]
+        let avoid_256 = false;
+        for bank in &mut banks[..count] {
             *bank = self
                 .profile
                 .bank_sizes()
                 .iter()
                 .copied()
+                .filter(|&size| !(avoid_256 && size == 256))
                 .filter(|&size| {
                     size <= remaining && size <= max_bank
                         // Iris's IP28 PROM rejects 32/128 MB single-bank layouts.
@@ -296,9 +364,9 @@ impl MachineSettings {
             remaining -= *bank;
         }
         if remaining != 0 {
-            return Err("RAM does not fit the machine's four banks".into());
+            return Err("RAM does not fit this machine's memory banks".into());
         }
-        Ok(banks_from4(banks))
+        Ok(banks)
     }
 
     pub fn summary(&self) -> String {
@@ -311,9 +379,19 @@ impl MachineSettings {
             #[cfg(iris_cpu_parts)]
             _ => self.profile.label(),
         };
-        let cpu = self.cpu.label().trim_start_matches("MIPS ");
-        let processors = if self.cpus == 2 { "2x " } else { "" };
-        format!("{model} / {processors}{cpu} / {} MB", self.ram_mb)
+        let cpu = self
+            .cpu_part
+            .as_deref()
+            .unwrap_or(self.cpu.label().trim_start_matches("MIPS "));
+        let processors = if self.processor_count() > 1 {
+            format!("{}x ", self.processor_count())
+        } else {
+            String::new()
+        };
+        format!(
+            "{model} / {processors}{cpu} / {} MB",
+            self.ram_mb * u32::from(self.node_count())
+        )
     }
 
     pub fn state_dir(&self, preferences: &Path, override_dir: Option<&Path>) -> PathBuf {
@@ -339,11 +417,43 @@ impl MachineSettings {
         use GraphicsBoard::*;
         match self.profile {
             MachineProfile::IndyIp24 => &[Newport, Xz],
-            MachineProfile::Indigo2Ip22 => &GraphicsBoard::ALL,
+            MachineProfile::Indigo2Ip22 => {
+                &[Newport, Xz, Extreme, SolidImpact, HighImpact, MaxImpact]
+            }
             MachineProfile::Indigo2Ip28 => &[SolidImpact, HighImpact, MaxImpact],
-            MachineProfile::OctaneIp30 => &[SolidImpact, HighImpact, MaxImpact, V6, V8, V10, V12],
+            MachineProfile::OctaneIp30 => {
+                #[cfg(iris_modern_models)]
+                {
+                    &[
+                        SolidImpact,
+                        HighImpact,
+                        MaxImpact,
+                        V6,
+                        V8,
+                        V10,
+                        V12,
+                        GraphicsBoard::None,
+                    ]
+                }
+                #[cfg(not(iris_modern_models))]
+                {
+                    &[SolidImpact, HighImpact, MaxImpact, V6, V8, V10, V12]
+                }
+            }
             MachineProfile::O2Ip32 => &[], // Integrated GBE, not a selectable board.
-            #[cfg(iris_cpu_parts)]
+            #[cfg(iris_modern_models)]
+            MachineProfile::Origin200Ip29
+            | MachineProfile::Origin2000Ip27
+            | MachineProfile::Origin3200Ip35 => &[GraphicsBoard::None],
+            #[cfg(iris_modern_models)]
+            MachineProfile::Onyx2Ip27 => &[Ir2, Ir2x2, Ir2e, Ir2ex2, GraphicsBoard::None],
+            #[cfg(iris_modern_models)]
+            MachineProfile::FuelIp34 => &[V12, V10, GraphicsBoard::None],
+            #[cfg(iris_modern_models)]
+            MachineProfile::TezroIp53 => &[V12, GraphicsBoard::None],
+            #[cfg(iris_modern_models)]
+            MachineProfile::Onyx3000Ip35 => &[Ir3, V12],
+            #[cfg(all(iris_cpu_parts, not(iris_modern_models)))]
             _ => &[],
         }
     }
@@ -355,7 +465,9 @@ impl MachineSettings {
                 Some(GraphicsBoard::SolidImpact)
             }
             MachineProfile::O2Ip32 => None,
-            #[cfg(iris_cpu_parts)]
+            #[cfg(iris_modern_models)]
+            _ => self.graphics_choices().first().copied(),
+            #[cfg(all(iris_cpu_parts, not(iris_modern_models)))]
             _ => None,
         })
     }
@@ -374,16 +486,18 @@ impl MachineSettings {
     }
 
     pub fn supports_prom_override(&self) -> bool {
-        matches!(
-            self.profile,
-            MachineProfile::O2Ip32 | MachineProfile::OctaneIp30
-        )
+        !self.legacy_devices()
+            || matches!(
+                self.profile,
+                MachineProfile::O2Ip32 | MachineProfile::OctaneIp30
+            )
     }
 
     pub fn prom_path(&self) -> Option<&str> {
         match self.profile {
             MachineProfile::O2Ip32 => self.o2_prom.as_deref(),
             MachineProfile::OctaneIp30 => self.octane_prom.as_deref(),
+            _ if !self.legacy_devices() => self.platform_prom.as_deref(),
             _ => None,
         }
     }
@@ -392,7 +506,7 @@ impl MachineSettings {
         match self.profile {
             MachineProfile::O2Ip32 => self.o2_prom = path,
             MachineProfile::OctaneIp30 => self.octane_prom = path,
-            _ => {}
+            _ => self.platform_prom = path,
         }
     }
 
@@ -427,9 +541,13 @@ impl MachineSettings {
     }
 
     fn resolve_prom_paths(&mut self, directory: &Path) -> Result<(), String> {
-        for path in [&mut self.o2_prom, &mut self.octane_prom]
-            .into_iter()
-            .flatten()
+        for path in [
+            &mut self.o2_prom,
+            &mut self.octane_prom,
+            &mut self.platform_prom,
+        ]
+        .into_iter()
+        .flatten()
         {
             if Path::new(path).is_relative() {
                 *path = std::path::absolute(directory.join(&*path))
@@ -452,12 +570,13 @@ pub fn inspect_prom(profile: MachineProfile, path: &Path) -> Result<String, Stri
     let valid_size = match profile {
         MachineProfile::O2Ip32 => metadata.len() == 512 * 1024,
         MachineProfile::OctaneIp30 => (512 * 1024..=1024 * 1024).contains(&metadata.len()),
-        _ => return Err("This machine uses bundled firmware".into()),
+        _ => (64 * 1024..=64 * 1024 * 1024).contains(&metadata.len()),
     };
     if !metadata.is_file() || !valid_size {
         return Err(match profile {
             MachineProfile::O2Ip32 => "O2 requires a 512 KiB IP32 PROM image",
-            _ => "Octane requires an IP30 PROM image (512 KiB to 1 MiB)",
+            MachineProfile::OctaneIp30 => "Octane requires an IP30 PROM image (512 KiB to 1 MiB)",
+            _ => "Choose a regular PROM image from 64 KiB through 64 MiB; Iris checks its platform format at startup",
         }
         .into());
     }
@@ -593,6 +712,7 @@ pub struct AdvancedSettings {
     pub serial_logging: SerialLogging,
     pub expert: crate::expert::ExpertSettings,
     pub extensions: crate::extensions::ExtensionsSettings,
+    pub runtime: crate::runtime::RuntimeSettings,
 }
 
 impl Default for AdvancedSettings {
@@ -605,6 +725,7 @@ impl Default for AdvancedSettings {
             serial_logging: SerialLogging::Off,
             expert: crate::expert::ExpertSettings::default(),
             extensions: Default::default(),
+            runtime: Default::default(),
         }
     }
 }
@@ -656,6 +777,7 @@ impl AdvancedSettings {
 
     pub fn validate(&self) -> Result<(), String> {
         self.expert.validate()?;
+        self.runtime.validate()?;
         // The file also accepts individual years between the menu presets.
         if !(-30..=0).contains(&self.clock_offset_years) {
             return Err("Advanced clock offset must be between -30 and 0 years".into());
@@ -846,6 +968,7 @@ impl Settings {
                     saved.machine.resolve_prom_paths(parent)?;
                     saved.network.resolve_paths(parent)?;
                     saved.advanced.expert.resolve_paths(parent)?;
+                    saved.advanced.runtime.resolve_paths(parent)?;
                 }
                 if let Some(label) = settings.machine_label.clone() {
                     settings.select_machine(&label)?;
@@ -863,6 +986,7 @@ impl Settings {
                 settings.network.validate(settings.machine.profile)?;
                 settings.network.resolve_paths(parent)?;
                 settings.advanced.expert.resolve_paths(parent)?;
+                settings.advanced.runtime.resolve_paths(parent)?;
                 settings
                     .media
                     .resolve_paths(path.parent().unwrap_or(Path::new(".")))?;
@@ -901,12 +1025,14 @@ impl Settings {
             let mut saved = self.clone();
             saved.network.resolve_paths(parent)?;
             saved.advanced.expert.resolve_paths(parent)?;
+            saved.advanced.runtime.resolve_paths(parent)?;
             saved.remember_machine();
             for machine in saved.machines.values_mut() {
                 machine.media.resolve_paths(parent)?;
                 machine.machine.resolve_prom_paths(parent)?;
                 machine.network.resolve_paths(parent)?;
                 machine.advanced.expert.resolve_paths(parent)?;
+                machine.advanced.runtime.resolve_paths(parent)?;
             }
             let own_catalog = saved.machines.clone();
             saved.merge_machine_catalog(path)?;
@@ -925,8 +1051,9 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iris::config::banks_from4;
 
-    #[cfg(iris_cpu_parts)]
+    #[cfg(all(iris_cpu_parts, not(iris_modern_models)))]
     #[test]
     fn newer_core_models_require_frontend_support() {
         let unsupported = MachineSettings {
@@ -1135,7 +1262,7 @@ mod tests {
                 continue;
             }
             let saved = fs::read(&path).unwrap();
-            for profile in MachineSettings::PROFILES {
+            for profile in MachineSettings::LEGACY_PROFILES {
                 if profile == MachineProfile::OctaneIp30 {
                     continue;
                 }
@@ -1148,7 +1275,7 @@ mod tests {
             }
             let mut moved = settings.machine.clone();
             moved.cycle_profile();
-            assert_eq!(moved.cpu, CpuModel::R4400);
+            assert!(moved.cpus().contains(&moved.cpu));
             assert_eq!(moved.cpus, 1);
             moved.validate().unwrap();
         }
@@ -1184,7 +1311,7 @@ mod tests {
             assert!(settings.save(&path).is_err());
             assert_eq!(fs::read(&path).unwrap(), saved);
             settings.machine.heads = 1;
-            for profile in MachineSettings::PROFILES {
+            for profile in MachineSettings::LEGACY_PROFILES {
                 if profile == MachineProfile::OctaneIp30 {
                     continue;
                 }
@@ -1195,8 +1322,12 @@ mod tests {
                 assert!(other.validate().is_err());
             }
             let mut moved = loaded.machine;
-            moved.cycle_profile(); // Octane wraps to Indy and selects Newport.
-            assert_eq!(moved.graphics_board(), Some(GraphicsBoard::Newport));
+            moved.cycle_profile();
+            assert!(
+                moved
+                    .graphics_choices()
+                    .contains(&moved.graphics_board().unwrap())
+            );
             moved.validate().unwrap();
         }
     }
@@ -1222,8 +1353,13 @@ mod tests {
         machine.cpus = 2;
         machine.ram_mb = 8192;
         machine.cycle_profile();
-        assert_eq!((machine.cpus, machine.ram_mb), (1, 256));
-        assert_eq!(machine.graphics_board(), Some(GraphicsBoard::Newport));
+        assert_eq!(machine.cpus, 1);
+        assert!(machine.ram_sizes().contains(&machine.ram_mb));
+        assert!(
+            machine
+                .graphics_choices()
+                .contains(&machine.graphics_board().unwrap())
+        );
         machine.validate().unwrap();
     }
 
@@ -1487,7 +1623,7 @@ mod tests {
             "future_option = true",
             "[machine]\nram_mb = 0",
             "[machine]\nprofile = 'o2_ip32'",
-            "[machine]\nprofile = 'indigo2_ip22'\ncpu = 'r5000'",
+            "[machine]\nprofile = 'indigo2_ip22'\ncpu = 'r10000'",
             "[machine]\nunknown = true",
         ] {
             fs::write(&path, text).unwrap();
@@ -1524,7 +1660,14 @@ mod tests {
         };
         hardware.cycle_profile();
         assert_eq!(hardware.profile, MachineProfile::Indigo2Ip22);
-        assert_eq!(hardware.cpu, CpuModel::R4400);
+        assert_eq!(
+            hardware.cpu,
+            if cfg!(iris_cpu_parts) {
+                CpuModel::R5000
+            } else {
+                CpuModel::R4400
+            }
+        );
         assert_eq!(hardware.ram_mb, 128);
         hardware.ram_mb = 512;
         for profile in [
@@ -1539,6 +1682,9 @@ mod tests {
             hardware.validate().unwrap();
         }
         hardware.cycle_profile();
+        while hardware.profile != MachineProfile::IndyIp24 {
+            hardware.cycle_profile();
+        }
         assert_eq!(hardware.ram_mb, 256);
         hardware.cycle_ram();
         assert_eq!(hardware.ram_mb, 32);
@@ -1563,7 +1709,7 @@ mod tests {
     #[test]
     fn all_machine_state_paths_are_distinct() {
         let mut paths = std::collections::HashSet::new();
-        for profile in MachineSettings::PROFILES {
+        for profile in MachineSettings::LEGACY_PROFILES {
             let hardware = MachineSettings {
                 profile,
                 ..Default::default()

@@ -8,7 +8,8 @@
 - [Experimental checkpoints](#experimental-checkpoints)
 
 Enable **General > Tinker** and open **Extensions** with Left/Right. Its topic
-sub-tabs are **Hardware**, **Storage**, **Devices** and **Checkpoints**. Click a
+sub-tabs group **Hardware**, **Storage**, **Devices**, **Checkpoints**,
+**Platform**, **Render**, **Disks**, **PCI**, **9P**, **Ports** and **Audio**. Click a
 sub-tab or use **Tab / Shift+Tab** to switch topics; Left/Right switches main
 sections. Switching topics keeps pending edits and selects the first row.
 
@@ -40,7 +41,7 @@ settings active.
 
 Changing models keeps compatible graphics choices and resets incompatible ones
 to the model default. Selecting a board other than Newport resets the head count
-to one; leaving Octane resets the CPU count to one. Existing configurations with
+to one; changing models chooses a CPU count supported by the new platform. Existing configurations with
 no new keys retain their previous hardware defaults. The optional `graphics`
 key and `heads`/`cpus` keys live in `[machine]` and each label's machine stanza:
 
@@ -194,3 +195,73 @@ restored state. Keep normal guest backups and use checkpoints created locally
 through this menu; arbitrary Iris monitor snapshots are not accepted here.
 
 Related: [machine models](machines.md#supported-models), [media and disk overlays](media.md), [networking](networking.md).
+
+## Platform and rendering
+
+**Platform** exposes the emulated machine ID, Fuel PS/2/USB input, the IP35
+console, L1 revision/brick identity where supported, serial A/B/L1 log paths,
+log overwrite policy, and O2 mouse/ARCS FPU options. Optional blank values retain
+IRIS defaults. Firmware and controller storage remain managed per label.
+
+**Render** selects fragment workers, VPro tile size and, with a `wgpu` build,
+the raster processor and host GPU API. Tile sizes must be powers of two from 8
+to 256. Upstream currently gates Newport WGPU raster, so that option stays
+disabled for Newport. JIT compilation can be asynchronous or synchronous;
+synchronous compilation is available only with jitv2 and one guest CPU.
+SDL3 still owns the host window, events and presentation.
+
+## NVMe, Fibre Channel and Octane PCI boards
+
+**Disks** selects NVMe with index 0, or Fibre Channel loop IDs 0–125 with indices
+1–126. Enter an existing raw/CHD hard-disk path; blank disconnects that disk.
+Copy-on-write protection defaults on. Disabling protection permits writes to
+the base image. Each disk has its own volatile write-cache setting. The same
+image cannot be attached through multiple controllers, and disk leases exclude
+another Prismatic instance. These changes require a cold restart; the SCSI
+commit/reset and CD-tray actions do not operate on NVMe or FC disks.
+
+NVMe is available on O2 and Octane; FC is available on Octane and the IP35 brick
+machines. On Octane, configure **PCI** first: choose a board index, then a PCI
+shoehorn or cage, and optionally its Crossbow widget. Populate board indices
+in order. Choose the NVMe/FC board, slot and optional PCI bridge there. Widget
+or slot 0 means automatic assignment. On O2 only the NVMe bridge setting
+applies; on the IP35 bricks IRIS fixes the adapter's placement.
+
+**Storage > Disk write cache** applies to the selected SCSI hard disk. Off
+preserves Prismatic's original synchronous-write behavior. On enables Iris's
+volatile cache: a guest flush or periodic sync persists pending writes. It is
+saved per target and requires restart.
+
+## Virtio sharing and serial ports
+
+**9P** shares a host directory through virtio-9p. It defaults to read-only when
+enabled. Set its mount tag, GIO slot on Indy/Indigo2, UID/GID and ownership policy.
+Passthrough mappings use `guest:host[:count]` entries separated by commas;
+changing real host ownership requires the host process to have permission.
+
+**Ports** enables virtio serial, with 1–31 ports. Choose the port index, optional
+guest name and console flag, and a distinct loopback TCP port or Unix socket.
+A socket path replaces TCP. These are raw serial streams, separate from the
+firmware UARTs in Advanced. Save checks duplicate addresses; startup checks
+whether the host endpoints can be opened. Use different ports for concurrent
+machine labels.
+
+Both devices require guest drivers; stock IRIX does not provide virtio drivers.
+IRIS currently wires them on Indy, Indigo2, Octane and Tezro, but not O2, Fuel or
+Origin/Onyx. 9P requires a Unix host. GIO slots must not conflict with each
+other, Ultra64 or the second Newport head. Unavailable controls retain their
+saved preferences but are omitted from the effective core configuration.
+
+## Audio
+
+**Audio** controls output suppression, prebuffer duration and an optional WAV
+file. A WAV file **replaces SDL playback**; it is not a simultaneous recording
+switch. Tezro also offers its optional ICE1724 card and 2/4/6/8 source channels;
+SDL output is mixed to stereo by Iris's shared renderer. General's volume and
+mute continue to control SDL playback.
+
+All these runtime preferences belong to the selected machine label under
+`advanced.runtime`. The quoted keys map to specific supported IRIS settings;
+they are not an unrestricted core configuration override. Paths resolve relative
+to `prismatic.cfg`. Save validates before persisting, Discard leaves the running
+machine alone, and device changes follow the normal restart confirmation.

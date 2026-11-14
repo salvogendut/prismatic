@@ -36,6 +36,11 @@ pub fn report() -> String {
         ("live network changes", LIVE_NETWORK),
         ("private stream networking", STREAM_NETWORK),
         ("Octane R12000/R14000", cfg!(iris_octane_cpus)),
+        ("modern machine profiles", cfg!(iris_modern_models)),
+        ("HTTP CD media", cfg!(iris_http_media)),
+        ("platform PTY/Off routing", cfg!(iris_platform_serial)),
+        ("new-platform live SCSI", cfg!(iris_frontend_bus)),
+        ("headless CPU counters", cfg!(iris_headless_counters)),
     ];
     let unavailable: Vec<_> = features
         .iter()
@@ -75,6 +80,7 @@ pub enum CpuModel {
     R10000,
     R12000,
     R14000,
+    R16000,
 }
 impl CpuModel {
     pub const OCTANE: [Self; 3] = [Self::R10000, Self::R12000, Self::R14000];
@@ -85,6 +91,7 @@ impl CpuModel {
             Self::R10000 => "MIPS R10000",
             Self::R12000 => "MIPS R12000",
             Self::R14000 => "MIPS R14000",
+            Self::R16000 => "MIPS R16000",
         }
     }
     #[cfg(not(iris_cpu_parts))]
@@ -98,6 +105,7 @@ impl CpuModel {
             Self::R12000 => Core::R12000,
             #[cfg(iris_octane_cpus)]
             Self::R14000 => Core::R14000,
+            Self::R16000 => return Err("R16000 requires a newer Iris core".into()),
             #[cfg(not(iris_octane_cpus))]
             _ => {
                 return Err(format!(
@@ -116,6 +124,7 @@ impl CpuModel {
                 Self::R10000 => "r10000",
                 Self::R12000 => "r12000",
                 Self::R14000 => "r14000",
+                Self::R16000 => "r16000",
             }
             .into(),
         ))

@@ -161,10 +161,16 @@ impl Renderer for CaptureRenderer {
         live_fb_rgb: Option<&[u32]>,
         live_fb_aux: Option<&[u32]>,
     ) {
-        self.activity.signal(self.cpu_counters.update([
-            Some(stats.cycles),
-            stats.more_cpus[0].map(|(cycles, _)| cycles),
-        ]));
+        self.activity.signal(
+            self.cpu_counters.update(
+                std::iter::once(Some(stats.cycles)).chain(
+                    stats
+                        .more_cpus
+                        .iter()
+                        .map(|cpu| cpu.map(|(cycles, _)| cycles)),
+                ),
+            ),
+        );
         if stats.hb & 3 != 0 {
             self.activity.signal(activity::NET);
         }
@@ -214,6 +220,12 @@ pub fn machine_config(
     network: &crate::network::NetworkSettings,
 ) -> Result<MachineConfig, String> {
     media.validate_for(hardware.profile)?;
+    if media.scratch.slot.is_some() && (hardware.native_storage() || hardware.fibre_only()) {
+        return Err(
+            "Scratch media needs a frontend-accessible SCSI controller on this core/platform"
+                .into(),
+        );
+    }
     advanced.validate()?;
     let path = |name: &str| {
         state_dir
@@ -280,10 +292,15 @@ pub fn machine_config(
         config.octane.flash = Some(path("flash.bin")?);
     }
     config.graphics.heads = hardware.heads;
+    hardware.apply_platform(&mut config, state_dir)?;
+    if hardware.fibre_only() {
+        config.scsi = MachineConfig::default().scsi;
+    }
     network.apply(&mut config)?;
     advanced.extensions.validate(hardware, media, network)?;
     advanced.extensions.apply(&mut config);
     advanced.expert.apply(&mut config)?;
+    advanced.runtime.apply(&mut config, hardware)?;
     config.validate()?;
     Ok(config)
 }
@@ -393,11 +410,15 @@ impl Emulator {
         let audio = Arc::new(crate::audio::Inbox::default());
         #[cfg(iris_audio)]
         {
-            config.audio.output = Some(audio.clone());
+            if config.audio.file.is_none() {
+                config.audio.output = Some(audio.clone());
+            }
         }
         // Attach explicitly before CPU start: Iris's CLI constructor exits the
         // process on media errors. The frontend must report them in the window.
-        config.scsi.clear();
+        if !hardware.native_storage() && !hardware.fibre_only() {
+            config.scsi.clear();
+        }
         let media = media.clone();
         let mut hardware = hardware.clone();
         let has_media = !media.devices.is_empty() || media.scratch.slot.is_some();
@@ -429,7 +450,19 @@ impl Emulator {
                         .map_err(|e| format!("Cannot create machine state directory: {e}"))?;
                     let _state_lease =
                         crate::instance::Lease::acquire(&state_dir.join("machine.lock"))?;
-                    let _disk_leases = crate::instance::disks(&media)?;
+                    crate::runtime::RuntimeSettings::validate_files(&config, &media)?;
+                    let mut _disk_leases = crate::instance::disks(&media)?;
+                    for path in crate::runtime::RuntimeSettings::disks(&config) {
+                        _disk_leases.push(crate::instance::Lease::disk(Path::new(path))?);
+                    }
+                    if hardware.native_storage() && !hardware.fibre_only() {
+                        // New platform constructors attach media through Iris's
+                        // fallible common loader. Validate first, then let the
+                        // core own its private storage controllers.
+                        let mut checked = media.clone();
+                        checked.validate_files()?;
+                        config.scsi = checked.iris_devices().into_iter().collect();
+                    }
                     let mut install_server = if network.mode == crate::network::NetMode::Stream && network.installation.enabled() {
                         worker_status.lock().unwrap().runtime = "Checking installation media and starting server...".into();
                         let server = crate::installation::Server::start(&network.installation, &worker_stop)?;
@@ -440,6 +473,7 @@ impl Emulator {
                     prepare_serial_log(&config)?;
                     expert.prepare(&config, &state_dir)?;
                     let serial = crate::serial::Endpoints::prepare(&mut config, &expert)?;
+                    crate::runtime::RuntimeSettings::prepare_connections(&config)?;
                     // Iris's Indigo2 fallback also searches the current directory.
                     // Give it the bundled image explicitly so a local ROM cannot
                     // silently change a configured machine's firmware.
@@ -466,21 +500,21 @@ impl Emulator {
                     // Apply only saved settings, with the state lease held and
                     // the old workstation gone. Iris owns the firmware formats.
                     #[cfg(iris_prom)]
-                    iris::prom_env::prepare_environment(
+                    if MachineSettings::LEGACY_PROFILES.contains(&hardware.profile) { iris::prom_env::prepare_environment(
                         &config,
                         hardware.prom_boot.environment().map(|(loader, filename, options)| [loader, filename, options]),
                         hardware.prom_console.environment(),
-                    )?;
+                    )?; }
                     let mut owned = OwnedMachine::new(iris::workstation::build(config)?);
                     // O2/Octane constructors currently use a default PS/2 layout.
                     // Set the shared controller before any CPU thread can query it.
                     owned.machine.get_ps2().set_layout(hardware.keyboard);
-                    media::attach(
+                    if !hardware.native_storage() { media::attach(
                         owned.machine.as_mut(),
                         &media,
                         &worker_activity,
                         &mut owned.media_errors,
-                    )?;
+                    )?; }
                     let _scratch_lease = crate::storage::attach_scratch(
                         owned.machine.as_mut(),
                         &media,
@@ -497,15 +531,15 @@ impl Emulator {
                     let mut services = crate::expert::Services::start(&expert, &state_dir)?;
                     {
                         let _guard = owned.slot.lock();
-                        let display = owned
-                            .machine
-                            .get_display()
-                            .ok_or("Iris did not create a display")?;
+                        if let Some(display) = owned.machine.get_display() {
                         *display.renderer_slot().lock() = Some(Box::new(CaptureRenderer::new(
                             worker_frames.clone(),
                             worker_activity.clone(),
                             0,
                         )));
+                        } else if !hardware.serial_only() {
+                            return Err("Iris did not create the selected graphics display".into());
+                        }
                         if hardware.heads == 2 {
                             let second = owned
                                 .machine
@@ -513,7 +547,7 @@ impl Emulator {
                                 .ok_or("Iris did not create the second Newport display")?;
                             *second.renderer_slot().lock() = Some(Box::new(CaptureRenderer::new(
                                 worker_frames,
-                                worker_activity,
+                                worker_activity.clone(),
                                 1,
                             )));
                         }
@@ -536,12 +570,20 @@ impl Emulator {
                         return Err("Iris could not bind the configured monitor port".into());
                     }
                     let mut paused = false;
+                    #[cfg(iris_cpu_counters)]
+                    let mut cpu_activity = activity::CpuCounters::default();
+                    let mut net_frames = 0;
                     let final_phase = loop {
                         if worker_stop.load(Ordering::Acquire) {
                             break Phase::Stopped;
                         }
                         {
                             let _guard = owned.slot.lock();
+                            #[cfg(iris_cpu_counters)]
+                            worker_activity.signal(cpu_activity.update(owned.machine.cpu_counters().into_iter().map(|(cycles, _)| Some(cycles.retired()))));
+                            let latest_net = owned.machine.net_guest_frames();
+                            if latest_net != net_frames { worker_activity.signal(activity::NET); }
+                            net_frames = latest_net;
                             // A monitor pause also stops the CPU. Only the core's
                             // completed power-off event may end the worker here.
                             if crate::compat::powered_off(owned.machine.as_ref()) {
@@ -746,11 +788,92 @@ mod tests {
     static MACHINE_TEST: Mutex<()> = Mutex::new(());
 
     #[test]
+    #[ignore = "boots seven real bundled PROMs; run explicitly for model integration"]
+    #[cfg(all(iris_modern_models, iris_cpu_counters, iris_embedded_prom))]
+    fn new_platforms_start_execute_pause_and_release_serial_ports() {
+        let _serial = MACHINE_TEST.lock().unwrap();
+        for profile in MachineSettings::PROFILES
+            .into_iter()
+            .filter(|p| !MachineSettings::LEGACY_PROFILES.contains(p))
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut hardware = MachineSettings {
+                profile,
+                ..Default::default()
+            };
+            hardware.cpu = hardware.cpus()[0];
+            hardware.ram_mb = hardware.ram_sizes()[0];
+            let mut emulator = Emulator::spawn(
+                dir.path(),
+                &hardware,
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+            )
+            .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while emulator.status().phase == Phase::Starting && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(20));
+            }
+            assert_eq!(emulator.status().phase, Phase::Running, "{profile:?}");
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut executed = false;
+            let counters_available = cfg!(iris_headless_counters) || !hardware.serial_only();
+            while counters_available && Instant::now() < deadline {
+                if emulator.activity.take() & crate::activity::cpu(0) != 0 {
+                    executed = true;
+                    break;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            assert!(
+                !counters_available || executed,
+                "{profile:?}: no retired CPU instructions"
+            );
+            eprintln!(
+                "{profile:?}: started bundled PROM, CPU telemetry observed: {executed}; {}",
+                emulator.status().runtime
+            );
+            emulator.request_pause(true).unwrap();
+            let pause_deadline = Instant::now() + Duration::from_secs(10);
+            while emulator.status().phase != Phase::Paused && Instant::now() < pause_deadline {
+                thread::sleep(Duration::from_millis(20));
+            }
+            assert_eq!(emulator.status().phase, Phase::Paused, "{profile:?}");
+            let ports: Vec<std::net::SocketAddr> = emulator
+                .status()
+                .runtime
+                .lines()
+                .filter(|line| line.starts_with("Serial "))
+                .flat_map(str::split_whitespace)
+                .filter_map(|word| word.parse().ok())
+                .collect();
+            emulator.request_stop();
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while !emulator.finished() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(20));
+            }
+            assert!(emulator.finished(), "{profile:?}: stop timeout");
+            assert!(
+                !matches!(emulator.status().phase, Phase::Failed(_)),
+                "{profile:?}: {:?}",
+                emulator.status().phase
+            );
+            for address in ports {
+                assert!(
+                    std::net::TcpListener::bind(address).is_ok(),
+                    "{profile:?}: did not release {address}"
+                );
+            }
+        }
+    }
+
+    #[test]
     #[cfg(iris_prom)]
     fn console_preparation_is_optional_and_validates_all_octane_files_before_writing() {
         use iris::prom_env::{Console, prepare_environment};
         let dir = tempfile::tempdir().unwrap();
-        for profile in MachineSettings::PROFILES {
+        for profile in MachineSettings::LEGACY_PROFILES {
             let state = dir.path().join(format!("{profile:?}"));
             let mut hardware = MachineSettings {
                 profile,
@@ -833,7 +956,7 @@ mod tests {
     fn prom_boot_preparation_is_offline_atomic_and_errors_reach_the_ui() {
         use crate::settings::PromBoot;
         let dir = tempfile::tempdir().unwrap();
-        for profile in MachineSettings::PROFILES {
+        for profile in MachineSettings::LEGACY_PROFILES {
             let state = dir.path().join(format!("{profile:?}"));
             std::fs::create_dir(&state).unwrap();
             let mut hardware = MachineSettings {
@@ -1428,7 +1551,7 @@ mod tests {
     #[cfg(all(iris_serial, iris_firmware))]
     fn worker_ptys_survive_pause_and_close_when_each_model_is_unloaded() {
         let _serial = MACHINE_TEST.lock().unwrap();
-        for profile in MachineSettings::PROFILES {
+        for profile in MachineSettings::LEGACY_PROFILES {
             let dir = tempfile::tempdir().unwrap();
             let mut hardware = MachineSettings {
                 profile,
@@ -1926,7 +2049,7 @@ mod tests {
 
     #[test]
     fn all_extensions_map_to_valid_core_configuration() {
-        for profile in MachineSettings::PROFILES {
+        for profile in MachineSettings::LEGACY_PROFILES {
             let mut hardware = MachineSettings {
                 profile,
                 ..Default::default()

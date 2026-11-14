@@ -9,6 +9,14 @@ pub struct Lease {
     _file: File,
 }
 
+impl Drop for Lease {
+    fn drop(&mut self) {
+        // Closing our descriptor alone does not release a flock while a
+        // concurrently forked child still holds the same open description.
+        let _ = self._file.unlock();
+    }
+}
+
 impl Lease {
     pub fn disk(path: &Path) -> Result<Self, String> {
         let base = std::fs::canonicalize(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -58,5 +66,18 @@ mod tests {
         assert!(Lease::acquire(&path).is_err());
         drop(lease);
         assert!(Lease::acquire(&path).is_ok());
+    }
+
+    #[test]
+    fn releasing_a_lease_unlocks_even_while_an_inherited_description_survives() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("machine.lock");
+        let lease = Lease::acquire(&path).unwrap();
+        let inherited = lease._file.try_clone().unwrap();
+        drop(lease);
+        let next = Lease::acquire(&path).unwrap();
+        drop(inherited);
+        assert!(Lease::acquire(&path).is_err());
+        drop(next);
     }
 }

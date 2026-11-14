@@ -28,7 +28,7 @@ pub struct Presentation<'a> {
     pub status: &'a str,
     pub placeholder: Option<&'a str>,
     pub captured: bool,
-    pub leds: u64,
+    pub leds: u128,
     pub media: &'a MediaSettings,
     pub running: bool,
     pub debug_lines: &'a [String],
@@ -182,6 +182,19 @@ pub fn draw(
         let y = HEIGHT as i32 / 2 - 80;
         panel(canvas, Rect::new(x, y, 720, 160))?;
         let (title, hint) = match edit.field {
+            crate::overlay::TextField::CdUrl(_) => (
+                "Remote CD image",
+                "HTTP(S) URL to cooked ISO9660/EFS data. Server must support byte ranges; CHDs must be downloaded first.",
+            ),
+            crate::overlay::TextField::Runtime(topic, row, index) => {
+                let field = crate::runtime::fields(
+                    topic,
+                    index,
+                    &overlay.session.as_ref().unwrap().draft.machine,
+                )
+                .remove(row);
+                (field.label, field.hint)
+            }
             crate::overlay::TextField::DiskSize => (
                 "Disk capacity (MiB)",
                 "1 to 1048576 MiB. 1024 MiB = 1 GiB. The guest must partition and format the disk.",
@@ -380,7 +393,7 @@ fn overlay_hints(session: &crate::overlay::Session) -> Vec<String> {
                 session.draft.machine.prom_console.hint(session.draft.machine.profile).into()
             } else if session.row == 7 {
                 session.draft.machine.prom_path().map(|p| short_ascii(p, 100)).unwrap_or_else(||
-                    if crate::compat::FIRMWARE { "All models include bundled firmware. O2 and Octane also accept external PROMs.".into() } else { "This Iris build needs external O2/Octane PROMs. Choose file to select one.".into() })
+                    if crate::compat::FIRMWARE { "The current core bundles firmware. O2, Octane and the newer platforms also accept external PROMs.".into() } else { "This Iris build needs external O2/Octane PROMs. Choose file to select one.".into() })
             } else if session.row >= 10 {
                 "Audio and volume apply on Save without restarting. Enter cycles volume down by 10%.".into()
             } else { "Machine changes keep compatible CPU/RAM choices; other values are adjusted.".into() },
@@ -413,7 +426,7 @@ fn overlay_hints(session: &crate::overlay::Session) -> Vec<String> {
         }.into(), "Shared capture preferences. Save applies to the next recording without restarting.".into()],
         Tab::Advanced if session.advanced_page != crate::expert::Page::Core => vec![crate::expert::hint(session.advanced_page, session.row).into(), "Saved per machine label. Setting changes take effect on the next boot/restart.".into()],
         Tab::Advanced => vec![match session.row {
-            0 if !session.draft.machine.newport() => "GR2, IMPACT and GBE video modes are controlled by the PROM and guest OS.",
+            0 if !session.draft.machine.newport() => "Non-Newport video modes are controlled by the PROM and guest OS.",
             0 => "Sets the initial Newport video mode; the guest may change it later.",
             1 if !session.draft.machine.newport() => "This machine uses Shadow cache. The Newport model preference is retained.",
             1 => "Auto selects the cache model for this build. Full/Shadow are expert overrides.",
@@ -425,6 +438,11 @@ fn overlay_hints(session: &crate::overlay::Session) -> Vec<String> {
             5 => "Bilinear filtering smooths the display when scaled; applies without restart.",
             _ => "Debug: Off, Screen (latest messages), Console (terminal). Applies on Save.",
         }.into(), "Core options require restart. Turning Tinker off keeps the saved values active.".into()],
+        Tab::Extensions if matches!(session.extensions_page, crate::extensions::Page::Runtime(_)) => {
+            if let crate::extensions::Page::Runtime(topic) = session.extensions_page {
+                vec![crate::runtime::fields(topic, session.runtime_index, &session.draft.machine)[session.row].hint.to_owned()]
+            } else { vec![] }
+        },
         Tab::Extensions if session.extensions_page == crate::extensions::Page::Devices => vec![match session.row {
             0..=2 => "VINO is modeled on Indy/Indigo2. Host camera opens on boot; unavailable cameras supply black frames and retry.",
             3..=5 => "DaynaPort uses its own NAT subnet and inherits NFS/PCAP at boot. Network edits require restart while enabled; port forwards target onboard Ethernet.",
@@ -438,8 +456,11 @@ fn overlay_hints(session: &crate::overlay::Session) -> Vec<String> {
         Tab::Extensions if session.extensions_page == crate::extensions::Page::Hardware => vec![match session.row {
             0 => "GR2/IMPACT compatibility depends on Iris and the guest OS; Newport is the default on Indy/IP22.",
             1 => "Two Newport heads appear side by side. Screenshots and GIFs include both heads.",
-            _ => "Octane supports one or two CPUs and up to 8192 MB RAM (set RAM in General).",
+            2 => "CPU count is per processor board. Octane permits 1/2; Tezro permits 1/2/4 depending on the selected part.",
+            3 => "Select an exact processor clock/cache variant offered by Iris for this machine.",
+            _ => "IP27/IP35 population: RAM in General is per node or C-brick; the status summary shows total RAM.",
         }.into(), "Hardware changes require restart. Turning Tinker off keeps these settings active.".into()],
+        Tab::Extensions if session.row == 8 => vec!["Volatile write cache for the selected hard disk. Off syncs every write; On relies on guest flushes and periodic sync. Saved per target; restart required.".into()],
         Tab::Extensions => vec![match session.row {
             0 | 1 => "Scratch is a persistent raw transfer drive with an SGI volume header, in this label's state folder.",
             2 => "Enter cycles the configured disk/CD targets used by the rows below.",
@@ -602,9 +623,12 @@ fn draw_overlay(
             || (session.tab == Tab::Extensions
                 && match session.extensions_page {
                     crate::extensions::Page::Hardware => true,
-                    crate::extensions::Page::Storage => index < 2 || index == 3 || index == 4,
+                    crate::extensions::Page::Storage => {
+                        index < 2 || index == 3 || index == 4 || index == 8
+                    }
                     crate::extensions::Page::Devices => index < 7,
                     crate::extensions::Page::Checkpoints => false,
+                    crate::extensions::Page::Runtime(_) => true,
                 });
         let disabled = session.unavailable(index).is_some();
         let grey = Color::RGB(116, 125, 138);
@@ -821,7 +845,18 @@ fn draw_dialog(
         Dialog::Media { choice, .. } => (
             "Choose media for this SCSI target",
             "Select a raw/CHD disk, or ISO9660/EFS/CHD CD-ROM.",
-            vec!["Hard disk", "CD-ROM", "Disconnect", "New disk...", "Cancel"],
+            vec![
+                "Hard disk",
+                "CD-ROM",
+                "Disconnect",
+                "New disk...",
+                if cfg!(iris_http_media) {
+                    "CD URL..."
+                } else {
+                    "URL unavailable"
+                },
+                "Cancel",
+            ],
             choice,
         ),
         Dialog::Checkpoint { operation, confirm } => (
@@ -1000,7 +1035,7 @@ fn draw_leds(
         text(canvas, 8, y + 7, label, Color::RGB(255, 96, 80))?;
     }
     let mut lamps = vec![("RUN".to_owned(), presentation.running, false, RUN_LED)];
-    for index in 0..settings.machine.cpus as usize {
+    for index in 0..settings.machine.processor_count() as usize {
         lamps.push((
             format!("CPU{index}"),
             presentation.leds & activity::cpu(index) != 0,

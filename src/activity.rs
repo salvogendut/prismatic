@@ -7,17 +7,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const NET: u64 = 1 << 2;
-pub fn cpu(index: usize) -> u64 {
-    1 << index
+pub const MAX_CPUS: usize = 16;
+pub const NET: u128 = 1 << MAX_CPUS;
+pub fn cpu(index: usize) -> u128 {
+    if index < MAX_CPUS { 1 << index } else { 0 }
 }
 
 #[derive(Default)]
-pub struct CpuCounters([u64; 2]);
+pub struct CpuCounters([u64; MAX_CPUS]);
 impl CpuCounters {
-    pub fn update(&mut self, cycles: [Option<u64>; 2]) -> u64 {
+    pub fn update(&mut self, cycles: impl IntoIterator<Item = Option<u64>>) -> u128 {
         let mut events = 0;
-        for (index, cycles) in cycles.into_iter().enumerate() {
+        for (index, cycles) in cycles.into_iter().take(MAX_CPUS).enumerate() {
             if let Some(cycles) = cycles {
                 if self.0[index] != cycles {
                     events |= cpu(index);
@@ -30,38 +31,40 @@ impl CpuCounters {
         events
     }
 }
-pub fn disk_read(id: u8) -> u64 {
-    1 << (3 + (id / 16 * 15 + id % 16 - 1) * 2)
+pub fn disk_read(id: u8) -> u128 {
+    1 << (MAX_CPUS as u8 + 1 + (id / 16 * 15 + id % 16 - 1) * 2)
 }
-pub fn disk_write(id: u8) -> u64 {
+pub fn disk_write(id: u8) -> u128 {
     disk_read(id) << 1
 }
 
 #[derive(Clone, Default)]
-pub struct Activity(Arc<AtomicU64>);
+pub struct Activity(Arc<[AtomicU64; 2]>);
 impl Activity {
-    pub fn signal(&self, bits: u64) {
-        self.0.fetch_or(bits, Ordering::Relaxed);
+    pub fn signal(&self, bits: u128) {
+        self.0[0].fetch_or(bits as u64, Ordering::Relaxed);
+        self.0[1].fetch_or((bits >> 64) as u64, Ordering::Relaxed);
     }
-    pub fn take(&self) -> u64 {
-        self.0.swap(0, Ordering::Relaxed)
+    pub fn take(&self) -> u128 {
+        u128::from(self.0[0].swap(0, Ordering::Relaxed))
+            | (u128::from(self.0[1].swap(0, Ordering::Relaxed)) << 64)
     }
 }
 
 pub struct Leds {
-    until: [Option<Instant>; 64],
-    pub lit: u64,
+    until: [Option<Instant>; 128],
+    pub lit: u128,
 }
 impl Default for Leds {
     fn default() -> Self {
         Self {
-            until: [None; 64],
+            until: [None; 128],
             lit: 0,
         }
     }
 }
 impl Leds {
-    pub fn update(&mut self, events: u64, now: Instant) -> bool {
+    pub fn update(&mut self, events: u128, now: Instant) -> bool {
         let previous = self.lit;
         self.lit = 0;
         for (bit, until) in self.until.iter_mut().enumerate() {
@@ -97,7 +100,7 @@ mod tests {
 
     #[test]
     fn all_thirty_targets_have_distinct_read_and_write_lamps() {
-        let mut bits = cpu(0) | cpu(1) | NET;
+        let mut bits = (0..MAX_CPUS).fold(NET, |bits, i| bits | cpu(i));
         for controller in 0..2 {
             for id in 1..=15 {
                 let slot = controller * 16 + id;
@@ -110,7 +113,10 @@ mod tests {
         let mut leds = Leds::default();
         leds.update(bits, Instant::now());
         assert_eq!(leds.lit, bits);
-        assert_eq!(bits.count_ones(), 63);
+        assert_eq!(bits.count_ones(), (MAX_CPUS + 61) as u32);
+        let activity = Activity::default();
+        activity.signal(bits);
+        assert_eq!(activity.take(), bits);
     }
 
     #[test]

@@ -218,3 +218,24 @@ owned network sessions. `build.rs` detects these interfaces in the source;
 Prismatic retains adapters for older cores. The supported machine list stays
 Indy, Indigo2 IP22/IP28, O2 and Octane. New core-only machine profiles are
 rejected when loading a Prismatic configuration.
+
+### Optional graphics builds
+
+`wgpu`, `gpujit` and `hostgl` pass through to the linked Iris core. For example:
+
+```sh
+make FEATURES=pcap,idle-pause,jitv2,wgpu,gpujit
+```
+
+They are opt-in and can require additional core dependencies. WGPU enables
+supported boards' compute raster controls in Extensions > Render; Newport's
+current upstream gate still applies. `gpujit` builds Iris's graphics JITs;
+`hostgl` builds its host GL support. These flags do not replace SDL3 or guarantee
+that every core/host combination implements every rendering path.
+
+The newer platform transport hooks are optional. A core without them uses
+Iris-owned TCP for L1/C/D and those machines' A/B UARTs; PTY/Off controls are
+unavailable there. New-platform SCSI boot media still attaches through Iris,
+but live SCSI/scratch actions require the embedding bus hooks. Upstream cores
+whose CPU counters depend on a display cannot report activity for serial-only
+Origin machines. Current `xiri` integration supplies independent counters.

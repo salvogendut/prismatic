@@ -111,3 +111,29 @@ Iris also maintains its shared draw-shape cache at
 `~/.iris/rex-jit-profile.bin`; `IRIS_REX_JIT_PROFILE` overrides that cache path.
 
 Related: [named machines](machines.md#named-machines), [network settings](networking.md#configuration-example), [disk overlays](media.md#disk-overlays-and-safe-changes), [checkpoints](extensions.md#experimental-checkpoints).
+
+## Additional per-machine runtime options
+
+New machine fields `cpu_part` and `nodes` retain the exact processor selection
+and IP27/IP35 node population. `platform_prom` is an optional external firmware
+path for the newer platforms; changing the machine model clears that override.
+The older `o2_prom` and `octane_prom` paths remain separate.
+
+Runtime options are saved as typed, quoted keys in each machine's
+`advanced.runtime` stanza. For example, an Octane with a protected NVMe disk:
+
+```toml
+[machines."NVMe Octane".advanced.runtime]
+"xio_board.0.kind" = "pci-cage"
+"nvme.path" = "/path/to/disk.raw"
+"nvme.overlay" = true
+"nvme.write_cache" = true
+"graphics.threads" = 4
+"audio.prebuf_ms" = 20
+```
+
+Use the overlays to create/edit these entries. Unknown keys and invalid types
+are rejected. Preferences for a device or optional API unavailable in the
+current machine/build remain in the file but are not applied. The disk, board
+and virtio-port *editor selections* are temporary UI state and are not saved.
+See [Extensions](extensions.md) for placement, driver and host requirements.

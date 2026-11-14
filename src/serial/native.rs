@@ -17,6 +17,14 @@ struct Endpoint {
 struct Transport(Mutex<Option<Arc<dyn SerialBackend>>>);
 
 impl SerialBackend for Transport {
+    #[cfg(iris_serial_retry)]
+    fn try_send_byte(&self, byte: u8) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_none_or(|backend| backend.try_send_byte(byte))
+    }
     fn send_byte(&self, byte: u8) {
         if let Some(backend) = self.0.lock().unwrap().as_ref() {
             backend.send_byte(byte);
@@ -74,7 +82,10 @@ impl Endpoint {
     }
 }
 
-pub struct Endpoints([Endpoint; 2]);
+pub struct Endpoints(
+    Vec<Endpoint>,
+    #[cfg(not(iris_platform_serial))] Option<super::legacy::Endpoints>,
+);
 
 impl Endpoints {
     /// Bind both endpoints before installing either. Failure releases everything.
@@ -82,24 +93,69 @@ impl Endpoints {
         config: &mut MachineConfig,
         settings: &crate::expert::ExpertSettings,
     ) -> Result<Self, String> {
+        #[cfg(not(iris_platform_serial))]
+        if (crate::settings::MachineSettings {
+            profile: config.machine.profile,
+            ..Default::default()
+        })
+        .platform_serial_lines()
+            > 0
+        {
+            return Ok(Self(
+                Vec::new(),
+                Some(super::legacy::Endpoints::prepare(config, settings)?),
+            ));
+        }
         let a = Endpoint::open(settings.serial_a, settings.serial_port_a)
             .map_err(|e| format!("Serial A: {e}"))?;
         let b = Endpoint::open(settings.serial_b, settings.serial_port_b)
             .map_err(|e| format!("Serial B: {e}"))?;
         config.serial_backends.a = Some(a.backend.clone());
         config.serial_backends.b = Some(b.backend.clone());
-        let endpoints = Self([a, b]);
-        for index in 0..2 {
+        // Injected endpoints already own their listeners.
+        config.serial_port_a = Some(0);
+        config.serial_port_b = Some(0);
+        #[allow(unused_mut)] // Platform endpoints exist only with the newer embedding API.
+        let mut endpoints = Self(
+            vec![a, b],
+            #[cfg(not(iris_platform_serial))]
+            None,
+        );
+        #[cfg(iris_platform_serial)]
+        {
+            let hardware = crate::settings::MachineSettings {
+                profile: config.machine.profile,
+                ..Default::default()
+            };
+            for index in 0..hardware.platform_serial_lines() {
+                let endpoint = Endpoint::open(
+                    settings.platform_serial[index],
+                    settings.platform_ports[index],
+                )
+                .map_err(|e| format!("Platform serial {}: {e}", ["L1", "C", "D"][index]))?;
+                match index {
+                    0 => config.serial_backends.l1 = Some(endpoint.backend.clone()),
+                    1 => config.serial_backends.c = Some(endpoint.backend.clone()),
+                    _ => config.serial_backends.d = Some(endpoint.backend.clone()),
+                }
+                endpoints.0.push(endpoint);
+            }
+        }
+        for index in 0..endpoints.0.len() {
             eprintln!("Prismatic: {}", endpoints.describe(index));
         }
         Ok(endpoints)
     }
 
     pub fn describe(&self, index: usize) -> String {
+        #[cfg(not(iris_platform_serial))]
+        if let Some(core) = &self.1 {
+            return core.describe(index);
+        }
         let endpoint = &self.0[index];
         let mut line = format!(
             "Serial {}: {}",
-            if index == 0 { "A" } else { "B" },
+            ["A", "B", "L1", "C", "D"][index],
             endpoint.description
         );
         let dropped = endpoint.dropped.load(Ordering::Relaxed);
@@ -107,6 +163,16 @@ impl Endpoints {
             line.push_str(&format!(" ({dropped} output bytes dropped)"));
         }
         line
+    }
+
+    pub fn platform_report(&self) -> String {
+        #[cfg(not(iris_platform_serial))]
+        if let Some(core) = &self.1 {
+            return core.platform_report();
+        }
+        (2..self.0.len())
+            .map(|i| format!("\n{}", self.describe(i)))
+            .collect()
     }
 }
 

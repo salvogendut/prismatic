@@ -35,8 +35,9 @@ the PROM, including an earlier preset. These choices set boot variables, so the
 selected disk must already contain the matching loader and kernel. The NetBSD
 preset uses your `netbsd.boot` filename; other installations may use a different
 name (see the [NetBSD boot manual](https://man.netbsd.org/sgimips/boot.8)).
-All five machine profiles have firmware-storage support; this does not imply
-that either guest OS boots on every model. Unrecognized or damaged firmware
+The original five machine profiles have offline PROM-preset support; this does not imply
+that either guest OS boots on every model. The seven newer platforms use their
+firmware console for OS boot variables; the preset controls are greyed out. Unrecognized or damaged firmware
 state produces a startup error; Keep existing allows normal PROM initialization.
 
 **General > PROM console** independently selects the console for each label:
@@ -68,10 +69,41 @@ switch back to Graphics.
 | Machine | CPUs | RAM presets (MB) | Graphics | PROM |
 | --- | --- | --- | --- | --- |
 | Indy IP24 | R4400, R5000 | 32, 64, 128, 256 | Newport, XZ | Bundled |
-| Indigo2 IP22 | R4400 | 32, 64, 128, 256, 384, 512 | Newport, XZ, Extreme, Solid/High/Maximum IMPACT | Bundled |
+| Indigo2 IP22 | R4400, R5000 | 32, 64, 128, 256, 384, 512 | Newport, XZ, Extreme, Solid/High/Maximum IMPACT | Bundled |
 | Indigo2 IMPACT IP28 | R10000 | 32, 64, 128, 256, 384, 512, 768, 1024 | Solid/High/Maximum IMPACT | Bundled |
 | O2 IP32 | R5000, R10000 | 32, 64, 128, 256, 384, 512, 768, 1024 | CRIME/GBE | Bundled 4.18; optional external IP32 PROM |
-| Octane IP30 | R10000, R12000, R14000 (one or two CPUs) | 64, 128, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192 | Solid/High/Maximum IMPACT; VPro V6/V8/V10/V12 | Bundled 4.9; optional external IP30 PROM |
+| Octane IP30 | R10000, R12000, R14000 (one or two CPUs) | 64, 128, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192 | Solid/High/Maximum IMPACT; VPro V6/V8/V10/V12; optional serial-only | Bundled 4.9; optional external IP30 PROM |
+
+| Origin 200 IP29 | R10000, R12000; one node | 128–2048 per node | Serial only | Bundled IP27; optional override |
+| Origin 2000 IP27 | R10000, R12000; one or two nodes | 128–2048 per node | Serial only | Bundled IP27; optional override |
+| Onyx2 IP27 | R10000, R12000; one or two nodes | 128–2048 per node | IR2/IR2E, one or two RMs; optional serial-only | Bundled IP27; optional override |
+| Fuel IP34 | R14000 500 MHz | 512 | V10/V12; optional serial-only | Bundled; optional override |
+| Tezro IP53 | R16000; one, two or four CPUs, depending on part | 1024–8192 | V12; optional serial-only | Bundled; optional override |
+| Origin 3200 IP35 | R12000; one or two C-bricks | 512–4096 per brick | Serial only | Bundled; optional override |
+| Onyx 3000 IP35 | R12000; graphics selects one or two C-bricks | 512–4096 per brick | IR3 or V12 | Bundled; optional override |
+
+**Extensions > Hardware** selects an exact processor part, CPU count and node
+population. General retains the simpler CPU-family selector. The status strip
+has a separate lamp for each processor. Each IP27 node or IP35 C-brick currently
+contains one CPU in IRIS. RAM is **per node/brick** on those platforms; the status
+summary shows the total. Core validation checks board, processor and memory
+combinations before saving. The 180 MHz R10000 uses two 128 MB banks instead of
+a 256 MB bank, which its PROM disables.
+
+Onyx 3000 uses one C-brick with IR3 and two with V12. Fuel's current core requires
+exactly two 256 MB banks. Tezro's 800/900 MHz parts require four CPUs; its 1 GHz
+part permits two or four. The default 700 MHz part permits one, two or four.
+The new models are integration targets: configuration and startup checks do not
+establish complete IRIX, NetBSD or graphics-workload compatibility. The previously
+verified O2/Octane IRIX installs remain documented in the installation guide.
+
+Origin 3200 and Onyx 3000 use **Fibre Channel**, configured under **Extensions >
+Disks**, rather than the SCSI Media slots. Serial-only machines keep the frontend
+and overlays available without requiring a framebuffer. Open **Advanced >
+Connections > Connection status** for the actual loopback ports or PTY paths.
+Fuel, Tezro and IP35 bricks expose L1; Tezro also exposes channels C and D.
+Choose the main logging console in **Extensions > Platform**. Persistent boot
+flash, controller storage and graphics flash are isolated by machine label.
 
 For Odyssey, choose **Octane IP30** in General, enable **Tinker**, then select
 **Extensions > Hardware > Graphics board > VPro V6, V8, V10 or V12**, save, and boot. The selected card is saved per machine label and

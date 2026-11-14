@@ -8,6 +8,9 @@ license = "BSD-3-Clause"
 
 [features]
 pcap = ["iris/pcap"]
+wgpu = ["iris/wgpu"]
+gpujit = ["iris/gpujit"]
+hostgl = ["iris/hostgl"]
 idle-pause = ["iris/idle-pause"]
 jitv2 = ["iris/jitv2"]
 perfetto = ["iris/perfetto"]

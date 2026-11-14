@@ -339,7 +339,10 @@ fn validate_forwards(forwards: &[Forward]) -> Result<(), String> {
 
 impl NetworkSettings {
     pub fn supports_off(profile: MachineProfile) -> bool {
-        matches!(profile, MachineProfile::O2Ip32 | MachineProfile::OctaneIp30)
+        !matches!(
+            profile,
+            MachineProfile::IndyIp24 | MachineProfile::Indigo2Ip22 | MachineProfile::Indigo2Ip28
+        )
     }
     pub fn reconcile_profile(&mut self, profile: MachineProfile) {
         if self.mode == NetMode::Off && !Self::supports_off(profile) {
@@ -376,7 +379,7 @@ impl NetworkSettings {
         }
         iris::config::parse_nat_subnet(&self.nat_subnet).map_err(|e| format!("NAT subnet: {e}"))?;
         if self.mode == NetMode::Off && !Self::supports_off(profile) {
-            return Err("Ethernet Off is only supported on O2 and Octane".into());
+            return Err("Ethernet Off is unavailable on Indy and Indigo2".into());
         }
         if let Some(ip) = self.nfs_pcap_ip {
             validate_ip(ip)?;

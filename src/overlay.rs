@@ -98,6 +98,7 @@ pub enum Effect {
     CreateDisk(DiskRequest),
     CancelDiskCreation,
     PickProm,
+    PickUrl { id: u8, url: String },
     CancelMedia,
     Quit,
     Reset,
@@ -116,6 +117,7 @@ pub struct Session {
     pub row: usize,
     media_controller: u8,
     storage_index: usize,
+    pub runtime_index: usize,
     pub advanced_page: Page,
     pub extensions_page: ExtensionsPage,
     pub checkpoint: String,
@@ -161,6 +163,7 @@ impl Session {
             _ => false,
         };
         if changed {
+            self.runtime_index = 0;
             self.row = 0;
         }
         changed
@@ -257,7 +260,65 @@ impl Session {
     /// their explanation is visible, but cannot change drafts or launch actions.
     pub fn unavailable(&self, row: usize) -> Option<&'static str> {
         use crate::compat as c;
+        if self.tab == Tab::Extensions
+            && let ExtensionsPage::Runtime(topic) = self.extensions_page
+        {
+            return crate::runtime::fields(topic, self.runtime_index, &self.draft.machine)
+                .get(row)
+                .and_then(|f| f.unavailable);
+        }
+        if self.tab == Tab::Media
+            && self.draft.machine.fibre_only()
+            && self.draft.media.devices.is_empty()
+        {
+            return Some(
+                "This platform uses Fibre Channel; configure it in Extensions > Disks (enable Tinker first).",
+            );
+        }
+        if self.tab == Tab::Extensions
+            && self.extensions_page == ExtensionsPage::Storage
+            && self.draft.machine.native_storage()
+        {
+            return Some(
+                "Live storage/scratch operations require Iris frontend bus hooks; configure boot media in Media.",
+            );
+        }
+        if self.tab == Tab::Extensions
+            && self.extensions_page == ExtensionsPage::Storage
+            && row == 8
+            && (!cfg!(iris_scsi_write_cache)
+                || self
+                    .storage_slot()
+                    .is_none_or(|id| self.draft.media.devices[&id].kind != MediaKind::Disk))
+        {
+            return Some("Select a hard disk on a core with write-cache support.");
+        }
         match (self.tab, row) {
+            (Tab::General, 12 | 13)
+                if !crate::settings::MachineSettings::LEGACY_PROFILES
+                    .contains(&self.draft.machine.profile) =>
+            {
+                Some(
+                    "PROM environment presets are not available for this platform. Use its firmware console; saved preferences are retained.",
+                )
+            }
+            (Tab::Extensions, 3)
+                if self.extensions_page == ExtensionsPage::Hardware && !cfg!(iris_cpu_parts) =>
+            {
+                Some("Exact processor parts require a newer Iris core.")
+            }
+            (Tab::Extensions, 4)
+                if self.extensions_page == ExtensionsPage::Hardware
+                    && !self.draft.machine.numa() =>
+            {
+                Some("Node population is fixed on this platform.")
+            }
+            (Tab::Extensions, _)
+                if self.extensions_page == ExtensionsPage::Devices
+                    && !self.draft.machine.legacy_devices() =>
+            {
+                Some("VINO, DaynaPort and Ultra64 are supported on Indy/Indigo2 only.")
+            }
             (Tab::General, 10 | 11) if !c::AUDIO => Some(
                 "This Iris build has no frontend audio output API. Saved audio preferences are retained.",
             ),
@@ -286,9 +347,21 @@ impl Session {
                 _ => None,
             },
             (Tab::Advanced, row) if self.advanced_page == Page::Connections => match row {
-                1 | 3 if !c::SERIAL => Some(
-                    "This Iris build supports TCP serial only. PTY/Off preferences are retained; unsupported routes use TCP at the saved ports (0 for automatic).",
-                ),
+                9 | 11 | 13 if !cfg!(iris_platform_serial) => {
+                    Some("This Iris core lacks frontend routing for platform serial ports.")
+                }
+                9..=14 if (row - 9) / 2 >= self.draft.machine.platform_serial_lines() => {
+                    Some("This serial connection is not fitted to the selected model.")
+                }
+                1 | 3
+                    if !c::SERIAL
+                        || (!cfg!(iris_platform_serial)
+                            && self.draft.machine.platform_serial_lines() > 0) =>
+                {
+                    Some(
+                        "This Iris build supports TCP serial only. PTY/Off preferences are retained; unsupported routes use TCP at the saved ports (0 for automatic).",
+                    )
+                }
                 5 if !c::GDB => Some(
                     "This Iris build has no owned GDB service API, or was built with lightning.",
                 ),
@@ -343,10 +416,39 @@ impl Session {
 
     pub fn rows(&self) -> Vec<(&'static str, String)> {
         let on_off = |value| if value { "On".into() } else { "Off".into() };
+        if self.tab == Tab::Extensions
+            && let ExtensionsPage::Runtime(topic) = self.extensions_page
+        {
+            return crate::runtime::fields(topic, self.runtime_index, &self.draft.machine)
+                .iter()
+                .map(|f| {
+                    (
+                        f.label,
+                        f.value(&self.draft.advanced.runtime, self.runtime_index),
+                    )
+                })
+                .collect();
+        }
+        if self.tab == Tab::Media
+            && self.draft.machine.fibre_only()
+            && self.draft.media.devices.is_empty()
+        {
+            return vec![(
+                "Storage controller",
+                "Fibre Channel: Extensions > Disks".into(),
+            )];
+        }
         match self.tab {
             Tab::General => vec![
                 ("Machine", self.draft.machine.profile.label().into()),
-                ("RAM", format!("{} MB", self.draft.machine.ram_mb)),
+                (
+                    if self.draft.machine.node_count() > 1 {
+                        "RAM per node"
+                    } else {
+                        "RAM"
+                    },
+                    format!("{} MB", self.draft.machine.ram_mb),
+                ),
                 (
                     "CPU",
                     if self.draft.machine.cpu.iris().is_err() {
@@ -414,7 +516,7 @@ impl Session {
                 ),
                 (
                     "Guest clock offset",
-                    if self.draft.machine.supports_prom_override() {
+                    if !self.draft.machine.legacy_devices() {
                         "Host time (fixed)".into()
                     } else {
                         self.draft.advanced.clock_label()
@@ -422,7 +524,7 @@ impl Session {
                 ),
                 (
                     "SCSI interrupt timing",
-                    if self.draft.machine.supports_prom_override() {
+                    if !self.draft.machine.legacy_devices() {
                         "Managed by SCSI controller"
                     } else if self.draft.advanced.scsi_deferred_interrupts {
                         "Deferred (default)"
@@ -516,11 +618,26 @@ impl Session {
                 ),
                 (
                     "CPU count",
-                    if self.draft.machine.profile == iris::config::MachineProfile::OctaneIp30 {
+                    if self.draft.machine.cpu_counts().len() > 1 {
                         self.draft.machine.cpus.to_string()
                     } else {
-                        "1 (fixed)".into()
+                        format!(
+                            "{} (fixed by platform)",
+                            self.draft.machine.processor_count()
+                        )
                     },
+                ),
+                (
+                    "Processor part",
+                    self.draft
+                        .machine
+                        .cpu_part
+                        .clone()
+                        .unwrap_or_else(|| "Default for CPU family".into()),
+                ),
+                (
+                    "Nodes / C-bricks",
+                    self.draft.machine.node_count().to_string(),
                 ),
             ],
             Tab::Extensions => vec![
@@ -573,6 +690,15 @@ impl Session {
                 (
                     "Export scratch payload...",
                     "Save full payload to a new host file".into(),
+                ),
+                (
+                    "Disk write cache",
+                    on_off(
+                        self.storage_slot()
+                            .and_then(|id| self.draft.media.write_cache.get(&id))
+                            .copied()
+                            .unwrap_or(false),
+                    ),
                 ),
             ],
             Tab::Media => {
@@ -690,7 +816,9 @@ pub enum TextField {
     Network(Field),
     Expert(ExpertField),
     Extensions(ExtensionsField),
+    CdUrl(u8),
     CheckpointName,
+    Runtime(crate::runtime::Topic, usize, usize),
 }
 
 pub struct TextEdit {
@@ -935,6 +1063,22 @@ impl Overlay {
                     let session = self.session.as_mut().unwrap();
                     let draft = &mut session.draft;
                     let result = match edit.field {
+                        TextField::CdUrl(id) => {
+                            let url = edit.text.trim().to_owned();
+                            if crate::media::is_remote(&url) {
+                                self.text_edit = None;
+                                self.busy = true;
+                                return Effect::PickUrl { id, url };
+                            }
+                            Err("Enter an HTTP or HTTPS CD image URL".into())
+                        }
+                        TextField::Runtime(topic, row, index) => {
+                            crate::runtime::fields(topic, index, &draft.machine)[row].set(
+                                &mut draft.advanced.runtime,
+                                &mut session.runtime_index,
+                                &edit.text,
+                            )
+                        }
                         TextField::DiskSize => crate::disk_image::parse_size(&edit.text)
                             .map(|size| self.disk_create.as_mut().unwrap().size_mib = size),
                         TextField::CheckpointName => {
@@ -1092,7 +1236,7 @@ impl Overlay {
                 (Dialog::Media { id, choice }, Key::Left | Key::Right) => {
                     self.dialog = Some(Dialog::Media {
                         id,
-                        choice: (choice + if key == Key::Left { 4 } else { 1 }) % 5,
+                        choice: (choice + if key == Key::Left { 5 } else { 1 }) % 6,
                     });
                 }
                 (Dialog::Media { id, choice: 0 | 1 }, Key::Enter) => {
@@ -1116,6 +1260,15 @@ impl Overlay {
                 (Dialog::Media { id, choice: 3 }, Key::Enter) => {
                     self.dialog = None;
                     self.disk_create = Some(DiskCreate::new(id));
+                }
+                (Dialog::Media { id, choice: 4 }, Key::Enter) if cfg!(iris_http_media) => {
+                    self.dialog = None;
+                    self.text_edit = Some(TextEdit {
+                        text: String::new(),
+                        error: None,
+                        field: TextField::CdUrl(id),
+                        selected: true,
+                    });
                 }
                 (Dialog::Media { .. }, Key::Enter) => self.dialog = None,
                 (Dialog::Firmware { choice }, Key::Left | Key::Right) => {
@@ -1213,6 +1366,7 @@ impl Overlay {
                     row: 0,
                     media_controller: 0,
                     storage_index: 0,
+                    runtime_index: 0,
                     advanced_page: Page::Core,
                     extensions_page: ExtensionsPage::Hardware,
                     checkpoint: "checkpoint-1".into(),
@@ -1349,6 +1503,13 @@ impl Overlay {
                         (Page::Connections, 5) => Some(ExpertField::Gdb),
                         (Page::Connections, 6) => Some(ExpertField::Vnc),
                         (Page::Connections, 7) => Some(ExpertField::VncFps),
+                        (Page::Connections, 9 | 11 | 13) => {
+                            settings.platform_serial[(session.row - 9) / 2].cycle();
+                            None
+                        }
+                        (Page::Connections, row @ (10 | 12 | 14)) => {
+                            Some(ExpertField::PlatformPort((row - 10) / 2))
+                        }
                         (Page::Connections, 8) | (Page::Developer, 4) => {
                             return Effect::RuntimeStatus;
                         }
@@ -1382,10 +1543,10 @@ impl Overlay {
                 (Tab::Advanced, 1) if session.draft.machine.newport() => {
                     session.draft.advanced.cycle_cache()
                 }
-                (Tab::Advanced, 2) if !session.draft.machine.supports_prom_override() => {
+                (Tab::Advanced, 2) if session.draft.machine.legacy_devices() => {
                     session.draft.advanced.cycle_clock_offset()
                 }
-                (Tab::Advanced, 3) if !session.draft.machine.supports_prom_override() => {
+                (Tab::Advanced, 3) if session.draft.machine.legacy_devices() => {
                     session.draft.advanced.scsi_deferred_interrupts =
                         !session.draft.advanced.scsi_deferred_interrupts
                 }
@@ -1452,6 +1613,27 @@ impl Overlay {
                 }
                 (Tab::Network, 7) if session.draft.network.mode == crate::network::NetMode::Nat => {
                     self.edit_network(Field::Forwards)
+                }
+                (Tab::Extensions, row)
+                    if matches!(session.extensions_page, ExtensionsPage::Runtime(_)) =>
+                {
+                    if let ExtensionsPage::Runtime(topic) = session.extensions_page {
+                        let fields = crate::runtime::fields(
+                            topic,
+                            session.runtime_index,
+                            &session.draft.machine,
+                        );
+                        let field = &fields[row];
+                        if !field.cycle(&mut session.draft.advanced.runtime) {
+                            self.text_edit = Some(TextEdit {
+                                text: field
+                                    .input(&session.draft.advanced.runtime, session.runtime_index),
+                                error: None,
+                                field: TextField::Runtime(topic, row, session.runtime_index),
+                                selected: true,
+                            });
+                        }
+                    }
                 }
                 (Tab::Extensions, row) if session.extensions_page == ExtensionsPage::Devices => {
                     let s = &mut session.draft.advanced.extensions;
@@ -1528,9 +1710,13 @@ impl Overlay {
                     }
                 }
                 (Tab::Extensions, 2) if session.extensions_page == ExtensionsPage::Hardware => {
-                    if session.draft.machine.profile == iris::config::MachineProfile::OctaneIp30 {
-                        session.draft.machine.cpus = 3 - session.draft.machine.cpus
-                    }
+                    session.draft.machine.cycle_cpu_count();
+                }
+                (Tab::Extensions, 3) if session.extensions_page == ExtensionsPage::Hardware => {
+                    session.draft.machine.cycle_part();
+                }
+                (Tab::Extensions, 4) if session.extensions_page == ExtensionsPage::Hardware => {
+                    session.draft.machine.nodes = 3 - session.draft.machine.nodes;
                 }
                 (Tab::Extensions, 0) => session.draft.media.scratch.cycle_slot(),
                 (Tab::Extensions, 1) => session.draft.media.scratch.cycle_size(),
@@ -1559,6 +1745,12 @@ impl Overlay {
                 }
                 (Tab::Extensions, 6) => return Effect::Storage(Operation::ImportScratch),
                 (Tab::Extensions, 7) => return Effect::Storage(Operation::ExportScratch),
+                (Tab::Extensions, 8) => {
+                    if let Some(id) = session.storage_slot() {
+                        let value = session.draft.media.write_cache.entry(id).or_default();
+                        *value = !*value;
+                    }
+                }
                 (Tab::Network, 8) => {
                     session.draft.network.forward_lan = !session.draft.network.forward_lan
                 }
@@ -1573,7 +1765,7 @@ impl Overlay {
                 }
                 (Tab::Media, _) => {
                     if let Some(id) = session.media_slot() {
-                        self.dialog = Some(Dialog::Media { id, choice: 4 });
+                        self.dialog = Some(Dialog::Media { id, choice: 5 });
                     } else {
                         session.media_controller =
                             (session.media_controller + 1) % session.media_controllers();
@@ -1752,7 +1944,8 @@ mod tests {
             overlay.session.as_ref().unwrap().extensions_page,
             ExtensionsPage::Storage
         );
-        overlay.key(Key::Up, &live); // Export scratch, the last real row.
+        overlay.key(Key::Up, &live); // Disk write cache.
+        overlay.key(Key::Up, &live); // Export scratch.
         assert_eq!(
             overlay.key(Key::Enter, &live),
             Effect::Storage(Operation::ExportScratch)
@@ -2029,6 +2222,7 @@ mod tests {
             overlay.session.as_ref().unwrap().advanced_page,
             Page::Connections
         );
+        overlay.session.as_mut().unwrap().row = 8;
         assert_eq!(overlay.key(Key::Enter, &live), Effect::RuntimeStatus);
         assert!(!overlay.session.as_ref().unwrap().dirty());
     }
@@ -2172,7 +2366,12 @@ mod tests {
         );
         overlay.key(Key::Escape, &live); // Cancel picker.
         overlay.key(Key::Left, &live);
-        overlay.key(Key::Enter, &live); // Octane -> Indy; keep disk in the draft.
+        overlay.key(Key::Enter, &live);
+        while overlay.session.as_ref().unwrap().draft.machine.profile
+            != iris::config::MachineProfile::IndyIp24
+        {
+            overlay.key(Key::Enter, &live);
+        } // Keep the disk while cycling back to Indy.
         let draft = &overlay.session.as_ref().unwrap().draft;
         assert!(draft.media.validate_for(draft.machine.profile).is_err());
         assert!(draft.media.devices.contains_key(&31));
@@ -2184,6 +2383,7 @@ mod tests {
         assert_eq!(session.media_slot(), Some(31));
         assert!(session.rows()[session.row].1.starts_with("Unavailable"));
         overlay.key(Key::Enter, &live);
+        overlay.key(Key::Left, &live); // Remote CD.
         overlay.key(Key::Left, &live); // New disk.
         overlay.key(Key::Left, &live); // Disconnect.
         overlay.key(Key::Enter, &live);
@@ -2687,7 +2887,14 @@ mod tests {
     fn new_disk_form_validates_edits_and_attaches_only_to_the_draft() {
         let live = Settings::default();
         let mut overlay = Overlay::default();
-        for key in [Key::Options, Key::Right, Key::Enter, Key::Left, Key::Enter] {
+        for key in [
+            Key::Options,
+            Key::Right,
+            Key::Enter,
+            Key::Left,
+            Key::Left,
+            Key::Enter,
+        ] {
             overlay.key(key, &live);
         }
         assert_eq!(overlay.disk_create.as_ref().unwrap().id, 1);
@@ -2807,10 +3014,10 @@ mod tests {
         for key in [Key::Options, Key::Right, Key::Enter] {
             overlay.key(key, &live);
         }
-        assert_eq!(overlay.dialog, Some(Dialog::Media { id: 1, choice: 4 }));
+        assert_eq!(overlay.dialog, Some(Dialog::Media { id: 1, choice: 5 }));
         overlay.key(Key::Enter, &live);
         assert!(!overlay.session.as_ref().unwrap().dirty());
-        for key in [Key::Enter, Key::Left, Key::Left, Key::Enter] {
+        for key in [Key::Enter, Key::Left, Key::Left, Key::Left, Key::Enter] {
             overlay.key(key, &live);
         }
         assert!(
