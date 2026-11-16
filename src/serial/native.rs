@@ -92,6 +92,7 @@ impl Endpoints {
     pub fn prepare(
         config: &mut MachineConfig,
         settings: &crate::expert::ExpertSettings,
+        console: Option<&Arc<crate::headless::Console>>,
     ) -> Result<Self, String> {
         #[cfg(not(iris_platform_serial))]
         if (crate::settings::MachineSettings {
@@ -103,12 +104,26 @@ impl Endpoints {
         {
             return Ok(Self(
                 Vec::new(),
-                Some(super::legacy::Endpoints::prepare(config, settings)?),
+                Some(super::legacy::Endpoints::prepare(
+                    config, settings, console,
+                )?),
             ));
         }
-        let a = Endpoint::open(settings.serial_a, settings.serial_port_a)
+        let selected = crate::headless::channel(config);
+        let open = |index, route, port| {
+            if let Some(console) = console.filter(|_| selected == index) {
+                Ok(Endpoint {
+                    backend: Arc::new(Transport(Mutex::new(Some(console.clone())))),
+                    description: format!("PTY {} / embedded console", console.snapshot().endpoint),
+                    dropped: Arc::new(AtomicU64::new(0)),
+                })
+            } else {
+                Endpoint::open(route, port)
+            }
+        };
+        let a = open(0, settings.serial_a, settings.serial_port_a)
             .map_err(|e| format!("Serial A: {e}"))?;
-        let b = Endpoint::open(settings.serial_b, settings.serial_port_b)
+        let b = open(1, settings.serial_b, settings.serial_port_b)
             .map_err(|e| format!("Serial B: {e}"))?;
         config.serial_backends.a = Some(a.backend.clone());
         config.serial_backends.b = Some(b.backend.clone());
@@ -128,7 +143,8 @@ impl Endpoints {
                 ..Default::default()
             };
             for index in 0..hardware.platform_serial_lines() {
-                let endpoint = Endpoint::open(
+                let endpoint = open(
+                    index + 2,
                     settings.platform_serial[index],
                     settings.platform_ports[index],
                 )
@@ -366,7 +382,7 @@ mod tests {
     #[test]
     fn automatic_tcp_ports_are_reported_and_released_and_failed_pairs_are_atomic() {
         let mut config = MachineConfig::default();
-        let endpoints = Endpoints::prepare(&mut config, &ExpertSettings::default()).unwrap();
+        let endpoints = Endpoints::prepare(&mut config, &ExpertSettings::default(), None).unwrap();
         let addresses: Vec<_> = (0..2)
             .map(|i| {
                 endpoints.0[i]
@@ -402,7 +418,9 @@ mod tests {
             ..Default::default()
         };
         let mut config = MachineConfig::default();
-        let error = Endpoints::prepare(&mut config, &settings).err().unwrap();
+        let error = Endpoints::prepare(&mut config, &settings, None)
+            .err()
+            .unwrap();
         assert!(error.contains("Serial B"));
         assert!(config.serial_backends.a.is_none());
         assert!(config.serial_backends.b.is_none());
@@ -422,7 +440,7 @@ mod tests {
         };
         settings.validate().unwrap();
         let mut config = MachineConfig::default();
-        let endpoints = Endpoints::prepare(&mut config, &settings).unwrap();
+        let endpoints = Endpoints::prepare(&mut config, &settings, None).unwrap();
         assert_eq!(endpoints.describe(0), "Serial A: Off");
         assert_eq!(endpoints.describe(1), "Serial B: Off");
         config.serial_backends.a.as_ref().unwrap().send_byte(b'x');

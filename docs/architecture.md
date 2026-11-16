@@ -993,3 +993,26 @@ Iris's console CI fanout and logging and uses the same bounded, revocable host
 transports as existing models. The fallback probes chosen TCP ports before core
 construction and reports them in Connection status. As with other core-owned
 listeners, another process can race the short probe-to-bind interval.
+
+## Embedded headless terminal
+
+`headless.rs` owns a bounded serial handoff injected into the selected IRIS
+console line. Device callbacks only queue bytes; the machine worker duplicates
+output to the PTY and VT parser. A slow PTY never blocks the CPU or SDL thread.
+GUI input has a separate 4 KiB queue; endpoint teardown revokes it even if core
+device graphs retain the backend. Immutable 80×24 pages cross to SDL; the
+10,000-line parser history is retained for scrolling after the worker stops.
+`console_view.rs` owns focus, scrollbar dragging, selection and clipboard calls
+on the SDL thread. Clipboard operations require explicit host input.
+
+`serial_pty.rs`, `serial_screen.rs`, `serial_input.rs` and `serial_selection.rs`
+are adapted from Heliacal. PTY aliases use an exclusive coordination file and
+inode/target ownership checks, and descriptors close on exec. Draft validation
+never allocates a PTY or changes firmware. The worker reserves the endpoint
+before applying serial PROM settings under the machine-state lease.
+
+IRIS `MachineConfig::prepare_headless` and `workstation::build_headless` own
+physical-device changes. They omit optional graphics, disconnect PS/2 devices
+while retaining controller commands, and leave USB input ports empty. Integrated
+O2 graphics remains part of the machine. `build.rs` detects the API from source;
+older core builds disable the controls without discarding their saved values.

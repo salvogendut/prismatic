@@ -25,6 +25,7 @@ const MUTED: Color = Color::RGB(170, 190, 215);
 
 pub struct Presentation<'a> {
     pub startup_logo: Option<&'a Texture<'a>>,
+    pub console: Option<&'a crate::console_view::ConsoleView>,
     pub status: &'a str,
     pub placeholder: Option<&'a str>,
     pub captured: bool,
@@ -87,62 +88,65 @@ pub fn draw(
         WIDTH,
         HEIGHT - LED_HEIGHT - if settings.show_status { HINT_HEIGHT } else { 0 },
     );
-    let destination = guest_rect(frame, settings);
-    canvas.copy(texture, None, destination)?;
-    canvas.set_blend_mode(BlendMode::Blend);
-    if settings.scanlines {
-        for y in (destination.y()..destination.bottom()).step_by(3) {
-            fill(
-                canvas,
-                Rect::new(destination.x(), y, destination.width(), 1),
-                Color::RGBA(0, 0, 0, 65),
-            )?;
-        }
-    }
-    if let Some(message) = presentation.placeholder {
-        shade(canvas, 100)?;
-        if let Some(logo) = presentation.startup_logo {
-            let info = logo.query();
-            let top = area.height() as i32 / 2 - 250;
-            canvas.copy(
-                logo,
-                None,
-                fit(info.width, info.height, Rect::new(350, top, 260, 260)),
-            )?;
-            for (offset, value, color) in [
-                (300, "P R I S M A T I C", TEXT),
-                (328, "Happy Years / SGI", BORDER),
-                (380, message, MUTED),
-                (
-                    440,
-                    "Ctrl+P Boot/resume  F2 Machine  F5 Reset  F9 Options",
-                    MUTED,
-                ),
-            ] {
-                text(
+    if let Some(console) = presentation.console {
+        console.draw(canvas)?;
+    } else {
+        let destination = guest_rect(frame, settings);
+        canvas.copy(texture, None, destination)?;
+        canvas.set_blend_mode(BlendMode::Blend);
+        if settings.scanlines {
+            for y in (destination.y()..destination.bottom()).step_by(3) {
+                fill(
                     canvas,
-                    (WIDTH as i32 - value.len() as i32 * 8) / 2,
-                    top + offset,
-                    value,
-                    color,
+                    Rect::new(destination.x(), y, destination.width(), 1),
+                    Color::RGBA(0, 0, 0, 65),
                 )?;
             }
-        } else {
-            let x = 256;
-            let y = area.height() as i32 / 2 - 56;
-            text(canvas, x, y, "P R I S M A T I C", TEXT)?;
-            text(canvas, x, y + 28, "Happy Years / SGI", BORDER)?;
-            text(canvas, x, y + 68, message, MUTED)?;
-            text(
-                canvas,
-                x,
-                y + 92,
-                "Ctrl+P Boot/resume  F2 Machine  F5 Reset  F9 Options",
-                MUTED,
-            )?;
+        }
+        if let Some(message) = presentation.placeholder {
+            shade(canvas, 100)?;
+            if let Some(logo) = presentation.startup_logo {
+                let info = logo.query();
+                let top = area.height() as i32 / 2 - 250;
+                canvas.copy(
+                    logo,
+                    None,
+                    fit(info.width, info.height, Rect::new(350, top, 260, 260)),
+                )?;
+                for (offset, value, color) in [
+                    (300, "P R I S M A T I C", TEXT),
+                    (328, "Happy Years / SGI", BORDER),
+                    (380, message, MUTED),
+                    (
+                        440,
+                        "Ctrl+P Boot/resume  F2 Machine  F5 Reset  F9 Options",
+                        MUTED,
+                    ),
+                ] {
+                    text(
+                        canvas,
+                        (WIDTH as i32 - value.len() as i32 * 8) / 2,
+                        top + offset,
+                        value,
+                        color,
+                    )?;
+                }
+            } else {
+                let x = 256;
+                let y = area.height() as i32 / 2 - 56;
+                text(canvas, x, y, "P R I S M A T I C", TEXT)?;
+                text(canvas, x, y + 28, "Happy Years / SGI", BORDER)?;
+                text(canvas, x, y + 68, message, MUTED)?;
+                text(
+                    canvas,
+                    x,
+                    y + 92,
+                    "Ctrl+P Boot/resume  F2 Machine  F5 Reset  F9 Options",
+                    MUTED,
+                )?;
+            }
         }
     }
-
     draw_debug(canvas, settings, presentation.debug_lines)?;
     draw_status(canvas, settings, &presentation)?;
     draw_leds(canvas, settings, &presentation)?;
@@ -182,6 +186,10 @@ pub fn draw(
         let y = HEIGHT as i32 / 2 - 80;
         panel(canvas, Rect::new(x, y, 720, 160))?;
         let (title, hint) = match edit.field {
+            crate::overlay::TextField::SerialPty => (
+                "Serial PTY alias",
+                "Optional stable symlink. Parent must exist; leave blank for /dev/pts/N.",
+            ),
             crate::overlay::TextField::CdUrl(_) => (
                 "Remote CD image",
                 "HTTP(S) URL to cooked ISO9660/EFS data. Server must support byte ranges; CHDs must be downloaded first.",
@@ -394,6 +402,10 @@ fn overlay_hints(session: &crate::overlay::Session) -> Vec<String> {
             } else if session.row == 7 {
                 session.draft.machine.prom_path().map(|p| short_ascii(p, 100)).unwrap_or_else(||
                     if crate::compat::FIRMWARE { "The current core bundles firmware. O2, Octane and the newer platforms also accept external PROMs.".into() } else { "This Iris build needs external O2/Octane PROMs. Choose file to select one.".into() })
+            } else if session.row == 14 {
+                "Serial console and PTY; no attached keyboard, mouse or display. Applies on next boot/restart.".into()
+            } else if session.row == 15 {
+                "Optional stable PTY symlink. Parent must exist; blank uses the kernel-assigned /dev/pts/N.".into()
             } else if session.row >= 10 {
                 "Audio and volume apply on Save without restarting. Enter cycles volume down by 10%.".into()
             } else { "Machine changes keep compatible CPU/RAM choices; other values are adjusted.".into() },

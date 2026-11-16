@@ -5,7 +5,11 @@ impl Endpoints {
     pub fn prepare(
         config: &mut MachineConfig,
         settings: &crate::expert::ExpertSettings,
+        console: Option<&std::sync::Arc<crate::headless::Console>>,
     ) -> Result<Self, String> {
+        if console.is_some() {
+            return Err("This IRIS core has no embedded serial transport API".into());
+        }
         let mut ports = vec![settings.serial_port_a, settings.serial_port_b];
         let hardware = crate::settings::MachineSettings {
             profile: config.machine.profile,

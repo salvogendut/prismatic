@@ -319,6 +319,12 @@ impl Session {
             {
                 Some("VINO, DaynaPort and Ultra64 are supported on Indy/Indigo2 only.")
             }
+            (Tab::General, 14 | 15) if !crate::headless::AVAILABLE => {
+                Some("Headless guests require Unix and IRIS's headless-device and serial APIs.")
+            }
+            (Tab::General, 3 | 13) if self.draft.machine.headless => {
+                Some("Headless guests have no keyboard and always use the serial console.")
+            }
             (Tab::General, 10 | 11) if !c::AUDIO => Some(
                 "This Iris build has no frontend audio output API. Saved audio preferences are retained.",
             ),
@@ -467,7 +473,14 @@ impl Session {
                         self.draft.machine.cpu.label().into()
                     },
                 ),
-                ("Keyboard", self.draft.machine.keyboard.label().into()),
+                (
+                    "Keyboard",
+                    if self.draft.machine.headless {
+                        "Disconnected".into()
+                    } else {
+                        self.draft.machine.keyboard.label().into()
+                    },
+                ),
                 ("CRT scanlines", on_off(self.draft.scanlines)),
                 ("Status strip", on_off(self.draft.show_status)),
                 ("Tinker", on_off(self.draft.tinker)),
@@ -485,7 +498,20 @@ impl Session {
                 ("PROM boot", self.draft.machine.prom_boot.label().into()),
                 (
                     "PROM console",
-                    self.draft.machine.prom_console.label().into(),
+                    if self.draft.machine.headless {
+                        "Serial (headless)".into()
+                    } else {
+                        self.draft.machine.prom_console.label().into()
+                    },
+                ),
+                ("Headless guest", on_off(self.draft.machine.headless)),
+                (
+                    "Serial PTY alias",
+                    if self.draft.machine.serial_pty_link.is_empty() {
+                        "Automatic /dev/pts path".into()
+                    } else {
+                        self.draft.machine.serial_pty_link.clone()
+                    },
                 ),
             ],
             Tab::Advanced if self.advanced_page == Page::Capture => vec![
@@ -811,6 +837,7 @@ impl DiskCreate {
 
 #[derive(Clone, Copy)]
 pub enum TextField {
+    SerialPty,
     DiskSize,
     Label,
     Network(Field),
@@ -1063,6 +1090,14 @@ impl Overlay {
                     let session = self.session.as_mut().unwrap();
                     let draft = &mut session.draft;
                     let result = match edit.field {
+                        TextField::SerialPty => {
+                            if edit.text.contains(['\0', '\n', '\r']) {
+                                Err("PTY alias must be a single valid path".into())
+                            } else {
+                                draft.machine.serial_pty_link = edit.text.clone();
+                                Ok(())
+                            }
+                        }
                         TextField::CdUrl(id) => {
                             let url = edit.text.trim().to_owned();
                             if crate::media::is_remote(&url) {
@@ -1452,6 +1487,18 @@ impl Overlay {
                 (Tab::General, 11) => session.draft.audio.cycle_volume(),
                 (Tab::General, 12) => session.draft.machine.prom_boot.cycle(),
                 (Tab::General, 13) => session.draft.machine.prom_console.cycle(),
+                (Tab::General, 14) => session
+                    .draft
+                    .machine
+                    .set_headless(!session.draft.machine.headless),
+                (Tab::General, 15) => {
+                    self.text_edit = Some(TextEdit {
+                        text: session.draft.machine.serial_pty_link.clone(),
+                        error: None,
+                        field: TextField::SerialPty,
+                        selected: true,
+                    });
+                }
                 (Tab::Advanced, row) if session.advanced_page == Page::Capture => match row {
                     0 => session.draft.gif.cycle_width(),
                     1 => session.draft.gif.cycle_fps(),
@@ -2598,7 +2645,7 @@ mod tests {
         let live = Settings::default();
         let mut overlay = Overlay::default();
         overlay.key(Key::Options, &live);
-        overlay.key(Key::Up, &live); // PROM console.
+        overlay.session.as_mut().unwrap().row = 13; // PROM console.
         overlay.key(Key::Enter, &live);
         assert_eq!(
             overlay.session.as_ref().unwrap().draft.machine.prom_console,
@@ -2634,8 +2681,7 @@ mod tests {
         let live = Settings::default();
         let mut overlay = Overlay::default();
         overlay.key(Key::Options, &live);
-        overlay.key(Key::Up, &live);
-        overlay.key(Key::Up, &live); // PROM boot, above PROM console.
+        overlay.session.as_mut().unwrap().row = 12; // PROM boot.
         overlay.key(Key::Enter, &live);
         assert_eq!(
             overlay.session.as_ref().unwrap().draft.machine.prom_boot,
@@ -3161,5 +3207,53 @@ mod tests {
             overlay.key(key, &live);
         }
         assert!(overlay.session.is_none());
+    }
+}
+
+#[cfg(test)]
+mod headless_draft_tests {
+    use super::*;
+    #[test]
+    fn headless_draft_preserves_live_machine_and_unavailable_preferences() {
+        let live = Settings::default();
+        let mut overlay = Overlay::default();
+        overlay.key(Key::Options, &live);
+        overlay.session.as_mut().unwrap().row = 14;
+        overlay.key(Key::Enter, &live);
+        assert!(!live.machine.headless);
+        if crate::headless::AVAILABLE {
+            assert!(overlay.session.as_ref().unwrap().draft.machine.headless);
+            overlay.session.as_mut().unwrap().row = 15;
+            overlay.key(Key::Enter, &live);
+            overlay.text_input("/tmp/my Indy");
+            overlay.key(Key::Enter, &live);
+            assert_eq!(
+                overlay
+                    .session
+                    .as_ref()
+                    .unwrap()
+                    .draft
+                    .machine
+                    .serial_pty_link,
+                "/tmp/my Indy"
+            );
+            let Effect::Save(draft) = overlay.key(Key::Options, &live) else {
+                panic!("expected save")
+            };
+            assert!(draft.machine_differs_from(&live));
+            overlay.save_failed();
+            assert!(overlay.session.as_ref().unwrap().draft.machine.headless);
+            for key in [Key::Escape, Key::Left, Key::Enter, Key::Options] {
+                overlay.key(key, &live);
+            }
+            assert_eq!(overlay.session.as_ref().unwrap().draft, live);
+        } else {
+            assert!(!overlay.session.as_ref().unwrap().draft.machine.headless);
+            let mut saved = live.clone();
+            saved.machine.headless = true;
+            saved.machine.serial_pty_link = "/tmp/preserved".into();
+            let loaded: Settings = toml::from_str(&toml::to_string(&saved).unwrap()).unwrap();
+            assert_eq!(loaded.machine, saved.machine);
+        }
     }
 }

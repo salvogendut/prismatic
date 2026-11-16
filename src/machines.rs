@@ -126,6 +126,9 @@ impl MachineSettings {
     }
 
     pub fn serial_only(&self) -> bool {
+        if self.headless {
+            return true;
+        }
         #[cfg(iris_modern_models)]
         {
             self.graphics_board() == Some(iris::config::GraphicsBoard::None)

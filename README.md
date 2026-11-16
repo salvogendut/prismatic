@@ -27,6 +27,8 @@ and storage activity LEDs, screenshots and GIF recording. Enable **General >
 Tinker** for Advanced, Network and Extensions controls. Available features depend
 on the linked Iris core and guest OS; unsupported controls are greyed out.
 
+Headless machines can use an [embedded serial console and configurable Unix PTY](docs/serial-console.md), with scrollback, copy/paste, and a minicom command button.
+
 ## Screenshots
 
 IRIX 6.5 desktop screenshots, captured at the guest's native 1282×1024 resolution.

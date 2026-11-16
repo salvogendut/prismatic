@@ -41,6 +41,7 @@ pub fn report() -> String {
         ("platform PTY/Off routing", cfg!(iris_platform_serial)),
         ("new-platform live SCSI", cfg!(iris_frontend_bus)),
         ("headless CPU counters", cfg!(iris_headless_counters)),
+        ("headless physical devices", cfg!(iris_headless_devices)),
     ];
     let unavailable: Vec<_> = features
         .iter()

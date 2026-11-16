@@ -301,6 +301,13 @@ pub fn machine_config(
     advanced.extensions.apply(&mut config);
     advanced.expert.apply(&mut config)?;
     advanced.runtime.apply(&mut config, hardware)?;
+    if hardware.headless {
+        if !crate::headless::AVAILABLE {
+            return Err("Headless guests require Unix and IRIS headless-device support".into());
+        }
+        #[cfg(iris_headless_devices)]
+        config.prepare_headless();
+    }
     config.validate()?;
     Ok(config)
 }
@@ -366,6 +373,7 @@ impl Drop for OwnedMachine {
 
 pub struct Emulator {
     pub frames: FrameSlot,
+    pub console: Option<Arc<crate::headless::Console>>,
     pub audio: Arc<crate::audio::Inbox>,
     status: Arc<Mutex<Status>>,
     commands: mpsc::SyncSender<Command>,
@@ -407,6 +415,10 @@ impl Emulator {
         let mut network = network.clone();
         let expert = advanced.expert.effective();
         let extensions = advanced.extensions.effective();
+        let console = hardware
+            .headless
+            .then(|| Arc::new(crate::headless::Console::default()));
+        let worker_console = console.clone();
         let audio = Arc::new(crate::audio::Inbox::default());
         #[cfg(iris_audio)]
         {
@@ -472,7 +484,8 @@ impl Emulator {
                     } else { None };
                     prepare_serial_log(&config)?;
                     expert.prepare(&config, &state_dir)?;
-                    let serial = crate::serial::Endpoints::prepare(&mut config, &expert)?;
+                    let mut console_bridge = worker_console.as_ref().map(|c| crate::headless::Bridge::open(c.clone(), &hardware.serial_pty_link)).transpose()?;
+                    let serial = crate::serial::Endpoints::prepare(&mut config, &expert, worker_console.as_ref())?;
                     crate::runtime::RuntimeSettings::prepare_connections(&config)?;
                     // Iris's Indigo2 fallback also searches the current directory.
                     // Give it the bundled image explicitly so a local ROM cannot
@@ -503,9 +516,13 @@ impl Emulator {
                     if MachineSettings::LEGACY_PROFILES.contains(&hardware.profile) { iris::prom_env::prepare_environment(
                         &config,
                         hardware.prom_boot.environment().map(|(loader, filename, options)| [loader, filename, options]),
-                        hardware.prom_console.environment(),
+                        if hardware.headless { Some(iris::prom_env::Console::Serial) } else { hardware.prom_console.environment() },
                     )?; }
-                    let mut owned = OwnedMachine::new(iris::workstation::build(config)?);
+                    #[cfg(iris_headless_devices)]
+                    let machine = if hardware.headless { iris::workstation::build_headless(config)? } else { iris::workstation::build(config)? };
+                    #[cfg(not(iris_headless_devices))]
+                    let machine = iris::workstation::build(config)?;
+                    let mut owned = OwnedMachine::new(machine);
                     // O2/Octane constructors currently use a default PS/2 layout.
                     // Set the shared controller before any CPU thread can query it.
                     owned.machine.get_ps2().set_layout(hardware.keyboard);
@@ -531,7 +548,7 @@ impl Emulator {
                     let mut services = crate::expert::Services::start(&expert, &state_dir)?;
                     {
                         let _guard = owned.slot.lock();
-                        if let Some(display) = owned.machine.get_display() {
+                        if !hardware.headless && let Some(display) = owned.machine.get_display() {
                         *display.renderer_slot().lock() = Some(Box::new(CaptureRenderer::new(
                             worker_frames.clone(),
                             worker_activity.clone(),
@@ -540,7 +557,7 @@ impl Emulator {
                         } else if !hardware.serial_only() {
                             return Err("Iris did not create the selected graphics display".into());
                         }
-                        if hardware.heads == 2 {
+                        if hardware.heads == 2 && !hardware.headless {
                             let second = owned
                                 .machine
                                 .get_display_head1()
@@ -557,7 +574,7 @@ impl Emulator {
                             if !owned.machine.cpu_is_running() {
                                 owned.machine.cpu_start();
                             }
-                            *worker_input.lock().unwrap() = Some(owned.machine.get_ps2());
+                            if !hardware.headless { *worker_input.lock().unwrap() = Some(owned.machine.get_ps2()); }
                         } else {
                             drop(_guard);
                             services.finish()?;
@@ -574,6 +591,7 @@ impl Emulator {
                     let mut cpu_activity = activity::CpuCounters::default();
                     let mut net_frames = 0;
                     let final_phase = loop {
+                        if let Some(console) = &mut console_bridge { console.poll(!paused)?; }
                         if worker_stop.load(Ordering::Acquire) {
                             break Phase::Stopped;
                         }
@@ -607,7 +625,7 @@ impl Emulator {
                                 pcap: owned.machine.net_pcap_status(),
                             };
                         }
-                        match receiver.recv_timeout(Duration::from_millis(100)) {
+                        match receiver.recv_timeout(Duration::from_millis(if hardware.headless { 16 } else { 100 })) {
                             Err(mpsc::RecvTimeoutError::Timeout) => {}
                             Ok(Command::Checkpoint(operation, name, network, reply)) => {
                                 let _guard = owned.slot.lock();
@@ -684,6 +702,7 @@ impl Emulator {
             .map_err(|e| format!("Cannot start Iris worker: {e}"))?;
         Ok(Self {
             frames,
+            console,
             audio,
             status,
             commands,
@@ -783,6 +802,126 @@ mod tests {
     use super::*;
     use iris::config::GraphicsBoard;
     use iris::config::KeyboardLayout;
+
+    #[test]
+    #[cfg(iris_headless_devices)]
+    fn disconnected_ps2_devices_survive_reset_without_device_acknowledgements() {
+        use iris::traits::Resettable;
+        let ps2 = Ps2Controller::new(None);
+        ps2.set_devices_present(false);
+        for _ in 0..2 {
+            for command in [0xff, 0xf2, 0xf4] {
+                for mouse in [false, true] {
+                    ps2.write_to(command, mouse);
+                    assert_eq!(ps2.pop_from(mouse), None);
+                }
+            }
+            ps2.write_command(0xaa);
+            assert_eq!(ps2.read_data(), 0x55);
+            ps2.power_on();
+        }
+        ps2.set_devices_present(true);
+        ps2.write_to(0xff, false);
+        assert_eq!(ps2.pop_from(false), Some(0xfa));
+    }
+
+    #[test]
+    #[cfg(all(unix, iris_headless_devices))]
+    fn every_profile_accepts_headless_physical_configuration() {
+        for profile in MachineSettings::PROFILES {
+            let mut hardware = MachineSettings {
+                profile,
+                headless: true,
+                ..Default::default()
+            };
+            hardware.cpu = hardware.cpus()[0];
+            hardware.ram_mb = hardware.ram_sizes()[0];
+            let dir = tempfile::tempdir().unwrap();
+            let config = machine_config(
+                dir.path(),
+                &hardware,
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+            )
+            .unwrap_or_else(|e| panic!("{}: {e}", profile.label()));
+            assert!(config.headless);
+            assert_eq!(config.graphics_board(), GraphicsBoard::None);
+        }
+    }
+
+    #[test]
+    #[ignore = "boots real Indy, O2 and Octane PROMs through embedded serial and PTYs"]
+    #[cfg(all(unix, iris_headless_devices))]
+    fn headless_proms_print_to_console_and_release_pty_alias() {
+        let _serial = MACHINE_TEST.lock().unwrap();
+        for profile in [
+            MachineProfile::IndyIp24,
+            MachineProfile::O2Ip32,
+            MachineProfile::OctaneIp30,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let alias = dir.path().join("console");
+            let mut hardware = MachineSettings {
+                profile,
+                headless: true,
+                serial_pty_link: alias.to_str().unwrap().into(),
+                ..Default::default()
+            };
+            hardware.cpu = hardware.cpus()[0];
+            hardware.ram_mb = hardware.ram_sizes()[0];
+            let mut emulator = Emulator::spawn(
+                dir.path(),
+                &hardware,
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+            )
+            .unwrap();
+            let console = emulator.console.as_ref().unwrap().clone();
+            let deadline = Instant::now() + Duration::from_secs(120);
+            loop {
+                let snapshot = console.snapshot();
+                if snapshot.screen.contents().contains("System Maintenance")
+                    || snapshot.screen.contents().contains(">>")
+                    || snapshot.screen.contents().contains("Unable to boot")
+                {
+                    break;
+                }
+                if snapshot.screen.contents().contains("Press any key") {
+                    console.focus(true);
+                    console.send(b"\r").unwrap();
+                }
+                assert!(
+                    !matches!(emulator.status().phase, Phase::Failed(_)),
+                    "{:?}",
+                    emulator.status()
+                );
+                assert!(
+                    Instant::now() < deadline,
+                    "{} console timed out: {}",
+                    profile.label(),
+                    snapshot.screen.contents()
+                );
+                thread::sleep(Duration::from_millis(50));
+            }
+            assert!(emulator.input().is_none());
+            assert!(alias.exists());
+            eprintln!(
+                "{} serial PROM:\n{}",
+                profile.label(),
+                console.snapshot().screen.contents()
+            );
+            emulator.request_stop();
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while !emulator.finished() {
+                assert!(Instant::now() < deadline);
+                thread::sleep(Duration::from_millis(20));
+            }
+            assert!(std::fs::symlink_metadata(&alias).is_err());
+            assert!(!console.snapshot().attached);
+        }
+    }
 
     // Iris has process-wide display/CPU hooks; started machines must not overlap.
     static MACHINE_TEST: Mutex<()> = Mutex::new(());

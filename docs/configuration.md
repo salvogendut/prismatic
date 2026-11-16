@@ -137,3 +137,12 @@ are rejected. Preferences for a device or optional API unavailable in the
 current machine/build remain in the file but are not applied. The disk, board
 and virtio-port *editor selections* are temporary UI state and are not saved.
 See [Extensions](extensions.md) for placement, driver and host requirements.
+
+## Headless machine consoles
+
+Each `[machine]` or named-machine stanza stores `headless = false` and
+`serial_pty_link = ""` by default. General edits them in the same isolated draft
+as the machine's other hardware. Headless startup uses serial firmware output
+and disconnects keyboard/mouse devices, preserving saved graphics preferences.
+See [headless serial consoles](serial-console.md) for PTY aliases, host support,
+clipboard input and lifecycle behavior.

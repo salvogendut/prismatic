@@ -240,3 +240,42 @@ lifecycle check. The dummy-video UI and diskless Indy PROM framebuffer checks
 passed. The core's injected platform-serial regression passed, and
 `wgpu,gpujit,hostgl` passed a compilation check on Linux (runtime GPU validation
 is not claimed).
+
+## Headless serial console checks
+
+The terminal tests cover ANSI parsing, bounded/anchored history, frozen selections,
+clipboard encoding, independent embedded/PTY output, reconnects, queue limits,
+owned alias cleanup and stale-alias conflicts. Hardware tests verify absent PS/2
+devices do not acknowledge commands across reset while the controller still works,
+and every current profile accepts the headless configuration.
+
+Run the serial PROM integration test explicitly:
+
+```sh
+IRIS_REX_JIT_PROFILE=/tmp/prismatic-headless-rex.bin IRIS_NO_EXIT_ON_POWEROFF=1 \
+cargo test --locked --features pcap,idle-pause,jitv2 headless_proms_print -- --ignored --nocapture
+```
+
+This boots diskless Indy, O2 and Octane using bundled firmware and fresh temporary
+state. It checks real serial PROM output, no frontend physical-input controller,
+and alias release after stopping. Octane's expected diskless SCSI diagnostic
+prompt is acknowledged through serial input before checking its maintenance menu.
+These checks establish PROM startup, not a headless operating-system installation.
+
+For the SDL terminal layout, run:
+
+```sh
+IRIS_REX_JIT_PROFILE=/tmp/prismatic-headless-ui-rex.bin SDL_VIDEODRIVER=dummy \
+SDL_RENDER_DRIVER=software SDL_AUDIODRIVER=dummy \
+target/release/prismatic --headless --boot-smoke-test --screenshot /tmp/prismatic-headless.bmp
+```
+
+An isolated SDL clipboard check is available with `SDL_VIDEODRIVER=dummy cargo
+test --locked clipboard_selection_paste_command -- --ignored --nocapture`.
+It exercises selection copying, normalized paste, the minicom button and paused
+selection without altering the desktop clipboard.
+
+On a desktop, also check selection and Ctrl+Shift+C/V, Copy command, scrollbar
+and wheel navigation, F9 draft/discard, focus loss, pause/resume and F2 label
+changes. Connect minicom through the displayed PTY alias and verify both consoles
+receive output. Reset creates a fresh endpoint; reconnect minicom afterward.

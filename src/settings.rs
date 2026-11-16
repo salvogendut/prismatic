@@ -32,6 +32,8 @@ pub struct MachineSettings {
     pub platform_prom: Option<String>,
     pub prom_boot: PromBoot,
     pub prom_console: PromConsole,
+    pub headless: bool,
+    pub serial_pty_link: String,
 }
 
 /// Independent of the OS boot preset and stored with each machine label.
@@ -156,6 +158,8 @@ impl Default for MachineSettings {
             platform_prom: None,
             prom_boot: PromBoot::default(),
             prom_console: PromConsole::default(),
+            headless: false,
+            serial_pty_link: String::new(),
         }
     }
 }
@@ -268,6 +272,15 @@ impl MachineSettings {
             .collect();
         self.cpu = next(self.cpu, &available);
     }
+    pub fn set_headless(&mut self, enabled: bool) {
+        // Headless boot persisted console=d. Return to graphics when the
+        // saved policy was implicit; an explicit Serial preference stays so.
+        if self.headless && !enabled && self.prom_console == PromConsole::KeepExisting {
+            self.prom_console = PromConsole::Graphics;
+        }
+        self.headless = enabled;
+    }
+
     pub fn cycle_keyboard(&mut self) {
         self.keyboard = next(self.keyboard, &KeyboardLayout::ALL);
     }
@@ -541,6 +554,13 @@ impl MachineSettings {
     }
 
     fn resolve_prom_paths(&mut self, directory: &Path) -> Result<(), String> {
+        if !self.serial_pty_link.is_empty() && Path::new(&self.serial_pty_link).is_relative() {
+            self.serial_pty_link = std::path::absolute(directory.join(&self.serial_pty_link))
+                .map_err(|e| e.to_string())?
+                .to_str()
+                .ok_or("PTY paths must be UTF-8")?
+                .into();
+        }
         for path in [
             &mut self.o2_prom,
             &mut self.octane_prom,
@@ -1790,5 +1810,37 @@ mod tests {
         assert!(settings.save(&parent.join("prismatic.toml")).is_err());
         assert_eq!(fs::read_to_string(&parent).unwrap(), "keep me");
         assert_eq!(settings, Settings::default());
+    }
+}
+
+#[cfg(test)]
+mod headless_preferences_tests {
+    use super::*;
+    #[test]
+    fn graphical_return_restores_implicit_console_and_preserves_explicit_serial() {
+        let mut machine = MachineSettings::default();
+        machine.set_headless(true);
+        assert_eq!(machine.prom_console, PromConsole::KeepExisting);
+        machine.set_headless(false);
+        assert_eq!(machine.prom_console, PromConsole::Graphics);
+        machine.prom_console = PromConsole::Serial;
+        machine.set_headless(true);
+        machine.set_headless(false);
+        assert_eq!(machine.prom_console, PromConsole::Serial);
+    }
+    #[test]
+    fn aliases_resolve_beside_configuration_without_creating_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut machine = MachineSettings {
+            headless: true,
+            serial_pty_link: "my console".into(),
+            ..Default::default()
+        };
+        machine.resolve_prom_paths(dir.path()).unwrap();
+        assert_eq!(
+            Path::new(&machine.serial_pty_link),
+            dir.path().join("my console")
+        );
+        assert!(!Path::new(&machine.serial_pty_link).exists());
     }
 }

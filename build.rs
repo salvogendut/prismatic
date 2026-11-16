@@ -117,6 +117,11 @@ fn main() {
             "workstation.rs",
             "pub fn set_exit_on_guest_poweroff(",
         ),
+        (
+            "headless_devices",
+            "workstation.rs",
+            "pub fn build_headless(",
+        ),
         ("devices", "machine.rs", "pub fn has_ultra64("),
         ("checkpoints", "machine.rs", "pub fn save_snapshot_paused("),
         ("octane_cpus", "config.rs", "pub const OCTANE: [Self; 3]"),

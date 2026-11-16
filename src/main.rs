@@ -7,6 +7,7 @@ mod audio;
 mod capture;
 mod checkpoints;
 mod compat;
+mod console_view;
 #[cfg(iris_diagnostics)]
 mod diagnostics;
 #[cfg(not(iris_diagnostics))]
@@ -17,6 +18,7 @@ mod display;
 mod emulator;
 mod expert;
 mod extensions;
+mod headless;
 mod input;
 mod installation;
 mod instance;
@@ -27,6 +29,10 @@ mod overlay;
 mod profiles;
 mod runtime;
 mod serial;
+mod serial_input;
+mod serial_pty;
+mod serial_screen;
+mod serial_selection;
 mod settings;
 mod smoke;
 mod sound;
@@ -64,6 +70,8 @@ struct Options {
     state_dir: Option<PathBuf>,
     screenshot: Option<PathBuf>,
     keyboard: Option<KeyboardLayout>,
+    headless: Option<bool>,
+    serial_pty_link: Option<String>,
     machine_label: Option<String>,
 }
 
@@ -114,6 +122,10 @@ VINO/camera, DaynaPort and Ultra64 are available on the Indy/Indigo2 family.
 Checkpoints support single-head Newport Indy/IP22 with raw COW disks or no disks.
 Media selects both SCSI buses where supported and IDs 1-15 on Octane.
 --keyboard overrides the saved keyboard type for this session.
+--headless / --graphical override the per-machine headless setting.
+--serial-pty-link PATH selects a stable alias for the allocated PTY.
+Headless: click console to type; Ctrl+Enter releases. Ctrl+Shift+C/V copies/pastes.
+Wheel, scrollbar or Shift+PageUp/PageDown scroll; Shift+End returns to live output.
 --smoke-test renders the options UI without starting Iris.
 --startup-smoke-test renders the paused startup screen and logo without starting Iris.
 --boot-smoke-test waits for guest display output, captures ten seconds later, and stops.
@@ -141,6 +153,19 @@ Menu Save persists machine, media, Advanced, Network, Extensions and desktop set
                             .ok_or("--machine-label requires a label")?
                             .into_string()
                             .map_err(|_| "Machine label must be UTF-8")?,
+                    );
+                }
+                Some("--headless") => options.headless = Some(true),
+                Some("--graphical") => options.headless = Some(false),
+                Some("--serial-pty-link") => {
+                    let path =
+                        PathBuf::from(args.next().ok_or("--serial-pty-link requires a path")?);
+                    options.serial_pty_link = Some(
+                        std::path::absolute(path)
+                            .map_err(|e| e.to_string())?
+                            .to_str()
+                            .ok_or("PTY alias must be UTF-8")?
+                            .into(),
                     );
                 }
                 Some("--smoke-test") => options.smoke_test = true,
@@ -269,6 +294,12 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(keyboard) = options.keyboard {
         settings.machine.keyboard = keyboard;
     }
+    if let Some(headless) = options.headless {
+        settings.machine.set_headless(headless);
+    }
+    if let Some(alias) = &options.serial_pty_link {
+        settings.machine.serial_pty_link = alias.clone();
+    }
     let state_dir = |settings: &Settings| {
         settings.machine_state_dir(&preferences, options.state_dir.as_deref())
     };
@@ -339,6 +370,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let mut fullscreen = false;
     let mut pending_window_scale = false;
     let mut title_captured = false;
+    let mut console_view = console_view::ConsoleView::default();
     let mut toast: Option<(String, Instant)> = None;
     let mut redraw = true;
     let mut frames = 0;
@@ -399,9 +431,19 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         let mut ready_save = None;
+        let modal = overlay.session.is_some()
+            || overlay.dialog.is_some()
+            || overlay.report.is_some()
+            || overlay.busy;
+        redraw |= console_view.sync(
+            emulator.as_ref().and_then(|m| m.console.clone()),
+            status.phase == Phase::Running && stopping.is_none(),
+            modal,
+        );
         let text_input = video.text_input();
-        if overlay.text_edit.is_some() != text_input.is_active(canvas.window()) {
-            if overlay.text_edit.is_some() {
+        let editing = overlay.text_edit.is_some() || console_view.focused;
+        if editing != text_input.is_active(canvas.window()) {
+            if editing {
                 text_input.start(canvas.window());
             } else {
                 text_input.stop(canvas.window());
@@ -450,6 +492,32 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             redraw = true;
             if stopping.is_some() {
                 continue;
+            }
+            let modal = overlay.session.is_some()
+                || overlay.dialog.is_some()
+                || overlay.report.is_some()
+                || overlay.busy;
+            if !modal && console_view.visible() {
+                let point = match &event {
+                    Event::MouseButtonDown { x, y, .. }
+                    | Event::MouseButtonUp { x, y, .. }
+                    | Event::MouseMotion { x, y, .. } => display::window_to_view(
+                        (*x, *y),
+                        canvas.window().size(),
+                        canvas.window().size_in_pixels(),
+                        (view::WIDTH, view::HEIGHT),
+                    )
+                    .map(|(x, y)| (x as i32, y as i32)),
+                    _ => None,
+                };
+                match console_view.handle(&event, point, &video.clipboard()) {
+                    Ok(true) => continue,
+                    Err(error) => {
+                        toast = Some((error, Instant::now()));
+                        continue;
+                    }
+                    Ok(false) => {}
+                }
             }
             let key = match event {
                 Event::TextInput { text, .. } => {
@@ -566,6 +634,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                             None
                         }
                         KeyRoute::Pause => {
+                            console_view.release();
                             release_input(&mut guest, &mouse, canvas.window());
                             if stopping.is_none() && !ui_smoke {
                                 let result = if matches!(
@@ -687,6 +756,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                     key,
                     Key::Options | Key::Quit | Key::NextMachine | Key::Reset
                 ) {
+                    console_view.release();
                     release_input(&mut guest, &mouse, canvas.window());
                 }
                 let effect = overlay.key(key, &settings);
@@ -1234,6 +1304,9 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         } else {
             false
         };
+        if first_content.is_none() && console_view.has_output() {
+            first_content = Some(Instant::now());
+        }
         let capture_boot = (options.boot_smoke_test
             && stopping.is_none()
             && first_content.is_some_and(|time| time.elapsed() >= Duration::from_secs(10)))
@@ -1308,6 +1381,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 toast.as_ref().map(|(text, _)| text.as_str()),
                 view::Presentation {
                     startup_logo: emulator.is_none().then_some(&logo_texture),
+                    console: console_view.visible().then_some(&console_view),
                     status: label,
                     placeholder,
                     captured: guest.captured,
